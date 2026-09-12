@@ -485,23 +485,19 @@ class VideoInferenceService:
                 with open(session_config_path, "w") as f:
                     yaml.dump(session_cfg, f)
 
-                save_raw_frames = False
-
                 analyzer = self._get_or_create_analyzer(
-                    session_config_path, 
+                    session_config_path,
                     expected_duck_count=session["expected_ducks"],
                     results_json_path=results_json_path,
                     thumbnail_dir=thumbnail_dir,
                 )
-                
+
                 session["analyzer"] = analyzer
                 session["stats"]["output_dir"] = session_dir
                 session["stats"]["results_json_path"] = results_json_path
                 session["stats"]["thumbnail_dir"] = thumbnail_dir
-                if save_raw_frames:
-                    session["stats"]["frames_dir"] = frames_dir
-                    session["stats"]["anomaly_frames_dir"] = anomaly_frames_dir
-                
+                session["stats"]["anomaly_frames_dir"] = anomaly_frames_dir
+
                 cap = cv2.VideoCapture(temp_file_path)
                 if not cap.isOpened():
                     # Some browser-uploaded codecs are not readable by the

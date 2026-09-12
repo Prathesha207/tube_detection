@@ -32,10 +32,10 @@ import cv2
 import concurrent.futures
 
 try:
-    from app.ml.duck_analyzer.analyzer import DuckAnalyzer
+    from duck_analyzer import DuckAnalyzer           # installed whl (primary)
 except ImportError:
     try:
-        from duck_analyzer import DuckAnalyzer
+        from app.ml.duck_analyzer.analyzer import DuckAnalyzer  # local fallback
     except ImportError:
         DuckAnalyzer = None
 

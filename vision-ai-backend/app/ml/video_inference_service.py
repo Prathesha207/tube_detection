@@ -32,12 +32,9 @@ import cv2
 import concurrent.futures
 
 try:
-    from duck_analyzer import DuckAnalyzer           # installed whl (primary)
+    from duck_analyzer import DuckAnalyzer           # installed whl 1.0.13 (primary)
 except ImportError:
-    try:
-        from app.ml.duck_analyzer.analyzer import DuckAnalyzer  # local fallback
-    except ImportError:
-        DuckAnalyzer = None
+    DuckAnalyzer = None  # whl not installed — run: pip install app/ml/whl/duck_analyzer-1.0.13-py3-none-any.whl
 
 from app.ml import app_state  # shared GPU mutual-exclusion flag with training_service.py
                                # AND with camera_inference_service.py (video vs camera)
@@ -773,11 +770,7 @@ class VideoInferenceService:
                         if os.path.exists(dest_thumb):
                             shutil.rmtree(dest_thumb)
                         shutil.copytree(thumbnail_dir, dest_thumb)
-                    if os.path.exists(frames_dir) and os.listdir(frames_dir):
-                        dest_raw = os.path.join(archive_dir, "raw_frames")
-                        if os.path.exists(dest_raw):
-                            shutil.rmtree(dest_raw)
-                        shutil.copytree(frames_dir, dest_raw)
+                    # anomaly_frames: archive if non-empty
                     if os.path.exists(anomaly_frames_dir) and os.listdir(anomaly_frames_dir):
                         dest_anom = os.path.join(archive_dir, "anomaly_frames")
                         if os.path.exists(dest_anom):

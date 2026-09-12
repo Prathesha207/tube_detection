@@ -44,11 +44,17 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 
 _sessions_lock = threading.Lock()
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    _meipass_config = os.path.join(sys._MEIPASS, "app", "ml", "config.yaml")
-    if os.path.exists(_meipass_config):
-        _CONFIG_PATH = _meipass_config
+# Config path: look in app/ml/config/config.yaml first (canonical),
+# then fall back to app/ml/config.yaml (legacy) and PyInstaller bundle.
+_ML_DIR = os.path.dirname(os.path.abspath(__file__))
+_CONFIG_CANDIDATES = [
+    os.path.join(_ML_DIR, "config", "config.yaml"),  # canonical
+    os.path.join(_ML_DIR, "config.yaml"),             # legacy flat layout
+]
+if getattr(sys, "_MEIPASS", None):
+    _CONFIG_CANDIDATES.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "config", "config.yaml"))
+    _CONFIG_CANDIDATES.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "config.yaml"))
+_CONFIG_PATH = next((c for c in _CONFIG_CANDIDATES if os.path.exists(c)), _CONFIG_CANDIDATES[0])
 
 # Idle sessions get evicted after this many seconds without a frame --
 _SESSION_IDLE_TIMEOUT_SEC = 900
@@ -88,50 +94,51 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
             with open(_CONFIG_PATH, "r") as f:
                 cfg = yaml.safe_load(f) or {}
 
-            # Resolve model_path portably across ANY PC
-            ml_dir = os.path.dirname(os.path.abspath(__file__))
-            base_dir = os.path.dirname(ml_dir)
+            # Resolve model_path portably: app/ml/model/best.pt first (canonical),
+            # then app/ml/models/best.pt (legacy), then the value from config.yaml.
+            ml_dir = _ML_DIR
             candidates = [
-                os.path.join(ml_dir, "models", "best.pt"),
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "best.pt"),
-                os.path.join(base_dir, "ml", "models", "best.pt"),
+                os.path.join(ml_dir, "model", "best.pt"),    # canonical
+                os.path.join(ml_dir, "models", "best.pt"),   # legacy
             ]
             if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
-                candidates.insert(1, os.path.join(sys._MEIPASS, "models", "best.pt"))
+                candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
+                candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
 
             configured_path = cfg.get("model_path")
             if configured_path:
-                if os.path.isabs(configured_path):
+                rel = os.path.join(ml_dir, configured_path)
+                if os.path.exists(rel):
+                    candidates.append(rel)
+                if os.path.isabs(configured_path) and os.path.exists(configured_path):
                     candidates.append(configured_path)
-                else:
-                    candidates.append(os.path.join(ml_dir, configured_path))
-                candidates.append(os.path.abspath(configured_path))
 
-            resolved_model = None
-            for cand in candidates:
-                if cand and os.path.exists(cand):
-                    resolved_model = cand
-                    break
+            resolved_model = next((c for c in candidates if c and os.path.exists(c)), None)
 
             if not resolved_model:
-                checked = "\n  ".join(candidates)
+                checked = "\n  ".join(c for c in candidates if c)
                 raise FileNotFoundError(
-                    "Could not find best.pt on this machine. Checked:\n  " + checked +
-                    f"\n\nPlace the model weights at {os.path.join(ml_dir, 'models', 'best.pt')}"
+                    "Could not find best.pt. Checked:\n  " + checked +
+                    f"\n\nPlace your YOLO weights at: {os.path.join(ml_dir, 'model', 'best.pt')}"
                 )
 
+            logger.info(f"[MODEL] Using weights: {resolved_model}")
             cfg["model_path"] = resolved_model
+
+            # Resolve roi_path relative to the config file's directory
+            cfg_dir = os.path.dirname(os.path.abspath(_CONFIG_PATH))
+            roi_raw = cfg.get("roi_path", "hand_roi.json")
+            if roi_raw and not os.path.isabs(roi_raw):
+                cfg["roi_path"] = os.path.join(cfg_dir, roi_raw)
+
+            # Production mode: no disk writes from DuckAnalyzer
             cfg["save_local"] = False
             cfg["annotated_dir"] = None
 
-            # Dynamic hardware detection: use GPU if CUDA is available, else fallback cleanly to CPU
+            # Dynamic device selection
             try:
                 import torch
-                if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                    cfg["device"] = 0
-                else:
-                    cfg["device"] = "cpu"
+                cfg["device"] = 0 if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
             except Exception:
                 cfg["device"] = "cpu"
 
@@ -222,24 +229,18 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
     if isinstance(result, dict) and result.get("annotated_frame") is not None:
         annotated_frame = result["annotated_frame"]
 
-    # ── Read the fields DuckAnalyzer._finish() returns ──
-    detected_ducks = result.get("detected_duck_count", 0)
-    detected_others = result.get("other_count", 0)
+    # ── Pass through EVERYTHING DuckAnalyzer returns — no re-interpretation ──
+    # DuckAnalyzer._finish() is the single source of truth for all these fields.
+    # camera_inference_service is purely an orchestrator: feed one frame in,
+    # collect the result dict, relay it to the caller unchanged.
     anchor_locked = bool(result.get("anchor_locked", getattr(analyzer, "anchor_locked", False)))
-    missing_ids = result.get("missing_ids", [])
-    added_ids = result.get("added_ids", [])
-    other_ids = result.get("other_ids", [])
+    missing_ids   = result.get("missing_ids", [])
+    added_ids     = result.get("added_ids", [])
+    other_ids     = result.get("other_ids", [])
+    detected_others = result.get("other_count", len(other_ids))
     hand_detected = bool(result.get("hand_detected", False))
-    reasons = list(result.get("reasons", []))
-    is_hand_frame = bool(
-        hand_detected
-        or result.get("status") == "HAND"
-        or any(r in ("hand_detected", "hand_in_frame") for r in reasons)
-    )
-
-    # Hand presence is an operational pause, NOT a tray defect anomaly
-    # Only confirmed ANOMALY status from DuckAnalyzer qualifies
-    is_anomaly = not is_hand_frame and result.get("status") == "ANOMALY"
+    reasons       = list(result.get("reasons", []))
+    is_anomaly    = (result.get("status") == "ANOMALY")
 
     new_thumbnails = result.get("thumbnails", [])
     if "thumbnails" not in session:
@@ -255,31 +256,29 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
         )
 
     stats = {
-        "session_id": session_id,
-        "original_filename": session.get("original_filename"),
-        "status": result.get("status", "processing"),
-        "frames_processed": session["frames_processed"],
-        "fps": round(result.get("fps", 0), 1),
-        "detected_duck_count": detected_ducks,
-        "expected_duck_count": session["expected_duck_count"],
-        "anchor_ducks_count": result.get("anchor_ducks_count", detected_ducks),
-        "other_count": detected_others,
-        "detected_other_toy_count": detected_others,
-        "anchor_locked": anchor_locked,
-        "hand_detected": hand_detected,
-        "missing_ids": missing_ids,
-        "added_ids": added_ids,
-        "added_present_ids": result.get("added_present_ids", []),
-        "added_on_tray": result.get("added_present_ids", []),
-        "other_ids": other_ids,
-        "missing_count": result.get("missing_count", len(missing_ids)),
-        "added_count": result.get("added_count", len(added_ids)),
-        "reasons": reasons,
-        "detections": result.get("detections", []),
-        "thumbnails": session["thumbnails"],
-        "is_anomaly_frame": is_anomaly,
-        "video_width": frame.shape[1],
-        "video_height": frame.shape[0],
+        "session_id":              session_id,
+        "original_filename":       session.get("original_filename"),
+        "status":                  result.get("status", "processing"),
+        "frame":                   result.get("frame", session["frames_processed"]),
+        "frames_processed":        session["frames_processed"],
+        "fps":                     round(result.get("fps", 0), 1),
+        "detected_duck_count":     result.get("detected_duck_count", 0),
+        "expected_duck_count":     session["expected_duck_count"],
+        "other_count":             detected_others,
+        "detected_other_toy_count": detected_others,   # alias for older frontend code
+        "anchor_locked":           anchor_locked,
+        "hand_detected":           hand_detected,
+        "missing_ids":             missing_ids,
+        "missing_count":           result.get("missing_count", len(missing_ids)),
+        "added_ids":               added_ids,
+        "added_count":             result.get("added_count", len(added_ids)),
+        "other_ids":               other_ids,
+        "reasons":                 reasons,
+        "detections":              result.get("detections", []),
+        "thumbnails":              session["thumbnails"],
+        "is_anomaly_frame":        is_anomaly,
+        "video_width":             frame.shape[1],
+        "video_height":            frame.shape[0],
     }
 
     session["last_stats"] = stats

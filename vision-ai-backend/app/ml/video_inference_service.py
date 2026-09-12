@@ -49,24 +49,20 @@ class VideoInferenceService:
         self.sessions: Dict[str, Dict[str, Any]] = {}
         # Global lock to ensure only one GPU inference runs at a time
         self._gpu_lock = asyncio.Lock()
-        # Non-blocking async background executor for saving raw/anomaly frames to disk without stalling inference
+        # Non-blocking async background executor for saving anomaly frames to disk without stalling inference
         self._io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        
-        # Resolve config path relative to this file
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.config_path = os.path.join(base_dir, "ml", "config.yaml")
-        if not os.path.exists(self.config_path):
-            candidates = [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml"),
-                os.path.join(base_dir, "app", "ml", "config.yaml"),
-            ]
-            if hasattr(sys, "_MEIPASS"):
-                candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "config.yaml"))
-                candidates.insert(1, os.path.join(sys._MEIPASS, "ml", "config.yaml"))
-            for cand in candidates:
-                if os.path.exists(cand):
-                    self.config_path = cand
-                    break
+
+        # Resolve config path — look in app/ml/config/config.yaml first (canonical),
+        # then fall back to app/ml/config.yaml (legacy) and PyInstaller bundle.
+        ml_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(ml_dir, "config", "config.yaml"),   # canonical: app/ml/config/
+            os.path.join(ml_dir, "config.yaml"),              # legacy flat layout
+        ]
+        if getattr(sys, "_MEIPASS", None):
+            candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "config", "config.yaml"))
+            candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "config.yaml"))
+        self.config_path = next((c for c in candidates if os.path.exists(c)), candidates[0])
 
         self._shared_analyzer = None
 
@@ -318,45 +314,39 @@ class VideoInferenceService:
             "detections": [],
         })
 
-    def _resolve_model_path(self, configured_path, ml_dir, base_dir):
-        """Find best.pt reliably on whatever machine this process is running
-        on. Always tries the portable, project-relative locations first
-        (these are the ones that travel with the install/repo on any PC);
-        the value written in config.yaml is only used as a last-resort
-        fallback, and only if it actually exists on THIS machine. Raises
-        FileNotFoundError with every path it checked if nothing is found,
-        so a missing model fails loudly and clearly instead of a confusing
-        error from deep inside the wheel.
+    def _resolve_model_path(self, configured_path: str, ml_dir: str) -> str:
+        """Return the absolute path to best.pt, working on ANY machine.
+        Priority (first existing file wins):
+          1. app/ml/model/best.pt      <- canonical production location
+          2. app/ml/models/best.pt     <- legacy location
+          3. Frozen-bundle paths       <- PyInstaller _MEIPASS
+          4. configured_path from config.yaml (relative resolved vs ml_dir,
+             or absolute if it exists on THIS machine)  <- last resort
         """
-        import sys
         candidates = [
-            os.path.join(ml_dir, "models", "best.pt"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "best.pt"),
-            os.path.join(base_dir, "ml", "models", "best.pt"),
+            os.path.join(ml_dir, "model", "best.pt"),         # canonical
+            os.path.join(ml_dir, "models", "best.pt"),         # legacy
         ]
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
-            candidates.insert(1, os.path.join(sys._MEIPASS, "models", "best.pt"))
+            candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
+            candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
 
         if configured_path:
-            # Used as-is if it's absolute (and exists here); resolved
-            # relative to ml_dir otherwise. Either way it's checked LAST,
-            # behind the portable candidates above.
-            if os.path.isabs(configured_path):
+            rel = os.path.join(ml_dir, configured_path)
+            if os.path.exists(rel):
+                candidates.append(rel)
+            if os.path.isabs(configured_path) and os.path.exists(configured_path):
                 candidates.append(configured_path)
-            else:
-                candidates.append(os.path.join(ml_dir, configured_path))
-            candidates.append(os.path.abspath(configured_path))
 
         for cand in candidates:
             if cand and os.path.exists(cand):
+                logger.info(f"[MODEL] Using weights: {cand}")
                 return cand
 
-        checked = "\n  ".join(candidates)
+        checked = "\n  ".join(c for c in candidates if c)
         raise FileNotFoundError(
-            "Could not find best.pt on this machine. Checked:\n  " + checked +
-            f"\n\nPlace the model weights at {os.path.join(ml_dir, 'models', 'best.pt')} "
-            "-- that path works on any PC without editing config.yaml."
+            "Could not find best.pt. Checked:\n  " + checked +
+            f"\n\nPlace your YOLO weights at: {os.path.join(ml_dir, 'model', 'best.pt')}"
         )
 
     async def process_video_task(self, session_id: str, temp_file_path: str,
@@ -430,10 +420,12 @@ class VideoInferenceService:
             out_writer = None
             try:
                 if DuckAnalyzer is None:
-                    raise RuntimeError("DuckAnalyzer package is not installed.")
+                    raise RuntimeError("DuckAnalyzer package is not installed. Run: pip install app/ml/whl/duck_analyzer-1.0.13-py3-none-any.whl")
 
-                # Unified session output directory under guaranteed writable directory
-                ml_dir = os.path.dirname(os.path.abspath(self.config_path))
+                # ml_dir = folder that contains this service file (app/ml/)
+                ml_dir = os.path.dirname(os.path.abspath(__file__))
+
+                # Session output directory
                 try:
                     from app.core.app_paths import get_ml_output_dir
                     base_output_dir = str(get_ml_output_dir())
@@ -442,95 +434,61 @@ class VideoInferenceService:
                 session_dir = os.path.join(base_output_dir, session_id)
                 os.makedirs(session_dir, exist_ok=True)
 
-                # Determine annotated video filename using original filename
+                # Annotated video output filename
                 orig_name = original_filename or session.get("original_filename")
                 if orig_name:
                     base_name = os.path.splitext(os.path.basename(orig_name))[0]
-                    if base_name.startswith("annotated_"):
-                        video_filename = f"{base_name}.mp4"
-                    else:
-                        video_filename = f"annotated_{base_name}.mp4"
+                    video_filename = f"{base_name}.mp4" if base_name.startswith("annotated_") else f"annotated_{base_name}.mp4"
                 else:
                     video_filename = f"annotated_{session_id}.mp4"
 
                 output_path = os.path.join(session_dir, video_filename)
                 results_json_path = os.path.join(session_dir, "results.json")
                 thumbnail_dir = os.path.join(session_dir, "thumbnails")
-                # frames_dir / anomaly_frames_dir are NOT written by DuckAnalyzer --
-                # DuckAnalyzer only writes results_json_path and thumbnail_dir.
-                # Dumping every raw frame to disk is something this service adds
-                # on top, and it's expensive (one .jpg per frame, every run), so
-                # it's opt-in via config.yaml's save_raw_frames flag, default off.
-                frames_dir = None
-                anomaly_frames_dir = None
+                anomaly_frames_dir = os.path.join(session_dir, "anomaly_frames")
                 os.makedirs(thumbnail_dir, exist_ok=True)
+                os.makedirs(anomaly_frames_dir, exist_ok=True)
 
-                # Prepare session-specific config so DuckAnalyzer outputs directly into this session's folder
+                # Load the canonical config (app/ml/config/config.yaml)
                 with open(self.config_path, "r") as f:
                     session_cfg = yaml.safe_load(f) or {}
 
-                # DuckAnalyzer.__init__ reads these with NO default -- a
-                # missing key raises a bare KeyError deep inside the wheel,
-                # after the model may have already started loading. Fail
-                # fast, with a clear message, before that happens.
-                required_cfg_keys = ["model_path", "duck_class_id", "other_class_id", "conf", "row_tolerance_frac"]
+                # Fail fast on missing required keys — before the model starts loading
+                required_cfg_keys = ["duck_class_id", "other_class_id", "conf", "row_tolerance_frac"]
                 missing_keys = [k for k in required_cfg_keys if k not in session_cfg]
                 if missing_keys:
                     raise ValueError(f"config.yaml is missing required key(s): {missing_keys}")
 
-                session_cfg["results_json_path"] = results_json_path
-                session_cfg["thumbnail_dir"] = thumbnail_dir
-                # config.yaml's annotated_dir is a local dev path (and on the
-                # ML team's machine, save_local:true). If left as-is, analyzer.py's
-                # _finish() does a synchronous cv2.imwrite() to annotated_dir on
-                # EVERY frame, on top of the video already being written by
-                # out_writer below -- pure redundant disk I/O, and on a Linux
-                # server the Windows-style path isn't even absolute (no leading
-                # "/"), so it'd silently create a stray "C:" folder instead of
-                # failing loudly. Disable just this half of save_local; leave
-                # thumbnail saving on since that's real per-event output.
-                session_cfg["annotated_dir"] = None
-
-                # Resolve model_path in a way that works on ANY machine this
-                # runs on, not just the one config.yaml happens to describe.
-                #
-                # The old logic only searched project-relative candidates
-                # when os.path.isabs(model_path) was False -- but
-                # "C:/Users/EmageVision/..." IS absolute on Windows (drive
-                # letter), so on every Windows PC except the original ML
-                # dev laptop, that check passed and the search was skipped
-                # entirely, going straight for a path that only exists on
-                # one machine. It only "worked" by accident on Linux, where
-                # that same string isn't recognized as absolute.
-                #
-                # Fix: always check the portable, project-relative locations
-                # FIRST. Only fall back to whatever config.yaml says --
-                # absolute or not -- if none of those exist, and only if
-                # that configured path actually exists on THIS machine.
-                base_dir = os.path.dirname(ml_dir)
-                model_path = self._resolve_model_path(session_cfg.get("model_path"), ml_dir, base_dir)
+                # Resolve model_path to a portable absolute path (app/ml/model/best.pt first)
+                model_path = self._resolve_model_path(session_cfg.get("model_path"), ml_dir)
                 session_cfg["model_path"] = model_path
 
-                # Only save anomaly frames for desktop archive (avoid disk I/O bottleneck)
-                save_raw_frames = False
-                frames_dir = os.path.join(session_dir, "raw_frames")
-                anomaly_frames_dir = os.path.join(session_dir, "anomaly_frames")
-                os.makedirs(frames_dir, exist_ok=True)
-                os.makedirs(anomaly_frames_dir, exist_ok=True)
+                # Resolve roi_path relative to the config file's directory
+                cfg_dir = os.path.dirname(os.path.abspath(self.config_path))
+                roi_raw = session_cfg.get("roi_path", "hand_roi.json")
+                if roi_raw and not os.path.isabs(roi_raw):
+                    session_cfg["roi_path"] = os.path.join(cfg_dir, roi_raw)
 
-                # Dynamic hardware detection: use GPU if CUDA is available, else fallback cleanly to CPU
+                # Production mode: DuckAnalyzer must NOT write frames to disk
+                # (the service writes the annotated MP4 and thumbnails itself).
+                session_cfg["save_local"] = False
+                session_cfg["annotated_dir"] = None
+                # Thumbnails per-session go into the session folder
+                session_cfg["thumbnail_dir"] = thumbnail_dir
+
+                # Dynamic device selection: GPU if CUDA available, else CPU
                 try:
                     import torch
-                    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                        session_cfg["device"] = 0
-                    else:
-                        session_cfg["device"] = "cpu"
+                    session_cfg["device"] = 0 if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
                 except Exception:
                     session_cfg["device"] = "cpu"
 
+                # Write resolved config to session dir so DuckAnalyzer can open it
                 session_config_path = os.path.join(session_dir, "config.yaml")
                 with open(session_config_path, "w") as f:
                     yaml.dump(session_cfg, f)
+
+                save_raw_frames = False
 
                 analyzer = self._get_or_create_analyzer(
                     session_config_path, 
@@ -656,78 +614,46 @@ class VideoInferenceService:
                     if isinstance(result, dict) and "annotated_frame" in result and result["annotated_frame"] is not None:
                         annotated_frame = result["annotated_frame"]
 
-                    # ---- pull the fields analyzer.py actually returns ----
-                    # NOTE: analyzer._finish() returns "other_count", not
-                    # "detected_other_species_count" / "detected_other_toy_count" --
-                    # those old key names never matched, so other_count was
-                    # always reading as 0 before this fix.
-                    other_count = result.get("other_count", 0)
+                    # ── Pass through EVERYTHING DuckAnalyzer returns — no re-interpretation ──
+                    # DuckAnalyzer._finish() is the single source of truth for all these
+                    # fields. This service is purely an orchestrator: it feeds frames in,
+                    # collects results, and relays them to the frontend unchanged.
 
-                    # "anchor_locked" is NOT part of the result dict -- it's a
-                    # live attribute on the analyzer instance itself.
-                    anchor_locked = bool(getattr(analyzer, "anchor_locked", False))
-
-                    missing_ids = result.get("missing_ids", [])
-                    added_ids = result.get("added_ids", [])
-                    other_ids = result.get("other_ids", [])
-                    hand_detected = result.get("hand_detected", False)
+                    missing_ids  = result.get("missing_ids", [])
+                    added_ids    = result.get("added_ids", [])
+                    other_ids    = result.get("other_ids", [])
+                    other_count  = result.get("other_count", len(other_ids))
+                    hand_detected = bool(result.get("hand_detected", False))
+                    anchor_locked = bool(result.get("anchor_locked", getattr(analyzer, "anchor_locked", False)))
+                    reasons      = list(result.get("reasons", []))
                     new_thumbnails = result.get("thumbnails", [])
+                    is_anomaly_frame = (result.get("status") == "ANOMALY")
 
-                    # analyzer.py already computes "reasons" with voting and shake-smoothing
-                    # over anomaly_smoothing_frames (self.count_history). Forward analyzer's own reasons.
-                    reasons = list(result.get("reasons", []))
-
-                    # Write the fully annotated frame to the MP4 file
+                    # Write the fully annotated frame (drawn by DuckAnalyzer) to the MP4
                     if out_writer:
                         out_writer.write(annotated_frame)
-                    
-                    # 1. Save all raw frames sequentially (un-annotated), only if
-                    # save_raw_frames is enabled -- this is not something
-                    # DuckAnalyzer itself needs or writes.
-                    if save_raw_frames:
-                        self._io_executor.submit(
-                            cv2.imwrite, 
-                            os.path.join(frames_dir, f"frame_{frame_idx:05d}.jpg"), 
-                            frame.copy()
-                        )
-                    
-                    # 2. Save anomaly-only frames into dedicated anomaly_frames folder,
-                    # also gated behind save_raw_frames.
-                    # Hand presence is an operational pause, NOT a tray defect anomaly
-                    is_hand_frame = bool(
-                        result.get("hand_detected")
-                        or result.get("status") == "HAND"
-                        or any(r in ("hand_detected", "hand_in_frame") for r in reasons)
-                    )
-                    is_anomaly_frame = not is_hand_frame and result.get("status") == "ANOMALY"
+
+                    # Save anomaly frames for offline review
                     if is_anomaly_frame:
                         self._io_executor.submit(
-                            cv2.imwrite, 
-                            os.path.join(anomaly_frames_dir, f"anomaly_frame_{frame_idx:05d}.jpg"), 
+                            cv2.imwrite,
+                            os.path.join(anomaly_frames_dir, f"anomaly_{frame_idx:05d}.jpg"),
                             annotated_frame.copy()
                         )
-                    
-                    # Stream the raw frame (un-annotated) to the frontend so frontend renders boxes cleanly
-                    success, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+
+                    # Stream raw (un-annotated) frame to frontend; frontend renders detection boxes itself
+                    success, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                     if success:
                         frame_bytes = buffer.tobytes()
                         session["last_frame_bytes"] = frame_bytes
                         try:
-                            # If queue is full, drop frame to keep real-time behavior and avoid memory bloat
                             if session["queue"].full():
                                 session["queue"].get_nowait()
                             session["queue"].put_nowait(frame_bytes)
                         except asyncio.QueueFull:
                             pass
 
-                    # Update stats
-                    elapsed = time.time() - start_time
-                    fps = frame_idx / elapsed if elapsed > 0 else 0
-                    progress = min(100.0, (frame_idx / total_frames * 100)) if total_frames > 0 else 0
-                    
-                    # thumbnails are one-shot events (confirmed/added/other/etc,
-                    # emitted once each by analyzer.py) -- accumulate them for
-                    # the whole session instead of overwriting each frame.
+                    # Accumulate thumbnails (one-shot events from analyzer, not per-frame)
                     if new_thumbnails:
                         existing = {
                             (str(t.get("id")), str(t.get("event")))
@@ -738,30 +664,33 @@ class VideoInferenceService:
                             if (str(t.get("id")), str(t.get("event"))) not in existing
                         )
 
+                    elapsed  = time.time() - start_time
+                    fps      = frame_idx / elapsed if elapsed > 0 else 0
+                    progress = min(100.0, (frame_idx / total_frames * 100)) if total_frames > 0 else 0
+
+                    # Update stats — forward whl output keys directly; keep aliases for frontend compat
                     session["stats"].update({
-                        "status": result.get("status", session["status"]),
-                        "frames_processed": frame_idx,
-                        "progress": round(progress, 1),
-                        "fps": round(fps, 1),
-                        "detected_duck_count": result.get("detected_duck_count", 0),
-                        "anchor_ducks_count": result.get("anchor_ducks_count", result.get("detected_duck_count", 0)),
-                        "other_count": other_count,
-                        "detected_other_toy_count": other_count,  # alias, kept for older frontend code
-                        "expected_duck_count": result.get("expected_duck_count", 0),
-                        "anchor_locked": anchor_locked,
-                        "hand_detected": hand_detected,
-                        "missing_ids": missing_ids,
-                        "added_ids": added_ids,
-                        "added_present_ids": result.get("added_present_ids", []),
-                        "added_on_tray": result.get("added_present_ids", []),
-                        "other_ids": other_ids,
-                        "missing_count": len(missing_ids),
-                        "added_count": len(added_ids),
-                        "reasons": reasons,
-                        "detections": result.get("detections", []),
-                        "is_anomaly_frame": is_anomaly_frame,
-                        "video_width": width,
-                        "video_height": height,
+                        "status":                 result.get("status", session["status"]),
+                        "frames_processed":       frame_idx,
+                        "frame":                  result.get("frame", frame_idx),
+                        "progress":               round(progress, 1),
+                        "fps":                    round(result.get("fps", fps), 1),
+                        "detected_duck_count":    result.get("detected_duck_count", 0),
+                        "expected_duck_count":    result.get("expected_duck_count", 0),
+                        "other_count":            other_count,
+                        "detected_other_toy_count": other_count,   # alias for older frontend code
+                        "anchor_locked":          anchor_locked,
+                        "hand_detected":          hand_detected,
+                        "missing_ids":            missing_ids,
+                        "missing_count":          result.get("missing_count", len(missing_ids)),
+                        "added_ids":              added_ids,
+                        "added_count":            result.get("added_count", len(added_ids)),
+                        "other_ids":              other_ids,
+                        "reasons":                reasons,
+                        "detections":             result.get("detections", []),
+                        "is_anomaly_frame":       is_anomaly_frame,
+                        "video_width":            width,
+                        "video_height":           height,
                     })
                     
                     # Yield control back to loop so FastAPI can serve other requests

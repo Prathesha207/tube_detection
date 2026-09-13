@@ -34,7 +34,7 @@ if ($Acceleration -eq 'cuda' -and $HasCuda -ne 'True') {
   if ($LASTEXITCODE -ne 0) { throw "Could not install CUDA PyTorch from $CudaIndex." }
 }
 
-$DuckAnalyzerWheel = Get-ChildItem (Join-Path $BackendDir 'app\ml\duck_analyzer-*.whl') |
+$DuckAnalyzerWheel = Get-ChildItem -Path (Join-Path $BackendDir 'app\ml') -Filter 'duck_analyzer-*.whl' -Recurse |
   Sort-Object Name -Descending | Select-Object -First 1
 if (-not $DuckAnalyzerWheel) { throw 'The bundled duck_analyzer wheel is missing.' }
 & $VenvPython -m pip install $DuckAnalyzerWheel.FullName
@@ -46,13 +46,10 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
 
     $PyInstallerArgs = @(
       '--noconfirm', '--clean', '--onedir', '--name', 'backend', 'run.py',
-      '--add-data', 'app/ml/models;app/ml/models',
-      '--add-data', 'app/ml/config.yaml;app/ml',
+      '--add-data', 'app/ml/model;app/ml/model',
+      '--add-data', 'app/ml/config;app/ml/config',
       '--add-data', 'alembic;alembic'
     )
-    if (Test-Path (Join-Path $BackendDir 'vision_ai.db')) {
-      $PyInstallerArgs += @('--add-data', 'vision_ai.db;.')
-    }
     $PyInstallerArgs += @(
       '--collect-all', 'app', '--collect-all', 'fastapi', '--collect-all', 'starlette', '--collect-all', 'uvicorn',
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',

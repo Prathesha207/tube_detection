@@ -1,61 +1,49 @@
-# ------------------ duck_analyzer config (1.0.13) ------------------
-# All thresholds live here. Edit these, NOT the service code.
-#
-# PATHS: Do NOT put hardcoded absolute paths here.
-#   - model_path is resolved by the inference services at runtime
-#     (they always check app/ml/model/best.pt first, falling back to
-#     whatever is written here only if that file actually exists).
-#   - roi_path is resolved relative to THIS config file's directory.
-#   - save_local is false (production). No frames are written to disk
-#     by DuckAnalyzer; the inference services handle output themselves.
+# ------------------ duck_analyzer config ------------------
+# All thresholds and paths live here. Edit these, not the code.
 
-# ---- model ----
-model_path: "model/best.pt"   # relative to app/ml/ — resolved at runtime
-
-# ---- hand detection ----
-hand_backend: mediapipe        # mediapipe (default) or yolo
-hand_conf: 0.6                 # MediaPipe min_detection_confidence
+# paths
+# Portable paths relative to app/ml/ (works on every user PC):
+model_path: "model/best.pt"
+# hand / pose model (skips a frame when a hand is present)
+# hand detection
+hand_backend: mediapipe     # default; use "yolo" to fall back to a pose model
+hand_conf: 0.6              # MediaPipe min_detection_confidence
 hand_track_conf: 0.5
-hand_hold_frames: 2
-# ROI: resolved relative to the config file's directory.
-# Delete the file to revert to whole-frame hand detection.
-roi_path: "hand_roi.json"
-
-# ---- local saving (production = OFF) ----
+hand_hold_frames: 2 
+# hand ROI: relative to app/ml/
+roi_path: "model/hand_roi.json"
+# --- local saving (production = false: services manage session dirs portably on any PC) ---
 save_local: false
 thumbnail_dir: null
 annotated_dir: null
 
-# ---- expected scene ----
+# expected scene (expected_duck_count supplied by frontend per request)
 expected_duck_count: null
 duck_class_id: 0
 other_class_id: 1
 
-# ---- detection ----
+# detection
 conf: 0.5
 iou: 0.7
 imgsz: 640
 
-# ---- GPU / precision ----
 device: 0
-use_half: true
+use_half: false      # Set false for GTX 1060 (Pascal lacks Tensor Cores; FP32 is ~20% faster)
 gpu_benchmark: false
-
-# ---- deep re-ID embedder ----
+debug: false
+# deep appearance embedding for re-ID (fixes similar-colour duck id swaps).
+# needs:  pip install transformers torchvision  (torch already installed)
+# off by default; set true to enable. backend: auto|siglip|resnet.
 use_embedder: true
 embedder_backend: resnet
 embed_weight: 0.5
-swap_verify_min_app: 0.5
-
-# ---- diagnostics ----
-debug: false
-
-# ---- anchor / warmup ----
+swap_verify_min_app: 0.5  
+# anchor
 warmup_frames: 20
-warmup_require_exact: false
-warmup_max_frames: 20
+warmup_require_exact: false   # FIX (Issue 1): do not hang 300 frames on a count mismatch
+warmup_max_frames: 20    # FIX (Issue 1): lock quickly even on short anomaly clips
 
-# ---- matching / ID stability ----
+# matching / ID stability
 match_threshold: 0.20
 pos_weight: 0.6
 app_weight: 0.4
@@ -64,20 +52,20 @@ other_id_patience: 8
 provisional_match_dist: 0.10
 row_tolerance_frac: 0.06
 
-# ---- shake stabilization ----
+# shake stabilization
 anomaly_smoothing_frames: 15
 
-# ---- tracking ----
+# tracking (for MOVING ducks)
 tracker: "bytetrack.yaml"
+# frames a duck must be gone before a missing_alert thumbnail fires (once per episode)
 missing_patience: 20
 strict_count: true
 rebind_pos_weight: 0.5
 rebind_app_weight: 0.5
-rebind_threshold: 0.2
+rebind_threshold: 0.2     # lower = easier to reclaim a slot (fewer false MISSING)
 rebind_min_app: 0.35
 rebind_app_weight_crowded: 0.5
 crowd_dist_frac: 0.06
-reappear_patience: 5
 
-# ---- output ----
-jpeg_quality: 80
+# output
+jpeg_quality: 80

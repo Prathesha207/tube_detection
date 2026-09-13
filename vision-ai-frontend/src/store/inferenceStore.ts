@@ -39,6 +39,8 @@ export interface InferenceStats {
   hand_detected: boolean;
   missing_ids: string[];
   added_ids: string[];
+  excess_ids?: string[];
+  excess_count?: number;
   other_ids: string[];
   reasons: string[];
 
@@ -83,6 +85,8 @@ const initialStats: InferenceStats = {
   hand_detected: false,
   missing_ids: [],
   added_ids: [],
+  excess_ids: [],
+  excess_count: 0,
   other_ids: [],
   reasons: [],
   detections: [],

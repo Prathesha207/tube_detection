@@ -59,7 +59,7 @@ else
   echo "No NVIDIA GPU detected; keeping CPU-compatible PyTorch."
 fi
 
-DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -maxdepth 1 -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
+DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
 if [[ -z "$DUCK_ANALYZER_WHEEL" ]]; then
   echo "The bundled duck_analyzer wheel is missing."
   exit 1

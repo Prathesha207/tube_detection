@@ -32,9 +32,12 @@ import cv2
 import concurrent.futures
 
 try:
-    from duck_analyzer import DuckAnalyzer           # installed whl 1.0.13 (primary)
+    from duck_analyzer import DuckAnalyzer           # installed whl (primary)
 except ImportError:
-    DuckAnalyzer = None  # whl not installed — run: pip install app/ml/whl/duck_analyzer-1.0.13-py3-none-any.whl
+    try:
+        from app.ml.debug.duck_analyzer import DuckAnalyzer
+    except ImportError:
+        DuckAnalyzer = None
 
 from app.ml import app_state  # shared GPU mutual-exclusion flag with training_service.py
                                # AND with camera_inference_service.py (video vs camera)
@@ -169,6 +172,7 @@ class VideoInferenceService:
             "expected_ducks": expected_ducks,
             "original_filename": original_filename,
             "analyzer": None,
+            "temp_files_to_cleanup": [],
             "stats": {
                 "session_id": session_id,
                 "original_filename": original_filename,
@@ -305,6 +309,8 @@ class VideoInferenceService:
             "hand_detected": False,
             "missing_ids": [],
             "added_ids": [],
+            "excess_ids": [],
+            "excess_count": 0,
             "other_ids": [],
             "reasons": [],
             "thumbnails": [],
@@ -322,7 +328,8 @@ class VideoInferenceService:
         """
         candidates = [
             os.path.join(ml_dir, "model", "best.pt"),         # canonical
-            os.path.join(ml_dir, "models", "best.pt"),         # legacy
+            os.path.join(ml_dir, "debug", "best.pt"),         # debug folder weights
+            os.path.join(ml_dir, "models", "best.pt"),        # legacy
         ]
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
             candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
@@ -441,10 +448,8 @@ class VideoInferenceService:
 
                 output_path = os.path.join(session_dir, video_filename)
                 results_json_path = os.path.join(session_dir, "results.json")
-                thumbnail_dir = os.path.join(session_dir, "thumbnails")
-                anomaly_frames_dir = os.path.join(session_dir, "anomaly_frames")
-                os.makedirs(thumbnail_dir, exist_ok=True)
-                os.makedirs(anomaly_frames_dir, exist_ok=True)
+                # DuckAnalyzer expects a thumbnail_dir path in config; use system tempdir so no empty folder pollutes session_dir
+                thumbnail_dir = os.path.join(tempfile.gettempdir(), "vision_thumbnails")
 
                 # Load the canonical config (app/ml/config/config.yaml)
                 with open(self.config_path, "r") as f:
@@ -460,11 +465,22 @@ class VideoInferenceService:
                 model_path = self._resolve_model_path(session_cfg.get("model_path"), ml_dir)
                 session_cfg["model_path"] = model_path
 
-                # Resolve roi_path relative to the config file's directory
+                # Resolve roi_path portably (app/ml/model/hand_roi.json, app/ml/hand_roi.json, or config dir)
                 cfg_dir = os.path.dirname(os.path.abspath(self.config_path))
-                roi_raw = session_cfg.get("roi_path", "hand_roi.json")
-                if roi_raw and not os.path.isabs(roi_raw):
-                    session_cfg["roi_path"] = os.path.join(cfg_dir, roi_raw)
+                roi_raw = session_cfg.get("roi_path", "model/hand_roi.json")
+                if roi_raw:
+                    if os.path.isabs(roi_raw) and os.path.exists(roi_raw):
+                        session_cfg["roi_path"] = roi_raw
+                    else:
+                        roi_candidates = [
+                            os.path.join(ml_dir, roi_raw),
+                            os.path.join(ml_dir, "model", "hand_roi.json"),
+                            os.path.join(cfg_dir, roi_raw),
+                            os.path.join(cfg_dir, "hand_roi.json"),
+                            os.path.join(ml_dir, "hand_roi.json"),
+                        ]
+                        resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
+                        session_cfg["roi_path"] = resolved_roi or os.path.join(cfg_dir, roi_raw)
 
                 # Production mode: DuckAnalyzer must NOT write frames to disk
                 # (the service writes the annotated MP4 and thumbnails itself).
@@ -480,8 +496,8 @@ class VideoInferenceService:
                 except Exception:
                     session_cfg["device"] = "cpu"
 
-                # Write resolved config to session dir so DuckAnalyzer can open it
-                session_config_path = os.path.join(session_dir, "config.yaml")
+                # Write resolved config to temporary file so DuckAnalyzer can open it without polluting session_dir
+                session_config_path = os.path.join(tempfile.gettempdir(), f"duck_cfg_{session_id}.yaml")
                 with open(session_config_path, "w") as f:
                     yaml.dump(session_cfg, f)
 
@@ -495,8 +511,6 @@ class VideoInferenceService:
                 session["analyzer"] = analyzer
                 session["stats"]["output_dir"] = session_dir
                 session["stats"]["results_json_path"] = results_json_path
-                session["stats"]["thumbnail_dir"] = thumbnail_dir
-                session["stats"]["anomaly_frames_dir"] = anomaly_frames_dir
 
                 cap = cv2.VideoCapture(temp_file_path)
                 if not cap.isOpened():
@@ -523,7 +537,8 @@ class VideoInferenceService:
                 session["stats"]["total_frames"] = max(1, total_frames)
                 
                 # Setup VideoWriter to save annotated output
-                video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                raw_fps = cap.get(cv2.CAP_PROP_FPS)
+                video_fps = raw_fps if (raw_fps and 10.0 <= raw_fps <= 120.0) else 30.0
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 
@@ -614,6 +629,8 @@ class VideoInferenceService:
 
                     missing_ids  = result.get("missing_ids", [])
                     added_ids    = result.get("added_ids", [])
+                    excess_ids   = result.get("excess_ids", [])
+                    excess_count = result.get("excess_count", len(excess_ids))
                     other_ids    = result.get("other_ids", [])
                     other_count  = result.get("other_count", len(other_ids))
                     hand_detected = bool(result.get("hand_detected", False))
@@ -625,14 +642,6 @@ class VideoInferenceService:
                     # Write the fully annotated frame (drawn by DuckAnalyzer) to the MP4
                     if out_writer:
                         out_writer.write(annotated_frame)
-
-                    # Save anomaly frames for offline review
-                    if is_anomaly_frame:
-                        self._io_executor.submit(
-                            cv2.imwrite,
-                            os.path.join(anomaly_frames_dir, f"anomaly_{frame_idx:05d}.jpg"),
-                            annotated_frame.copy()
-                        )
 
                     # Stream raw (un-annotated) frame to frontend; frontend renders detection boxes itself
                     success, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
@@ -661,15 +670,21 @@ class VideoInferenceService:
                     fps      = frame_idx / elapsed if elapsed > 0 else 0
                     progress = min(100.0, (frame_idx / total_frames * 100)) if total_frames > 0 else 0
 
+                    raw_detected = result.get("detected_duck_count", 0)
+                    if hand_detected or result.get("status") == "HAND":
+                        detected_ducks = session["stats"].get("detected_duck_count") or session.get("expected_duck_count", 18)
+                    else:
+                        detected_ducks = raw_detected
+
                     # Update stats — forward whl output keys directly; keep aliases for frontend compat
                     session["stats"].update({
                         "status":                 result.get("status", session["status"]),
                         "frames_processed":       frame_idx,
                         "frame":                  result.get("frame", frame_idx),
                         "progress":               round(progress, 1),
-                        "fps":                    round(result.get("fps", fps), 1),
-                        "detected_duck_count":    result.get("detected_duck_count", 0),
-                        "expected_duck_count":    result.get("expected_duck_count", 0),
+                        "fps":                    round(fps, 1),
+                        "detected_duck_count":    detected_ducks,
+                        "expected_duck_count":    session.get("expected_duck_count") or result.get("expected_duck_count", 18),
                         "other_count":            other_count,
                         "detected_other_toy_count": other_count,   # alias for older frontend code
                         "anchor_locked":          anchor_locked,
@@ -678,6 +693,8 @@ class VideoInferenceService:
                         "missing_count":          result.get("missing_count", len(missing_ids)),
                         "added_ids":              added_ids,
                         "added_count":            result.get("added_count", len(added_ids)),
+                        "excess_ids":             excess_ids,
+                        "excess_count":           excess_count,
                         "other_ids":              other_ids,
                         "reasons":                reasons,
                         "detections":             result.get("detections", []),
@@ -687,8 +704,9 @@ class VideoInferenceService:
                     })
                     
                     # Yield control back to loop so FastAPI can serve other requests
-                    # Pace the inference to match original video framerate for smooth frontend playback
-                    expected_playback_time = frame_idx / (video_fps if video_fps > 0 else 30.0)
+                    # Pace the inference to match original video framerate for smooth frontend playback (clamped to at least 15 FPS)
+                    pacing_fps = max(15.0, video_fps if video_fps > 0 else 30.0)
+                    expected_playback_time = frame_idx / pacing_fps
                     current_playback_time = time.time() - start_time
                     if expected_playback_time > current_playback_time:
                         await asyncio.sleep(expected_playback_time - current_playback_time)
@@ -736,6 +754,29 @@ class VideoInferenceService:
                 if cap:
                     cap.release()
 
+                # Clean up temporary uploaded/transcoded files
+                temp_files_to_clean = list(session.get("temp_files_to_cleanup", []))
+                if temp_file_path and temp_file_path not in temp_files_to_clean:
+                    temp_files_to_clean.append(temp_file_path)
+
+                for tf in temp_files_to_clean:
+                    try:
+                        if tf and os.path.exists(tf):
+                            # Never delete camera recordings on Desktop
+                            if "Desktop" in tf and "recordings" in tf:
+                                continue
+                            os.remove(tf)
+                            logger.info(f"Cleaned up temporary upload file: {tf}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove temporary file {tf}: {e}")
+
+                # Clean up temporary session config if in temp directory
+                try:
+                    if session_config_path and os.path.exists(session_config_path):
+                        os.remove(session_config_path)
+                except Exception:
+                    pass
+
                 # Release the cross-kind GPU claim exactly once, only if this
                 # task actually acquired it.
                 if claimed_inference_lock:
@@ -752,30 +793,23 @@ class VideoInferenceService:
                     archive_dir = os.path.join(str(desktop), "inference_results", today_str, session_id)
                     os.makedirs(archive_dir, exist_ok=True)
 
-                    # Move annotated video directly to Desktop so no multi-GB duplicate stays in session_dir
-                    if os.path.exists(output_path):
-                        dest_video = os.path.join(archive_dir, video_filename)
-                        shutil.move(output_path, dest_video)
-                        session["stats"]["output_file"] = dest_video
-                        logger.info(f"[ARCHIVE] Moved annotated video to Desktop: {dest_video}")
+                    # If session_dir is already the archive folder on Desktop, no moving/copying is needed
+                    if os.path.abspath(session_dir) != os.path.abspath(archive_dir):
+                        if os.path.exists(output_path):
+                            dest_video = os.path.join(archive_dir, video_filename)
+                            shutil.move(output_path, dest_video)
+                            session["stats"]["output_file"] = dest_video
+                            logger.info(f"[ARCHIVE] Moved annotated video to Desktop: {dest_video}")
 
-                    if os.path.exists(results_json_path):
-                        shutil.copy2(results_json_path, archive_dir)
-                    if os.path.exists(thumbnail_dir) and os.listdir(thumbnail_dir):
-                        dest_thumb = os.path.join(archive_dir, "thumbnails")
-                        if os.path.exists(dest_thumb):
-                            shutil.rmtree(dest_thumb)
-                        shutil.copytree(thumbnail_dir, dest_thumb)
-                    # anomaly_frames: archive if non-empty
-                    if os.path.exists(anomaly_frames_dir) and os.listdir(anomaly_frames_dir):
-                        dest_anom = os.path.join(archive_dir, "anomaly_frames")
-                        if os.path.exists(dest_anom):
-                            shutil.rmtree(dest_anom)
-                        shutil.copytree(anomaly_frames_dir, dest_anom)
+                        if os.path.exists(results_json_path):
+                            shutil.copy2(results_json_path, archive_dir)
 
-                    last_frame_file = os.path.join(session_dir, "last_frame.jpg")
-                    if os.path.exists(last_frame_file):
-                        shutil.copy2(last_frame_file, archive_dir)
+                        last_frame_file = os.path.join(session_dir, "last_frame.jpg")
+                        if os.path.exists(last_frame_file):
+                            shutil.copy2(last_frame_file, archive_dir)
+                    else:
+                        session["stats"]["output_file"] = output_path
+                        logger.info(f"[ARCHIVE] Video and artifacts saved directly on Desktop: {session_dir}")
 
                     session["stats"]["archived_results_dir"] = archive_dir
                     logger.info(f"[ARCHIVE] Successfully finalized inference results in: {archive_dir}")

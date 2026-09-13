@@ -47,6 +47,7 @@ FailedFrames/
 # ML / AI Models
 # =========================
 *.pt
+!app/ml/model/best.pt
 *.pth
 *.onnx
 *.h5

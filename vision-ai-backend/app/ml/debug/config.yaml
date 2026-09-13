@@ -26,8 +26,8 @@ other_class_id: 1
 conf: 0.5
 
 device: 0
-use_half: true       # FP16 on GPU (~2x faster). Set false to disable.
-gpu_benchmark: true  # one-time TFLOP/s print at startup (optional; set false later)
+use_half: false      # Set false for GTX 1060 (Pascal lacks Tensor Cores; FP32 is ~20% faster)
+gpu_benchmark: false
 debug: true
 # deep appearance embedding for re-ID (fixes similar-colour duck id swaps).
 # needs:  pip install transformers torchvision  (torch already installed)

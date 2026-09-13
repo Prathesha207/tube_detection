@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('app/ml/models', 'app/ml/models'), ('app/ml/config.yaml', 'app/ml'), ('alembic', 'alembic'), ('vision_ai.db', '.')]
+datas = [('app/ml/model', 'app/ml/model'), ('app/ml/config', 'app/ml/config'), ('alembic', 'alembic')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('app')

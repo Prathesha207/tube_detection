@@ -3,11 +3,10 @@ echo Starting Vision Monitor Development Servers...
 
 cd /d "%~dp0vision-ai-backend"
 echo Starting Backend...
-where uvicorn >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    start "Vision Monitor Backend" /d "%~dp0vision-ai-backend" cmd /c "uvicorn app.main:app --reload --port 8000"
-) else (
+if exist ".venv\Scripts\activate.bat" (
     start "Vision Monitor Backend" /d "%~dp0vision-ai-backend" cmd /c "call .venv\Scripts\activate.bat && uvicorn app.main:app --reload --port 8000"
+) else (
+    start "Vision Monitor Backend" /d "%~dp0vision-ai-backend" cmd /c "uvicorn app.main:app --reload --port 8000"
 )
 
 cd /d "%~dp0vision-ai-frontend"

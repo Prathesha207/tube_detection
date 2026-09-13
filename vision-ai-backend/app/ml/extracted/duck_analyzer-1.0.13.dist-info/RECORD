@@ -1,8 +1,0 @@
-duck_analyzer/__init__.py,sha256=Ep-0hQHx8HtcOx0PlOxjORTGT8X1y57--LL9TacPxRQ,39
-duck_analyzer/analyzer.py,sha256=Fgs04-m_fVOxfwMk6DPwVth2jWvQF8c4UZ4-e6Febxc,149511
-duck_analyzer/embedder.py,sha256=HRzMdYxthzGB8ZERuaa7GC7GBZIu-dREobEcgttczIY,19178
-duck_analyzer/frame_store.py,sha256=fgUKNRqXs27V2vd9JEt3pGpALvryDu7u-GAa0kYtoOo,16170
-duck_analyzer-1.0.13.dist-info/METADATA,sha256=MQKHcW42NwjUPb4jND9yu5pjFyE7KDJqBN4NrYUhr0A,536
-duck_analyzer-1.0.13.dist-info/WHEEL,sha256=YVMoNqKzERt-wjUZwJ33xBGAwnFl-4cqbYkTtWa4itE,91
-duck_analyzer-1.0.13.dist-info/top_level.txt,sha256=yrVczzylM8v4aNMUSc9XzjncdGNxI6FHptpuG7eE6ec,14
-duck_analyzer-1.0.13.dist-info/RECORD,,

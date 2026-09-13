@@ -26,6 +26,14 @@ export const useVideoUpload = (
 
     const isRec = Boolean(isRecorded);
     const formData = new FormData();
+
+    // When running in Electron / Desktop EXE, the File object has a direct local path (.path)
+    // Passing this allows the backend to read directly from disk with 0 upload overhead and 0 temp files!
+    const localPath = (file as any).path || '';
+    if (localPath && typeof localPath === 'string' && localPath.length > 3 && !isRec) {
+      formData.append('file_path', localPath);
+    }
+
     formData.append('file', file);
     formData.append('expected_ducks', expectedDucks.toString());
     formData.append('is_camera_recording', isRec ? 'true' : 'false');

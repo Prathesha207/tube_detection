@@ -54,22 +54,17 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def setup_db():
-    src_db = resource_path("vision_ai.db")
     dst_db = str(DATABASE_PATH)
 
-    # If DB already exists, do nothing
+    # If DB already exists, preserve it for existing user
     if os.path.exists(dst_db):
-        print("[BOOTSTRAP] Database already exists")
+        print(f"[BOOTSTRAP] Existing user database loaded at {dst_db}")
         return
 
-    # Copy bundled DB if available
-    if os.path.exists(src_db):
-        shutil.copy(src_db, dst_db)
-        print(f"[BOOTSTRAP] Database copied from {src_db}")
-    else:
-        # Create empty DB file
-        open(dst_db, "a").close()
-        print(f"[BOOTSTRAP] Empty database created at {dst_db}")
+    # Fresh install on user's PC: create new clean database file
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    open(dst_db, "a").close()
+    print(f"[BOOTSTRAP] Fresh user database initialized at {dst_db}")
 
 if __name__ == "__main__":
 

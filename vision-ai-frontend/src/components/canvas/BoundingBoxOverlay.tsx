@@ -141,13 +141,13 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                     </span>
                   ) : isProvisional ? (
                     'WARMING_UP'
+                  ) : duck.id.startsWith('unbound') || duck.id.startsWith('extra') ? (
+                    'DUCK'
                   ) : isIndividualAnomaly ? (
                     <span className="font-black text-rose-200">
-                      {duck.id.startsWith('extra') || duck.id.startsWith('unbound')
-                        ? 'EXTRA'
-                        : duck.species === 'Duck'
-                          ? `#${duck.id}`
-                          : duck.species}
+                      {duck.species === 'Duck'
+                        ? (duck.statusEvent === 'added' ? `#${duck.id} EXCESS` : `#${duck.id}`)
+                        : duck.species}
                     </span>
                   ) : (
                     `#${duck.id}`

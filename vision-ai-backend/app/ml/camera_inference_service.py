@@ -32,7 +32,7 @@ try:
     from duck_analyzer import DuckAnalyzer
 except ImportError:
     try:
-        from app.ml.duck_analyzer.analyzer import DuckAnalyzer
+        from app.ml.debug.duck_analyzer import DuckAnalyzer
     except ImportError:
         DuckAnalyzer = None
 
@@ -99,6 +99,7 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
             ml_dir = _ML_DIR
             candidates = [
                 os.path.join(ml_dir, "model", "best.pt"),    # canonical
+                os.path.join(ml_dir, "debug", "best.pt"),    # debug folder weights
                 os.path.join(ml_dir, "models", "best.pt"),   # legacy
             ]
             if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -125,11 +126,22 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
             logger.info(f"[MODEL] Using weights: {resolved_model}")
             cfg["model_path"] = resolved_model
 
-            # Resolve roi_path relative to the config file's directory
+            # Resolve roi_path portably (app/ml/model/hand_roi.json, app/ml/hand_roi.json, or config dir)
             cfg_dir = os.path.dirname(os.path.abspath(_CONFIG_PATH))
-            roi_raw = cfg.get("roi_path", "hand_roi.json")
-            if roi_raw and not os.path.isabs(roi_raw):
-                cfg["roi_path"] = os.path.join(cfg_dir, roi_raw)
+            roi_raw = cfg.get("roi_path", "model/hand_roi.json")
+            if roi_raw:
+                if os.path.isabs(roi_raw) and os.path.exists(roi_raw):
+                    cfg["roi_path"] = roi_raw
+                else:
+                    roi_candidates = [
+                        os.path.join(ml_dir, roi_raw),
+                        os.path.join(ml_dir, "model", "hand_roi.json"),
+                        os.path.join(cfg_dir, roi_raw),
+                        os.path.join(cfg_dir, "hand_roi.json"),
+                        os.path.join(ml_dir, "hand_roi.json"),
+                    ]
+                    resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
+                    cfg["roi_path"] = resolved_roi or os.path.join(cfg_dir, roi_raw)
 
             # Production mode: no disk writes from DuckAnalyzer
             cfg["save_local"] = False
@@ -155,6 +167,11 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
                 yaml.dump(cfg, f)
 
             analyzer = DuckAnalyzer(session_cfg_path, expected_duck_count=expected_duck_count)
+            try:
+                if os.path.exists(session_cfg_path):
+                    os.remove(session_cfg_path)
+            except Exception:
+                pass
         except Exception:
             app_state.exit_inference("camera")
             raise
@@ -219,12 +236,15 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
     session["frames_processed"] += 1
 
     annotated_frame = frame.copy()
+    t_infer_start = time.perf_counter()
     try:
         result = analyzer.process_frame(annotated_frame)
     except Exception as e:
         logger.error(f"Error in DuckAnalyzer for session {session_id}: {e}", exc_info=True)
         return {"session_id": session_id, "status": "error",
                 "reasons": [str(e)], "frames_processed": session["frames_processed"]}, frame
+    infer_latency_ms = (time.perf_counter() - t_infer_start) * 1000
+    infer_fps = round(1000.0 / infer_latency_ms, 1) if infer_latency_ms > 0 else 0.0
 
     if isinstance(result, dict) and result.get("annotated_frame") is not None:
         annotated_frame = result["annotated_frame"]
@@ -236,6 +256,8 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
     anchor_locked = bool(result.get("anchor_locked", getattr(analyzer, "anchor_locked", False)))
     missing_ids   = result.get("missing_ids", [])
     added_ids     = result.get("added_ids", [])
+    excess_ids    = result.get("excess_ids", [])
+    excess_count  = result.get("excess_count", len(excess_ids))
     other_ids     = result.get("other_ids", [])
     detected_others = result.get("other_count", len(other_ids))
     hand_detected = bool(result.get("hand_detected", False))
@@ -255,14 +277,22 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
             if (str(t.get("id")), str(t.get("event"))) not in existing
         )
 
+    raw_detected = result.get("detected_duck_count", 0)
+    if hand_detected or result.get("status") == "HAND":
+        detected_ducks = session.get("last_detected_count") or session["expected_duck_count"]
+    else:
+        detected_ducks = raw_detected
+        session["last_detected_count"] = raw_detected
+
     stats = {
         "session_id":              session_id,
         "original_filename":       session.get("original_filename"),
         "status":                  result.get("status", "processing"),
         "frame":                   result.get("frame", session["frames_processed"]),
         "frames_processed":        session["frames_processed"],
-        "fps":                     round(result.get("fps", 0), 1),
-        "detected_duck_count":     result.get("detected_duck_count", 0),
+        "fps":                     infer_fps if infer_fps > 0 else round(result.get("fps", 0), 1),
+        "latency_ms":              round(infer_latency_ms, 1),
+        "detected_duck_count":     detected_ducks,
         "expected_duck_count":     session["expected_duck_count"],
         "other_count":             detected_others,
         "detected_other_toy_count": detected_others,   # alias for older frontend code
@@ -272,6 +302,8 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
         "missing_count":           result.get("missing_count", len(missing_ids)),
         "added_ids":               added_ids,
         "added_count":             result.get("added_count", len(added_ids)),
+        "excess_ids":              excess_ids,
+        "excess_count":            excess_count,
         "other_ids":               other_ids,
         "reasons":                 reasons,
         "detections":              result.get("detections", []),

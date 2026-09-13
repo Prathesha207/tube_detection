@@ -28,6 +28,8 @@ export function useAnomalyStatus({
     return ducks;
   }, [hasActiveStream, ducks]);
 
+  const lastValidDetectedCountRef = useRef<number>(expectedDucks);
+
   const backendStatus = backendStats.status;
 
   const anomalyStatus: AnomalyStatus = useMemo(() => {
@@ -84,55 +86,66 @@ export function useAnomalyStatus({
 
     const backendReasons: string[] = Array.isArray(backendStats.reasons) ? backendStats.reasons : [];
     const isWarmingUp = backendStatus === 'WARMING' || backendStats.anchor_locked === false;
+    const hasHand = backendStatus === 'HAND' || backendStats.hand_detected === true;
 
-    // The backend count is the count for the current inference frame. Do not
-    // fall back when it is zero: doing so can reuse gallery cards from the
-    // prior frame and make the status disagree with the displayed count.
     const backendDetected = Number(backendStats.detected_duck_count);
-    const detectedCount = Number.isFinite(backendDetected)
-      ? backendDetected
-      : ducks.filter((duck) => duck.species === 'Duck' && duck.statusEvent !== 'missing').length;
     const backendExpected = Number(backendStats.expected_duck_count);
     const expectedFromMl = Number.isFinite(backendExpected) && backendExpected > 0
       ? backendExpected
       : expectedDucks;
+
+    let detectedCount: number;
+    if (hasHand) {
+      // When a hand enters the tray, the ML engine temporarily pauses detection to prevent occlusions.
+      // Retain the last known valid count (or expected count) instead of collapsing to 0.
+      detectedCount = lastValidDetectedCountRef.current || expectedFromMl;
+    } else {
+      detectedCount = Number.isFinite(backendDetected) && backendDetected > 0
+        ? backendDetected
+        : ducks.filter((duck) => duck.species === 'Duck' && duck.statusEvent !== 'missing').length;
+      if (detectedCount > 0) {
+        lastValidDetectedCountRef.current = detectedCount;
+      }
+    }
+
     const backendForeign = Number(backendStats.detected_other_toy_count);
     const foreignCount = Number.isFinite(backendForeign)
       ? backendForeign
       : ducks.filter((duck) => duck.species === 'Unknown' && !duck.provisional).length;
     const missingIds = Array.isArray(backendStats.missing_ids) ? backendStats.missing_ids : [];
-    const hasMissingDuck = !isWarmingUp && (
+    const hasMissingDuck = !isWarmingUp && !hasHand && (
       backendReasons.includes('missing_duck') ||
       missingIds.length > 0 ||
       ducks.some((duck) => !duck.provisional && duck.statusEvent === 'missing')
     );
-    const difference = detectedCount - expectedFromMl;
+    const difference = hasHand ? 0 : (detectedCount - expectedFromMl);
     const foreignSpecies = foreignCount > 0 ? ['Unknown'] : [];
 
     // BUG FIX: Trust backend-smoothed verdicts from analyzer.py (reasons / status)
     // rather than re-computing raw count mismatches per single frame. A momentary
     // single-frame occlusion or detection glitch must not trigger an instant alarm
     // before the backend's smoothing window confirms it.
-    const isTooFew = !isWarmingUp && (backendReasons.includes('too_few_ducks') || backendReasons.includes('too_few'));
-    const isTooMany = !isWarmingUp && (backendReasons.includes('too_many_ducks') || backendReasons.includes('too_many'));
-    const isCountMismatch = !isWarmingUp && (isTooFew || isTooMany);
-    const hasForeign = !isWarmingUp && (backendReasons.includes('other_species_present') || foreignCount > 0);
-    const hasHand = backendStatus === 'HAND' || backendStats.hand_detected === true;
+    const isTooFew = !isWarmingUp && !hasHand && (backendReasons.includes('too_few_ducks') || backendReasons.includes('too_few'));
+    const isTooMany = !isWarmingUp && !hasHand && (backendReasons.includes('too_many_ducks') || backendReasons.includes('too_many'));
+    const isCountMismatch = !isWarmingUp && !hasHand && (isTooFew || isTooMany);
+    const hasForeign = !isWarmingUp && !hasHand && (backendReasons.includes('other_species_present') || foreignCount > 0);
 
     // Backend-aligned anomaly verdict: single source of truth from analyzer.py
-    const isAnomaly = !isWarmingUp && (
-      hasHand ||
+    // NOTE: Hand present is NOT an anomaly (it is a temporary inspection pause).
+    const isAnomaly = !isWarmingUp && !hasHand && (
       backendStatus === 'ANOMALY' ||
       isCountMismatch ||
       hasMissingDuck ||
       hasForeign
     );
     let message = hasHand ? 'HAND DETECTED' : isAnomaly ? 'ANOMALY' : 'NORMAL';
-    let subMessage = `${detectedCount} ducks detected in target area. Count matches expected (${expectedFromMl}).`;
+    let subMessage = hasHand
+      ? 'Hand detected in frame. Evaluation paused until hand is removed.'
+      : `${detectedCount} ducks detected in target area. Count matches expected (${expectedFromMl}).`;
     let type: AnomalyStatus['type'] = 'NONE';
 
     if (hasHand) {
-      type = 'UNKNOWN';
+      type = 'NONE';
       message = 'HAND DETECTED';
       subMessage = 'Hand detected in frame. Evaluation paused until hand is removed.';
     } else if (isAnomaly) {
@@ -145,9 +158,11 @@ export function useAnomalyStatus({
       } else if (isCountMismatch) {
         if (isTooMany || difference > 0) {
           type = 'OVER_COUNT';
-          const addedIds = backendStats.added_ids || [];
-          const added = addedIds.length > 0 ? ` (Added: ${addedIds.join(', ')})` : '';
-          subMessage = `+${Math.max(1, difference)} above expected count (${detectedCount} detected, ${expectedFromMl} expected)${added}`;
+          const excessList: any[] = (Array.isArray(backendStats.excess_ids) && backendStats.excess_ids.length > 0)
+            ? backendStats.excess_ids
+            : (backendStats.added_ids || []);
+          const excessStr = excessList.length > 0 ? ` (Excess: ${excessList.join(', ')})` : '';
+          subMessage = `+${Math.max(1, difference)} above expected count (${detectedCount} detected, ${expectedFromMl} expected)${excessStr}`;
         } else {
           type = 'UNDER_COUNT';
           const missing = missingIds.length > 0 ? ` (Missing: ${missingIds.join(', ')})` : '';
@@ -171,8 +186,8 @@ export function useAnomalyStatus({
       detectedCount,
       expectedCount: expectedFromMl,
       difference,
-      foreignSpecies,
-      foreignCount,
+      foreignSpecies: hasHand ? [] : foreignSpecies,
+      foreignCount: hasHand ? 0 : foreignCount,
     };
   }, [
     hasActiveStream, isRunning, isStarting, expectedDucks, isCameraSource,

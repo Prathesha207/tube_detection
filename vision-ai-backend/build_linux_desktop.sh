@@ -61,7 +61,7 @@ else
   echo "Building with CPU-compatible PyTorch. Set USE_CUDA=1 to force CUDA."
 fi
 
-DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -maxdepth 1 -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
+DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
 [[ -n "$DUCK_ANALYZER_WHEEL" ]] || { echo "The bundled duck_analyzer wheel is missing."; exit 1; }
 python -m pip install "$DUCK_ANALYZER_WHEEL"
 
@@ -72,19 +72,13 @@ fi
 cd "$BACKEND_DIR"
 rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
 
-DB_DATA_ARG=()
-if [[ -f "$BACKEND_DIR/vision_ai.db" ]]; then
-  DB_DATA_ARG=(--add-data "$BACKEND_DIR/vision_ai.db:.")
-fi
-
 pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
   --distpath "$BACKEND_DIR/dist" \
   --workpath "$BACKEND_DIR/build" \
   --specpath "$BACKEND_DIR" \
-  --add-data "$BACKEND_DIR/app/ml/models:app/ml/models" \
-  --add-data "$BACKEND_DIR/app/ml/config.yaml:app/ml" \
+  --add-data "$BACKEND_DIR/app/ml/model:app/ml/model" \
+  --add-data "$BACKEND_DIR/app/ml/config:app/ml/config" \
   --add-data "$BACKEND_DIR/alembic:alembic" \
-  "${DB_DATA_ARG[@]}" \
   --collect-all app \
   --collect-all fastapi \
   --collect-all starlette \

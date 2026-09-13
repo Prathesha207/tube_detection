@@ -11,20 +11,13 @@ import { playWaterDropSound, playDuckQuackSound } from '../utils/audio';
 // caused).
 // ---------------------------------------------------------------------- //
 const isMissingDuck = (d: DuckEntity) => !d.provisional && d.statusEvent === 'missing';
-const isNewDuck = (d: DuckEntity) => !d.provisional && d.statusEvent === 'added';
+const isNewDuck = (d: DuckEntity) => !d.provisional && (d.statusEvent === 'added' || (d as any).excess === true);
 const isOtherDuck = (d: DuckEntity) =>
-  !d.provisional && (d.statusEvent === 'other_present' || (d.species !== 'Duck' && d.species !== 'Hand'));
-// BUG FIX: mlDataMapper.ts sets `isAnomaly: true` straight from the backend
-// on EVERY present duck during a too_few_ducks episode (matching the
-// backend's own this_box_color=RED-for-all-boxes behavior in that case) --
-// and those ducks have no special statusEvent (not missing/added/other).
-// This file previously never read duck.isAnomaly at all, so that whole
-// episode rendered as plain "OK" green cards here while BoundingBoxOverlay
-// correctly showed every box red on the same frame. This catches any duck
-// the backend flagged anomalous that isn't already covered by one of the
-// three named buckets above.
-const isCountAnomalyDuck = (d: DuckEntity) =>
-  !d.provisional && !isMissingDuck(d) && !isNewDuck(d) && !isOtherDuck(d) && d.isAnomaly === true;
+  !d.provisional && (
+    d.statusEvent === 'other_present' ||
+    d.id.startsWith('other-') ||
+    (d.species !== 'Duck' && d.species !== 'Hand')
+  );
 
 interface DetectionCropCanvasProps {
   duck: DuckEntity;
@@ -80,8 +73,6 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
   const isMissing = isMissingDuck(duck);
   const isNew = isNewDuck(duck);
   const isOther = isOtherDuck(duck);
-  const isCountAnomaly = isCountAnomalyDuck(duck);
-  const isAlert = !isProvisional && (isOther || isCountAnomaly);
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -92,7 +83,7 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
       onToggleMissing(duck.id);
       return;
     }
-    if (isAlert) playDuckQuackSound();
+    if (isOther) playDuckQuackSound();
     else playWaterDropSound();
     onSelect(duck.id);
   };
@@ -106,7 +97,7 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
     borderClasses = isSelected
       ? 'border border-cyan-400 bg-cyan-500/25 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
       : 'border border-cyan-500/70 dark:border-cyan-400/70 bg-cyan-500/10 hover:border-cyan-400';
-  } else if (isAlert) {
+  } else if (isOther) {
     borderClasses = isSelected
       ? 'border border-rose-400 bg-rose-500/25 shadow-[0_0_8px_rgba(244,63,94,0.3)]'
       : 'border border-rose-500 bg-rose-500/10 hover:border-rose-400 hover:shadow-xs';
@@ -119,18 +110,17 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
   }
 
   const badgeLabel = isMissing ? 'MISSED'
-    : isOther ? 'ALERT'
+    : isOther ? 'OTHER'
       : duck.statusEvent === 'hand_present' ? 'HAND'
         : isNew ? 'NEW'
-          : isCountAnomaly ? 'ANOMALY'
-            : isProvisional ? 'WARM'
-              : 'OK';
+          : isProvisional ? 'WARM'
+            : 'OK';
 
   const barColorClasses = isMissing
     ? 'bg-[var(--status-warn-bg)] border-[var(--status-warn-border)] text-[var(--status-warn-text)]'
     : isNew
       ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-600 dark:text-cyan-400'
-      : isAlert
+      : isOther
         ? 'bg-[var(--status-anomaly-bg)] border-[var(--status-anomaly-border)] text-[var(--status-anomaly-text)]'
         : isProvisional
           ? 'bg-[var(--status-warn-bg)] border-[var(--status-warn-border)] text-[var(--status-warn-text)]'
@@ -140,7 +130,7 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
     <div
       onClick={handleClick}
       className={`flex flex-col h-full w-full rounded-md overflow-hidden shadow-2xs group cursor-pointer transition-colors min-h-0 select-none relative ${borderClasses}`}
-      title={`#${duck.id} ${duck.species} (${(duck.confidence * 100).toFixed(0)}%) - ${isMissing ? 'MISSING' : isNew ? 'NEW DETECTION' : isAlert ? 'ANOMALY ALERT' : isCountMismatch ? 'COUNT MISMATCH' : 'NORMAL'
+      title={`#${duck.id} ${duck.species} (${(duck.confidence * 100).toFixed(0)}%) - ${isMissing ? 'MISSING' : isNew ? 'NEW DETECTION' : isOther ? 'OTHER SPECIES' : isCountMismatch ? 'COUNT MISMATCH' : 'NORMAL'
         }`}
     >
       <div className="relative w-full flex-1 min-h-0 overflow-hidden bg-stone-950 flex items-center justify-center">
@@ -162,10 +152,11 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
             <Sparkles className="w-2 h-2" />
           </div>
         )}
-        {!isMissing && !isNew && isAlert && (
+        {/* Round badge at top right: ONLY shown for other species / foreign objects */}
+        {!isMissing && !isNew && isOther && (
           <div
             className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-[var(--status-anomaly-text)] text-white flex items-center justify-center shadow-xs text-[8.5px] font-black leading-none ring-1 ring-white/30"
-            title="Alert"
+            title="Other species"
           >
             !
           </div>
@@ -182,26 +173,13 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
         <div className="flex items-center gap-1 min-w-0 flex-nowrap whitespace-nowrap overflow-hidden">
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 flex-none self-center ${isMissing ? 'bg-amber-500 animate-pulse'
             : isNew ? 'bg-cyan-400 animate-pulse'
-              : isAlert ? 'bg-[var(--status-anomaly-text)] shadow-xs animate-pulse ring-1 ring-[var(--status-anomaly-text)]/60'
+              : isOther ? 'bg-[var(--status-anomaly-text)] shadow-xs animate-pulse ring-1 ring-[var(--status-anomaly-text)]/60'
                 : 'bg-[var(--status-normal-text)]'
             }`} />
           <span className={`${textSize} truncate font-mono font-bold leading-none select-none tracking-tight self-center`}>
             #{duck.id.padStart(2, '0')}
           </span>
         </div>
-        {/* {(showBadge || isMissing || isAlert || isNew) && (
-          <span className={`text-[6.5px] px-1 py-0.2 rounded font-black shrink-0 uppercase leading-none self-center ${
-            isMissing
-              ? 'bg-amber-500 text-white shadow-xs'
-              : isNew
-              ? 'bg-cyan-500 text-white shadow-xs'
-              : isAlert
-              ? 'bg-rose-600 text-white shadow-xs'
-              : 'text-[var(--status-normal-text)]'
-          }`}>
-            {badgeLabel}
-          </span>
-        )} */}
       </div>
     </div>
   );
@@ -225,9 +203,6 @@ interface DetectionGalleryProps {
   ducks: DuckEntity[];
   selectedDuckId?: string | null;
   onSelectDuck?: (id: string | null) => void;
-  // Accepted so this component's prop shape matches DetectionDrawer.tsx's
-  // call signature. No add-duck button is rendered -- gallery is display/
-  // triage only, per request.
   onAddDuck?: (species?: DuckEntity['species'], isAnomaly?: boolean) => void;
   onToggleMissingDuck?: (id: string) => void;
   anomalyStatus?: AnomalyStatus;
@@ -242,7 +217,7 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
   anomalyStatus,
   expectedCount,
 }) => {
-  const [filter, setFilter] = useState<'all' | 'missed' | 'alert'>('all');
+  const [filter, setFilter] = useState<'all' | 'missed' | 'others'>('all');
   const isCountMismatch = useMemo(() => {
     return Boolean(
       anomalyStatus?.isAnomaly &&
@@ -255,7 +230,7 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
   // Priority rank for sorting: other species (foreign/unknown) pinned at top,
   // everything else (including missing) stays in stable numeric ID order.
   const rankOf = (d: DuckEntity) => {
-    if (d.statusEvent === 'other_present' || (d.species !== 'Duck' && d.species !== 'Hand')) return 0;
+    if (isOtherDuck(d)) return 0;
     return 1;
   };
 
@@ -278,20 +253,13 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
   }, [ducks]);
 
   // Missed = ducks that disappeared from the scene (excluding provisional warmup)
-  const missedCount = useMemo(() => sortedDucks.filter((d) => !d.provisional && d.statusEvent === 'missing').length, [sortedDucks]);
-  // Alert = unknown/foreign species OR any other duck the backend flagged
-  // anomalous that isn't already a missing/new card (e.g. every present duck
-  // during a too_few_ducks episode). Was previously only the foreign-species
-  // half of this, so the Alert tab and its count silently missed count-
-  // mismatch anomalies that were red on the video overlay.
-  const alertCount = useMemo(
-    () => sortedDucks.filter((d) => isOtherDuck(d) || isCountAnomalyDuck(d)).length,
-    [sortedDucks]
-  );
+  const missedCount = useMemo(() => sortedDucks.filter(isMissingDuck).length, [sortedDucks]);
+  // Others = unknown / foreign species only
+  const othersCount = useMemo(() => sortedDucks.filter(isOtherDuck).length, [sortedDucks]);
 
   const filteredDucks = useMemo(() => {
-    if (filter === 'missed') return sortedDucks.filter((d) => !d.provisional && d.statusEvent === 'missing');
-    if (filter === 'alert') return sortedDucks.filter((d) => isOtherDuck(d) || isCountAnomalyDuck(d));
+    if (filter === 'missed') return sortedDucks.filter(isMissingDuck);
+    if (filter === 'others') return sortedDucks.filter(isOtherDuck);
     // 'all' always includes every duck — missing cards stay in their ID position, just flagged.
     return sortedDucks;
   }, [sortedDucks, filter]);
@@ -321,7 +289,7 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
 
   return (
     <div className="flex flex-col gap-1.5 w-full flex-1 min-h-0 overflow-hidden">
-      {/* Filter Tabs: All / Missed / Alert */}
+      {/* Filter Tabs: All / Missed / Others */}
       <div className="flex items-center justify-between gap-1.5 p-1 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] shrink-0">
         <button
           onClick={() => { playWaterDropSound(); setFilter('all'); }}
@@ -353,19 +321,19 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
         </button>
 
         <button
-          onClick={() => { playWaterDropSound(); setFilter('alert'); }}
-          title="Unknown / foreign species"
-          className={`flex-1 py-1 px-1.5 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${filter === 'alert'
-            ? 'bg-red-600 text-white shadow-xs'
-            : alertCount > 0
-              ? 'text-red-600 bg-red-600/10 font-extrabold'
+          onClick={() => { playWaterDropSound(); setFilter('others'); }}
+          title="Other species / foreign objects"
+          className={`flex-1 py-1 px-1.5 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${filter === 'others'
+            ? 'bg-rose-600 text-white shadow-xs'
+            : othersCount > 0
+              ? 'text-rose-600 bg-rose-600/10 font-extrabold'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
             }`}
         >
-          <span>Alert</span>
-          <span className={`text-[8.5px] px-1.5 py-0.2 rounded-full font-mono ${alertCount > 0 ? 'bg-red-600 text-white' : 'bg-black/20'
+          <span>Others</span>
+          <span className={`text-[8.5px] px-1.5 py-0.2 rounded-full font-mono ${othersCount > 0 ? 'bg-rose-600 text-white' : 'bg-black/20'
             }`}>
-            {alertCount}
+            {othersCount}
           </span>
         </button>
       </div>
@@ -375,7 +343,7 @@ export const DetectionGallery: React.FC<DetectionGalleryProps> = ({
         {filteredDucks.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center p-3 text-center text-[var(--text-secondary)] bg-[var(--bg-card-subtle)] rounded-xl border border-[var(--border-color)]">
             <span className="text-xs font-bold text-[var(--text-primary)]">
-              {filter === 'missed' ? 'No Missing Ducks' : filter === 'alert' ? 'No Unknown Species' : 'No matching ducks'}
+              {filter === 'missed' ? 'No Missing Ducks' : filter === 'others' ? 'No Other Species' : 'No matching ducks'}
             </span>
             <span className="text-[10px] text-[var(--text-secondary)] mt-0.5">Change filter above to view all items</span>
           </div>

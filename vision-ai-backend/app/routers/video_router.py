@@ -17,13 +17,15 @@ import imageio_ffmpeg
 
 @router.post("/upload")
 async def upload_video(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_path: Optional[str] = Form(None),
     expected_ducks: int = Form(18),
     is_camera_recording: bool = Form(False),
     fps: Optional[int] = Form(None),
 ):
     try:
-        is_camera_rec = is_camera_recording or bool(file.filename and file.filename.startswith("recorded_camera"))
+        video_name = file.filename if file else (os.path.basename(file_path) if file_path else "video.mp4")
+        is_camera_rec = is_camera_recording or bool(video_name and video_name.startswith("recorded_camera"))
         if is_camera_rec:
             from app.ml import app_state
             if app_state.get_active_inference_kind() == "camera":
@@ -35,9 +37,9 @@ async def upload_video(
 
         # Determine target framerate from parameter or filename
         target_fps = fps
-        if not target_fps and file.filename:
+        if not target_fps and video_name:
             import re
-            m = re.search(r"_(\d+)fps", file.filename)
+            m = re.search(r"_(\d+)fps", video_name)
             if m:
                 try:
                     target_fps = int(m.group(1))
@@ -49,7 +51,7 @@ async def upload_video(
         # NEW: create_session() now raises RuntimeError while a training job
         # owns the GPU -- surface that as 409 instead of letting it 500.
         try:
-            session_id = ml_inference_service.create_session(expected_ducks, original_filename=file.filename)
+            session_id = ml_inference_service.create_session(expected_ducks, original_filename=video_name)
         except RuntimeError as e:
             return JSONResponse(status_code=409, content={"message": str(e)})
 
@@ -62,9 +64,9 @@ async def upload_video(
         session_dir = os.path.join(base_output_dir, session_id)
         os.makedirs(session_dir, exist_ok=True)
         
-        ext = os.path.splitext(file.filename or "video.mp4")[1] or ".mp4"
-        browser_video_path = os.path.join(session_dir, "source.mp4")
-        
+        ext = os.path.splitext(video_name)[1] or ".mp4"
+        is_direct_local = bool(file_path and os.path.exists(file_path) and os.path.isfile(file_path) and not is_camera_rec)
+
         if is_camera_rec:
             from datetime import datetime
             today = datetime.now().strftime("%Y-%m-%d")
@@ -72,25 +74,37 @@ async def upload_video(
             desktop = get_desktop_dir()
             desktop_rec_dir = desktop / "recordings" / today
             desktop_rec_dir.mkdir(parents=True, exist_ok=True)
-            raw_save_path = str(desktop_rec_dir / file.filename)
+            raw_save_path = str(desktop_rec_dir / video_name)
+            browser_video_path = raw_save_path
+        elif is_direct_local:
+            # DIRECT READING: When running in Desktop EXE / Electron, read directly from the user's hard drive!
+            # Zero HTTP upload transfer and zero temporary file creation on disk.
+            raw_save_path = os.path.abspath(file_path)
+            browser_video_path = raw_save_path
+            logger.info(f"[DESKTOP EXE] Direct reading video from disk with zero temp files: {raw_save_path}")
         else:
-            raw_save_path = os.path.join(session_dir, f"raw_upload{ext}")
+            # Web browser fallback: save uploaded video in system tempdir, auto-cleaned after inference
+            raw_save_path = os.path.join(tempfile.gettempdir(), f"vision_upload_{session_id}{ext}")
+            browser_video_path = os.path.join(tempfile.gettempdir(), f"vision_transcode_{session_id}.mp4")
         
-        try:
-            content = await file.read()
-            if len(content) < 5000:
-                logger.warning(f"[UPLOAD] Video file {file.filename} is too small ({len(content)} bytes)")
-                return JSONResponse(
-                    status_code=400,
-                    content={"message": "Recorded video is empty or too short. Please record for at least 2-3 seconds."}
-                )
-            with open(raw_save_path, "wb") as f:
-                f.write(content)
-            if is_camera_rec:
-                logger.info(f"[RECORD] Saved recorded camera video directly to Desktop: {raw_save_path}")
-        except Exception as e:
-            logger.error(f"Error saving uploaded file: {e}")
-            return JSONResponse(status_code=500, content={"message": "Failed to save uploaded video."})
+        if not is_direct_local:
+            if not file:
+                return JSONResponse(status_code=400, content={"message": "No file uploaded or file path not found on disk."})
+            try:
+                content = await file.read()
+                if len(content) < 5000:
+                    logger.warning(f"[UPLOAD] Video file {video_name} is too small ({len(content)} bytes)")
+                    return JSONResponse(
+                        status_code=400,
+                        content={"message": "Recorded video is empty or too short. Please record for at least 2-3 seconds."}
+                    )
+                with open(raw_save_path, "wb") as f:
+                    f.write(content)
+                if is_camera_rec:
+                    logger.info(f"[RECORD] Saved recorded camera video directly to Desktop: {raw_save_path}")
+            except Exception as e:
+                logger.error(f"Error saving uploaded file: {e}")
+                return JSONResponse(status_code=500, content={"message": "Failed to save uploaded video."})
 
         # 1. First probe if OpenCV can directly read the raw uploaded video (instantaneous, <0.02s)
         # Camera recordings (WebM/MP4 from MediaRecorder) lack container duration/frame-count headers in OpenCV,
@@ -120,7 +134,8 @@ async def upload_video(
                 logger.warning(f"Direct OpenCV probe failed: {e}")
 
         effective_inference_path = raw_save_path
-        browser_video_path = raw_save_path if can_read_directly else os.path.join(session_dir, "source.mp4")
+        if can_read_directly:
+            browser_video_path = raw_save_path
 
         # 2. Only if OpenCV CANNOT open the raw file directly or for camera recordings, fall back to ffmpeg transcode
         if not can_read_directly:
@@ -178,6 +193,11 @@ async def upload_video(
         if session:
             session["inference_video_path"] = effective_inference_path
             session["browser_video_path"] = browser_video_path
+            if not is_camera_rec and not is_direct_local:
+                temp_files = [raw_save_path]
+                if effective_inference_path != raw_save_path:
+                    temp_files.append(effective_inference_path)
+                session["temp_files_to_cleanup"] = temp_files
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
             if frame0_bytes:
@@ -228,11 +248,23 @@ def _ensure_session_exists(session_id: str):
         return session
 
     try:
-        from app.core.app_paths import get_ml_output_dir
+        from app.core.app_paths import get_ml_output_dir, get_desktop_dir
         base_output_dir = str(get_ml_output_dir())
     except Exception:
         base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
     session_dir = os.path.join(base_output_dir, session_id)
+    if not os.path.isdir(session_dir):
+        try:
+            desktop = get_desktop_dir()
+            archive_base = desktop / "inference_results"
+            if archive_base.exists():
+                for date_folder in sorted(archive_base.iterdir(), reverse=True):
+                    cand = date_folder / session_id
+                    if cand.is_dir():
+                        session_dir = str(cand)
+                        break
+        except Exception:
+            pass
     if os.path.isdir(session_dir):
         candidates = []
         for f in os.listdir(session_dir):

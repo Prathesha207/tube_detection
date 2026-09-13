@@ -17,7 +17,7 @@ if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, ya
 fi
 
 if ! "$BACKEND_DIR/.venv/bin/python" -c "import duck_analyzer" 2>/dev/null; then
-  WHL_FILE="$(find "$BACKEND_DIR/app/ml" -maxdepth 1 -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1 || true)"
+  WHL_FILE="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1 || true)"
   if [[ -n "$WHL_FILE" && -f "$WHL_FILE" ]]; then
     "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet "$WHL_FILE" 2>/dev/null || true
   fi

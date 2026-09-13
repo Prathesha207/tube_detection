@@ -19,11 +19,10 @@ APP_PACKAGE    = "app"                  # root Python package folder
 
 # Folders whose contents should be bundled as data (non-Python assets)
 DATA_FOLDERS = [
-    "app/ml/models",
-    "app/ml/config.yaml",
+    "app/ml/model",
+    "app/ml/config",
     "storage",
     "alembic",
-    "SLCD-CODES",
 ]
 # Extra pip packages that PyInstaller commonly misses
 ALWAYS_HIDDEN = [

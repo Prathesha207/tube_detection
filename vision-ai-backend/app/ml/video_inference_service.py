@@ -822,24 +822,25 @@ class VideoInferenceService:
                                             analyzer.embedder.device = "cpu"
                                             if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
                                                 analyzer.embedder.model.to("cpu")
-                                        if hasattr(analyzer.embedder, "_mean"):
-                                            analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
-                                        if hasattr(analyzer.embedder, "_std"):
-                                            analyzer.embedder._std = analyzer.embedder._std.to("cpu")
-                                    except Exception:
-                                        pass
-                                # Retry the frame on CPU immediately
-                                try:
-                                    result = await loop.run_in_executor(
-                                        None, _infer_frame, analyzer, annotated_frame
-                                    )
-                                    consecutive_failures = 0
-                                    recovered = True
-                                    logger.info(f"Session {session_id}: successfully recovered on CPU for frame {frame_idx}")
-                                except Exception as cpu_err:
-                                    logger.error(f"Session {session_id}: CPU fallback retry also failed: {cpu_err}")
-                            except Exception as to_cpu_err:
-                                logger.error(f"Session {session_id}: could not move model to CPU: {to_cpu_err}")
+                                            if hasattr(analyzer.embedder, "_mean"):
+                                                analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
+                                            if hasattr(analyzer.embedder, "_std"):
+                                                analyzer.embedder._std = analyzer.embedder._std.to("cpu")
+                                        except Exception:
+                                            pass
+                                except Exception as to_cpu_err:
+                                    logger.error(f"Session {session_id}: could not move model to CPU: {to_cpu_err}")
+
+                            # Retry the frame on CPU immediately
+                            try:
+                                result = await loop.run_in_executor(
+                                    None, _infer_frame, analyzer, annotated_frame
+                                )
+                                consecutive_failures = 0
+                                recovered = True
+                                logger.info(f"Session {session_id}: successfully recovered on CPU for frame {frame_idx}")
+                            except Exception as cpu_err:
+                                logger.error(f"Session {session_id}: CPU fallback retry also failed: {cpu_err}")
 
                         if consecutive_failures >= max_consecutive_failures:
                             raise RuntimeError(

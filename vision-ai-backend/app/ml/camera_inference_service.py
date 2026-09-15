@@ -425,12 +425,12 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
                 "retrying this frame on CPU."
             )
             
-            # If we hit 5 consecutive GPU failures, downgrade permanently
-            if analyzer._gpu_fail_count >= 5:
-                logger.error(f"Camera session {session_id}: GPU failed 5 times — downgrading session to CPU permanently.")
-                analyzer._device_str = "cpu"
-                analyzer.use_half = False
-                try:
+            try:
+                # If we hit 5 consecutive GPU failures, downgrade permanently
+                if analyzer._gpu_fail_count >= 5:
+                    logger.error(f"Camera session {session_id}: GPU failed 5 times — downgrading session to CPU permanently.")
+                    analyzer._device_str = "cpu"
+                    analyzer.use_half = False
                     if hasattr(analyzer, "model") and analyzer.model is not None:
                         analyzer.model.to("cpu")
                     if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
@@ -444,10 +444,12 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
                                 analyzer.embedder._std = analyzer.embedder._std.to("cpu")
                         except Exception:
                             pass
+                
+                # Retry this frame on CPU
                 with torch.inference_mode():
                     result = analyzer.process_frame(annotated_frame)
                 recovered = True
-                logger.info(f"Camera session {session_id}: successfully recovered on CPU.")
+                logger.info(f"Camera session {session_id}: successfully recovered on CPU for this frame.")
             except Exception as cpu_err:
                 logger.error(f"Camera session {session_id}: CPU fallback retry also failed: {cpu_err}")
 

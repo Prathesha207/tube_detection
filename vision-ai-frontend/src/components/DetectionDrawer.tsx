@@ -68,6 +68,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   const anomalyDucks = ducks.filter((d) => d.isAnomaly && !d.provisional);
   const hasDetections = ducks.length > 0;
   const isHand = anomalyStatus.message === 'HAND DETECTED';
+  const isWarming = anomalyStatus.message === 'WARMING';
 
   if (!isOpen) {
     return (
@@ -81,7 +82,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
       >
         <ChevronLeft className="w-4 h-4 text-[var(--accent-pond)] group-hover:-translate-x-0.5 transition-transform" />
         <span className="[writing-mode:vertical-lr] tracking-wider uppercase text-[10px] text-[var(--text-secondary)]">
-          {isEmptyState ? 'Standby' : isHand ? 'Hand Present' : anomalyStatus.isAnomaly ? 'Anomaly Alert' : 'Detection Details'}
+          {isEmptyState ? 'Standby' : isHand ? 'Hand Present' : isWarming ? 'Warming Up' : anomalyStatus.isAnomaly ? 'Anomaly Alert' : 'Detection Details'}
         </span>
       </button>
     );
@@ -94,17 +95,21 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
     ? 'text-[var(--text-secondary)]'
     : isHand
       ? 'text-amber-500 dark:text-amber-400 font-bold'
-      : anomalyStatus.isAnomaly
-        ? 'text-[var(--status-anomaly-text)]'
-        : 'text-emerald-600 dark:text-emerald-400 font-bold';
+      : isWarming
+        ? 'text-amber-500 dark:text-amber-400 font-bold'
+        : anomalyStatus.isAnomaly
+          ? 'text-[var(--status-anomaly-text)]'
+          : 'text-emerald-600 dark:text-emerald-400 font-bold';
 
   const headerIconClass = isEmptyState
     ? 'text-[var(--accent-pond)]'
     : isHand
       ? 'text-amber-500 dark:text-amber-400'
-      : anomalyStatus.isAnomaly
-        ? 'text-[var(--status-anomaly-text)]'
-        : 'text-emerald-600 dark:text-emerald-400';
+      : isWarming
+        ? 'text-amber-500 dark:text-amber-400'
+        : anomalyStatus.isAnomaly
+          ? 'text-[var(--status-anomaly-text)]'
+          : 'text-emerald-600 dark:text-emerald-400';
 
   return (
     <aside className="w-full lg:w-[21rem] xl:w-[23rem] 2xl:w-[25rem] h-auto lg:h-full flex-shrink-0 flex flex-col md:flex-row lg:flex-col gap-3 min-h-0 overflow-y-auto invisible-scrollbar items-stretch">
@@ -127,13 +132,13 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
               <ShieldCheck className={`w-4 h-4 ${headerIconClass}`} />
             )}
             <span className={`font-semibold text-xs tracking-wider uppercase ${headerColorClass}`}>
-              {isEmptyState ? 'Inference Details' : isHand ? 'Hand Present' : anomalyStatus.isAnomaly ? 'Anomaly Detection' : 'Normal'}
+              {isEmptyState ? 'Inference Details' : isHand ? 'Hand Present' : isWarming ? 'Warming Up' : anomalyStatus.isAnomaly ? 'Anomaly Detection' : 'Normal'}
             </span>
           </div>
           <div className="flex items-center gap-2">
             {!isEmptyState && (
-              <Badge variant={isHand ? 'warning' : anomalyStatus.isAnomaly ? 'anomaly' : 'normal'}>
-                {isHand ? 'Hand Present' : anomalyStatus.isAnomaly ? 'Anomaly' : 'Normal'}
+              <Badge variant={isHand ? 'warning' : isWarming ? 'warning' : anomalyStatus.isAnomaly ? 'anomaly' : 'normal'}>
+                {isHand ? 'Hand Present' : isWarming ? 'Warming' : anomalyStatus.isAnomaly ? 'Anomaly' : 'Normal'}
               </Badge>
             )}
             <IconButton
@@ -207,6 +212,11 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     <span>
                       {Math.abs(anomalyStatus.difference)} {anomalyStatus.difference > 0 ? 'above' : 'below'} expected count
                     </span>
+                  </div>
+                ) : isWarming ? (
+                  <div className="mt-1 text-xs font-semibold text-amber-500 dark:text-amber-400 flex items-center gap-1.5 animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                    <span>Warming up — acquiring target lock...</span>
                   </div>
                 ) : (
                   <div className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">

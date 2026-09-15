@@ -40,8 +40,6 @@ DATABASE_PATH = DATA_DIR / "vision_ai.db"
 # during import. This keeps the database writable on Windows and Linux.
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{DATABASE_PATH.as_posix()}")
 
-from app.main import app
-
 def resource_path(relative_path):
     """
     Get absolute path for PyInstaller
@@ -52,6 +50,13 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
+
+# Set TORCH_HOME to local bundled cache so offline client PCs don't attempt network downloads
+_bundled_torch_hub = resource_path(os.path.join("app", "ml", "torch_hub"))
+if os.path.exists(_bundled_torch_hub):
+    os.environ["TORCH_HOME"] = _bundled_torch_hub
+
+from app.main import app
 
 def setup_db():
     dst_db = str(DATABASE_PATH)

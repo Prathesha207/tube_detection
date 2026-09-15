@@ -570,10 +570,10 @@ export default function App() {
     inference.setUptimeSeconds(0);
     sourceStateCache.current.video = null;
     setLastVideoFrame(undefined);
-    // Stop backend session if one is active
+    // Stop and clear backend session if one is active
     if (video.videoSessionId) {
       try {
-        await fetch(`${getApiBaseUrl()}/video/stop/${video.videoSessionId}`, { method: 'POST' });
+        await fetch(`${getApiBaseUrl()}/video/clear/${video.videoSessionId}`, { method: 'POST' });
       } catch { }
     }
     // Clear the video pipeline state so the upload card shows again

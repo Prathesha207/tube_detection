@@ -154,7 +154,13 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
         }
       }
 
+      const expectedCount = Number(data.expected_duck_count || _fallbackExpected || 18);
+      const detectedDuckCount = Number(data.detected_duck_count || 0);
+
+      const rawNumId = Number(rawId);
+      const isExcessById = isDuck && !isNaN(rawNumId) && expectedCount > 0 && rawNumId > expectedCount;
       const isExcessDetection = !isProvisional && (
+        isExcessById ||
         d.excess === true ||
         d.status === 'excess' ||
         excessIds.includes(displayId) ||
@@ -166,35 +172,28 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
         eventStatus = 'missing';
       } else if (isExcessDetection) {
         eventStatus = 'added';
-      } else if (!isProvisional && (addedIds.includes(displayId) || addedIds.includes(Number(displayId)) || d.status === 'added')) {
-        eventStatus = 'added';
-      } else if (thumbObj?.event === 'confirmed' || thumbObj?.event === 'added') {
+      } else if (thumbObj?.event === 'confirmed') {
         eventStatus = 'confirmed';
       } else if (thumbObj?.event === 'other_present' || isOther) {
         eventStatus = 'other_present';
       }
 
-      // Check if backend ML explicitly flagged this detection
-      const backendIsAnomaly =
-        typeof d.isAnomaly === 'boolean'
-          ? d.isAnomaly
-          : typeof d.is_anomaly === 'boolean'
-            ? d.is_anomaly
-            : undefined;
+      // User requirement:
+      // 1. "18 detected · expected 20": When expected count is higher (expectedCount > detectedDuckCount),
+      //    turn ALL boxes to RED!
+      // 2. "18 detected · expected 17": When expected count is less (expectedCount < detectedDuckCount),
+      //    turn ONLY the excess duck to RED (normal ducks 1..expectedCount remain GREEN).
+      // 3. Other species (foreign toy): ONLY the other species is RED, and normal ducks stay GREEN.
+      // 4. Missing ducks: missing duck is displayed as anomaly (AMBER/DASHED).
+      const isUnderCount = !isWarmingUp && (
+        expectedCount > detectedDuckCount && detectedDuckCount > 0
+      );
 
-      // Pure ML pass-through: an item is an anomaly ONLY if the ML backend identified it as such:
-      // - Foreign object (isOther: species other_toys / non-duck)
-      // - Missing duck reported by ML (isMissingDetection)
-      // - Confirmed added / excess duck reported by ML (isExcessDetection / addedIds / status 'added' / status 'excess')
-      // - Explicit anomaly flag from backend ML
       const isAnomaly = !isProvisional && (
-        (backendIsAnomaly !== undefined ? backendIsAnomaly : false) ||
-        isExcessDetection ||
+        isUnderCount ||
         isOther ||
-        isMissingDetection ||
-        addedIds.includes(displayId) ||
-        addedIds.includes(Number(displayId)) ||
-        d.status === 'added'
+        isExcessDetection ||
+        isMissingDetection
       );
 
       incomingDucks.push({

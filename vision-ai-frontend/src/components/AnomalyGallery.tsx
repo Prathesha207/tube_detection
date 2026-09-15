@@ -31,11 +31,12 @@ interface DetectionCropCanvasProps {
 const DetectionCropCanvas = React.memo(({ duck }: DetectionCropCanvasProps) => {
   if (duck.thumbnail) {
     return (
-      <div className="w-full h-full flex items-center justify-center overflow-hidden bg-black/10">
+      <div className="w-full h-full flex items-center justify-center overflow-hidden bg-stone-800">
         <img
           src={duck.thumbnail}
           alt={`Crop ${duck.id}`}
           className="w-full h-full object-cover"
+          style={{ filter: 'brightness(1.08) contrast(1.05)' }}
         />
       </div>
     );
@@ -133,7 +134,7 @@ const DuckGalleryCard: React.FC<DuckGalleryCardProps> = memo(({
       title={`#${duck.id} ${duck.species} (${(duck.confidence * 100).toFixed(0)}%) - ${isMissing ? 'MISSING' : isNew ? 'NEW DETECTION' : isOther ? 'OTHER SPECIES' : isCountMismatch ? 'COUNT MISMATCH' : 'NORMAL'
         }`}
     >
-      <div className="relative w-full flex-1 min-h-0 overflow-hidden bg-stone-950 flex items-center justify-center">
+      <div className="relative w-full flex-1 min-h-0 overflow-hidden bg-stone-800 flex items-center justify-center">
         <DetectionCropCanvas duck={duck} />
 
         {isMissing && (

@@ -5,18 +5,21 @@ def stream_camera(camera_url):
 
     cap = cv2.VideoCapture(camera_url)
 
-    while True:
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
 
-        success, frame = cap.read()
+            ok, buffer = cv2.imencode(".jpg", frame)
+            if not ok:
+                continue
 
-        if not success:
-            break
+            frame_bytes = buffer.tobytes()
 
-        _, buffer = cv2.imencode(".jpg", frame)
-
-        frame_bytes = buffer.tobytes()
-
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-        )
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+            )
+    finally:
+        cap.release()

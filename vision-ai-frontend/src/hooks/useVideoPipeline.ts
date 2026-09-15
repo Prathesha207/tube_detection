@@ -48,7 +48,7 @@ export function useVideoPipeline({
 
   const clearCameraRecording = () => {
     if (cameraRecordSessionId) {
-      fetch(`${getApiBaseUrl()}/video/stop/${cameraRecordSessionId}`, { method: 'POST' }).catch(() => {});
+      fetch(`${getApiBaseUrl()}/video/clear/${cameraRecordSessionId}`, { method: 'POST' }).catch(() => {});
     }
     setCameraRecordSessionId(null);
     setCameraRecordUrl(undefined);
@@ -141,9 +141,9 @@ export function useVideoPipeline({
   };
 
   const handleClearVideo = () => {
-    // If backend video was running, signal stop
+    // If backend video was running, signal stop and clear temporary session files
     if (videoSessionId) {
-      fetch(`${getApiBaseUrl()}/video/stop/${videoSessionId}`, { method: 'POST' })
+      fetch(`${getApiBaseUrl()}/video/clear/${videoSessionId}`, { method: 'POST' })
         .catch(() => {});
     }
     setCustomVideoUrl(undefined);
@@ -164,7 +164,15 @@ export function useVideoPipeline({
     setDucks([]); 
     useInferenceStore.getState().resetStats(); 
     resetBBoxCache();
-    const sid = customSessionId || videoSessionId;
+    let sid = customSessionId || videoSessionId;
+    if (!sid && (customVideoUrl || localPreviewUrl)) {
+      const urlToTest = customVideoUrl || localPreviewUrl || '';
+      const match = urlToTest.match(/\/video\/(?:stream|last_frame|raw)\/([a-zA-Z0-9_-]+)/);
+      if (match && match[1]) {
+        sid = match[1];
+        setVideoSessionId(sid);
+      }
+    }
     if (!sid) {
       showToast('error', 'Upload a video before starting inference.');
       return;

@@ -595,21 +595,37 @@ class DuckAnalyzer:
     #  GPU helpers                                                        #
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _resolve_device(device):
+    def _is_cuda_operational():
+        try:
+            import torch
+            if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+                return False
+            t = torch.zeros((1, 1), device="cuda:0")
+            _ = t + 1.0
+            del t
+            torch.cuda.synchronize()
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _resolve_device(cls, device):
         """Turn a config device value (0, "0", "cuda:0", "cpu", None) into a
         torch/ultralytics device string, falling back to CPU if CUDA is
-        unavailable."""
+        unavailable or cannot run kernels."""
+        if not cls._is_cuda_operational():
+            return "cpu"
         if device is None:
-            return "cuda:0" if torch.cuda.is_available() else "cpu"
+            return "cuda:0"
         s = str(device).strip().lower()
         if s in ("cpu",):
             return "cpu"
         if s.startswith("cuda"):
-            return s if torch.cuda.is_available() else "cpu"
+            return s
         # bare integer like 0 / "0" -> cuda:0
         if s.isdigit():
-            return f"cuda:{s}" if torch.cuda.is_available() else "cpu"
-        return "cuda:0" if torch.cuda.is_available() else "cpu"
+            return f"cuda:{s}"
+        return "cuda:0"
 
     def _log_model_device(self, label):
         try:
@@ -626,7 +642,16 @@ class DuckAnalyzer:
                                imgsz=self.imgsz, verbose=False)
             print("[GPU] duck model warmup inference OK")
         except Exception as e:
-            print(f"[GPU] [WARN] duck model warmup failed (non-fatal): {e}")
+            if self._device_str != "cpu":
+                print(f"[GPU] [WARN] duck model warmup on {self._device_str} failed: {e}. Falling back to CPU.")
+                self._device_str = "cpu"
+                self.use_half = False
+                try:
+                    self.model.to("cpu")
+                except Exception:
+                    pass
+            else:
+                print(f"[GPU] [WARN] duck model warmup failed (non-fatal): {e}")
 
     def set_expected_duck_count(self, n):
         self.expected = int(n)
@@ -752,17 +777,21 @@ class DuckAnalyzer:
         h, w = frame.shape[:2]
 
         if self._mp_hands is not None:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = self._mp_hands.process(rgb)
-            if res.multi_hand_landmarks:
-                for hand_lms in res.multi_hand_landmarks:
-                    xs = [lm.x for lm in hand_lms.landmark]
-                    ys = [lm.y for lm in hand_lms.landmark]
-                    x1 = max(0, int(min(xs) * w)); y1 = max(0, int(min(ys) * h))
-                    x2 = min(w, int(max(xs) * w)); y2 = min(h, int(max(ys) * h))
-                    if x2 > x1 and y2 > y1:
-                        boxes.append((x1, y1, x2 - x1, y2 - y1))
-            return boxes
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = self._mp_hands.process(rgb)
+                if res.multi_hand_landmarks:
+                    for hand_lms in res.multi_hand_landmarks:
+                        xs = [lm.x for lm in hand_lms.landmark]
+                        ys = [lm.y for lm in hand_lms.landmark]
+                        x1 = max(0, int(min(xs) * w)); y1 = max(0, int(min(ys) * h))
+                        x2 = min(w, int(max(xs) * w)); y2 = min(h, int(max(ys) * h))
+                        if x2 > x1 and y2 > y1:
+                            boxes.append((x1, y1, x2 - x1, y2 - y1))
+                return boxes
+            except Exception as mp_err:
+                print(f"[HAND] [WARN] mediapipe process failed (non-fatal): {mp_err}")
+                return []
 
         if self.hand_model is not None:
             r = self.hand_model.predict(source=frame, conf=self.hand_conf,
@@ -921,10 +950,26 @@ class DuckAnalyzer:
         #   3. hand-in-tray test  -> a hand only counts if it OVERLAPS the tray;
         #                            if NO tray is found this frame, fall back to
         #                            "any hand anywhere skips" (safe for QC).
-        r = self.model.track(source=frame, conf=self.conf, iou=self.iou,
-                             imgsz=self.imgsz, persist=True,
-                             tracker=self.tracker, device=self._device_str,
-                             verbose=False)[0]
+        try:
+            r = self.model.track(source=frame, conf=self.conf, iou=self.iou,
+                                 imgsz=self.imgsz, persist=True,
+                                 tracker=self.tracker, device=self._device_str,
+                                 verbose=False)[0]
+        except Exception as track_err:
+            if self._device_str != "cpu":
+                print(f"[GPU] Tracker execution on {self._device_str} failed: {track_err}. Falling back to CPU.")
+                self._device_str = "cpu"
+                self.use_half = False
+                try:
+                    self.model.to("cpu")
+                except Exception:
+                    pass
+                r = self.model.track(source=frame, conf=self.conf, iou=self.iou,
+                                     imgsz=self.imgsz, persist=True,
+                                     tracker=self.tracker, device="cpu",
+                                     verbose=False)[0]
+            else:
+                raise
         dets = self._collect_tracked(r)
 
         # tray box for BOTH the hand gate and the object gate below

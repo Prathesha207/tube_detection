@@ -39,10 +39,35 @@ except ImportError:
     except ImportError:
         DuckAnalyzer = None
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 from app.ml import app_state  # shared GPU mutual-exclusion flag with training_service.py
                                # AND with camera_inference_service.py (video vs camera)
+from app.core.logger import setup_logger
 
-logger = logging.getLogger("video-inference")
+logger = setup_logger("video-inference")
+
+
+def is_cuda_operational() -> bool:
+    """Verifies that PyTorch can actually execute CUDA kernels on GPU 0,
+    rather than just checking if the driver library is queryable."""
+    if torch is None:
+        return False
+    try:
+        if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+            return False
+        # Test real tensor allocation and computation on cuda:0
+        t = torch.zeros((1, 1), device="cuda:0")
+        _ = t + 1.0
+        del t
+        torch.cuda.synchronize()
+        return True
+    except Exception as e:
+        logger.warning(f"CUDA is present but kernel execution failed ({e}); falling back to CPU.")
+        return False
 
 class VideoInferenceService:
     def __init__(self):
@@ -122,9 +147,17 @@ class VideoInferenceService:
             analyzer._hand_hold = 0
             if hasattr(analyzer, "_prov_other") and isinstance(analyzer._prov_other, dict):
                 analyzer._prov_other.clear()
+            analyzer._last_tray_box = None
+            analyzer._tray_gone = 0
+            analyzer._hand_hold = 0
             try:
-                if hasattr(analyzer.model, "predictor"):
-                    analyzer.model.predictor = None
+                if hasattr(analyzer, "model") and hasattr(analyzer.model, "predictor") and analyzer.model.predictor:
+                    if hasattr(analyzer.model.predictor, "trackers") and analyzer.model.predictor.trackers:
+                        for t in analyzer.model.predictor.trackers:
+                            if hasattr(t, "reset"):
+                                t.reset()
+                    else:
+                        analyzer.model.predictor = None
             except Exception:
                 pass
 
@@ -238,7 +271,7 @@ class VideoInferenceService:
         except asyncio.CancelledError:
             logger.info(f"Stream disconnected for session {session_id}")
 
-    def stop_session(self, session_id: str):
+    async def stop_session(self, session_id: str, timeout: float = 2.5):
         session = self.sessions.get(session_id)
         if session:
             session["stop_event"].set()
@@ -252,6 +285,28 @@ class VideoInferenceService:
                         f.write(last_bytes)
                 except Exception as e:
                     logger.warning(f"Could not write last_frame.jpg on stop_session: {e}")
+
+            # Gracefully wait for the active frame processing task to exit and release _gpu_lock
+            start_wait = time.time()
+            while session.get("is_task_active", False) and (time.time() - start_wait < timeout):
+                await asyncio.sleep(0.05)
+
+    def clear_session_files(self, session_id: str):
+        """Explicitly called only when the user clears/resets the video session."""
+        session = self.sessions.get(session_id)
+        if not session:
+            return
+        temp_files = list(session.get("temp_files_to_cleanup", []))
+        for tf in temp_files:
+            try:
+                if tf and os.path.exists(tf):
+                    if "Desktop" in tf and "recordings" in tf:
+                        continue
+                    os.remove(tf)
+                    logger.info(f"Cleaned up temporary upload file on session clear: {tf}")
+            except Exception as e:
+                logger.warning(f"Could not remove temporary file {tf}: {e}")
+        session["temp_files_to_cleanup"] = []
 
     def start_run(self, session_id: str) -> int:
         """Invalidate any previous task and prepare an entirely fresh stream."""
@@ -416,6 +471,7 @@ class VideoInferenceService:
 
             session["status"] = "processing"
             session["stats"]["status"] = "processing"
+            session["is_task_active"] = True
             
             logger.info(f"Starting inference for session {session_id}")
             
@@ -437,6 +493,7 @@ class VideoInferenceService:
                     base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
                 session_dir = os.path.join(base_output_dir, session_id)
                 os.makedirs(session_dir, exist_ok=True)
+                session["session_dir"] = session_dir
 
                 # Annotated video output filename
                 orig_name = original_filename or session.get("original_filename")
@@ -465,22 +522,27 @@ class VideoInferenceService:
                 model_path = self._resolve_model_path(session_cfg.get("model_path"), ml_dir)
                 session_cfg["model_path"] = model_path
 
-                # Resolve roi_path portably (app/ml/model/hand_roi.json, app/ml/hand_roi.json, or config dir)
+                # Resolve roi_path portably without triggering uvicorn WatchFiles reloads
+                # When DuckAnalyzer writes runtime hand ROI calibration via open(self.roi_path, "w"),
+                # it must write outside the app/ tree to avoid restarting the server process mid-inference.
                 cfg_dir = os.path.dirname(os.path.abspath(self.config_path))
                 roi_raw = session_cfg.get("roi_path", "model/hand_roi.json")
-                if roi_raw:
-                    if os.path.isabs(roi_raw) and os.path.exists(roi_raw):
-                        session_cfg["roi_path"] = roi_raw
-                    else:
-                        roi_candidates = [
-                            os.path.join(ml_dir, roi_raw),
-                            os.path.join(ml_dir, "model", "hand_roi.json"),
-                            os.path.join(cfg_dir, roi_raw),
-                            os.path.join(cfg_dir, "hand_roi.json"),
-                            os.path.join(ml_dir, "hand_roi.json"),
-                        ]
-                        resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
-                        session_cfg["roi_path"] = resolved_roi or os.path.join(cfg_dir, roi_raw)
+                roi_candidates = [
+                    os.path.join(ml_dir, roi_raw),
+                    os.path.join(ml_dir, "model", "hand_roi.json"),
+                    os.path.join(cfg_dir, roi_raw),
+                    os.path.join(cfg_dir, "hand_roi.json"),
+                    os.path.join(ml_dir, "hand_roi.json"),
+                ]
+                resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
+                runtime_roi_path = os.path.join(tempfile.gettempdir(), "vision_hand_roi.json")
+                if resolved_roi and not os.path.exists(runtime_roi_path):
+                    try:
+                        import shutil
+                        shutil.copy2(resolved_roi, runtime_roi_path)
+                    except Exception:
+                        pass
+                session_cfg["roi_path"] = runtime_roi_path if os.path.exists(runtime_roi_path) else (resolved_roi or runtime_roi_path)
 
                 # Production mode: DuckAnalyzer must NOT write frames to disk
                 # (the service writes the annotated MP4 and thumbnails itself).
@@ -489,12 +551,8 @@ class VideoInferenceService:
                 # Thumbnails per-session go into the session folder
                 session_cfg["thumbnail_dir"] = thumbnail_dir
 
-                # Dynamic device selection: GPU if CUDA available, else CPU
-                try:
-                    import torch
-                    session_cfg["device"] = 0 if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
-                except Exception:
-                    session_cfg["device"] = "cpu"
+                # Dynamic device selection: verified operational GPU if CUDA works, else CPU
+                session_cfg["device"] = 0 if is_cuda_operational() else "cpu"
 
                 # Write resolved config to temporary file so DuckAnalyzer can open it without polluting session_dir
                 session_config_path = os.path.join(tempfile.gettempdir(), f"duck_cfg_{session_id}.yaml")
@@ -549,61 +607,92 @@ class VideoInferenceService:
                 frame_idx = 0
                 start_time = time.time()
                 consecutive_failures = 0
-                max_consecutive_failures = 10  # abort the session if the model is failing on every frame, not just a bad one
+                # Abort only after 30 consecutive frame failures (not 10) so transient CUDA
+                # errors on fresh user installs (driver warm-up, OOM spikes) don't kill the
+                # session prematurely. The per-frame CPU fallback will already have fired by
+                # then if the GPU was recoverable, so 30 is still a reasonable hard ceiling.
+                max_consecutive_failures = 30
+                # Hard ceiling on a single frame's inference time. Without this, a frame that
+                # trips an infinite loop / native-library stall inside DuckAnalyzer.process_frame
+                # (no exception raised, no return -- just stuck) hangs the whole session forever
+                # with no log line and no way to recover. A timeout raises asyncio.TimeoutError,
+                # which flows into the SAME frame_err handling below (CPU fallback, consecutive
+                # failure counting, eventual clean abort) instead of freezing indefinitely.
+                per_frame_timeout_s = 20.0
 
                 while not session["stop_event"].is_set() and self._is_current_run(session_id, run_seq):
-                    # Hard upper bound: never run inference beyond total_frames
-                    if total_frames > 0 and frame_idx >= total_frames:
-                        logger.info(f"Session {session_id}: reached expected total_frames ({total_frames}). Ending inference.")
-                        session["status"] = "completed"
-                        session["stats"]["status"] = "completed"
-                        session["stats"]["progress"] = 100.0
-                        break
-
                     ret, frame = cap.read()
                     # A Stop -> Start may replace this task while OpenCV was
                     # decoding. Never publish even one old frame/stat update
                     # into the replacement run.
                     if not self._is_current_run(session_id, run_seq):
                         break
-                    if not ret:
-                        # End of video
-                        logger.info(f"Session {session_id}: reached EOF at frame {frame_idx} (expected: {total_frames})")
-                        if frame_idx > 0:
-                            session["stats"]["total_frames"] = frame_idx
-                        session["status"] = "completed"
-                        session["stats"]["status"] = "completed"
-                        session["stats"]["progress"] = 100.0
-                        break
+
+                    if not ret or frame is None:
+                        # Transient decode drop recovery: try reading up to 5 times
+                        # before declaring genuine EOF to prevent premature cutoff (e.g. at frame 716)
+                        recovered_frame = None
+                        for _ in range(5):
+                            r_retry, f_retry = cap.read()
+                            if r_retry and f_retry is not None:
+                                recovered_frame = f_retry
+                                break
+                        if recovered_frame is not None:
+                            frame = recovered_frame
+                            ret = True
+                        else:
+                            # Genuine End of Video
+                            logger.info(f"Session {session_id}: reached true EOF at frame {frame_idx} (estimated total: {total_frames})")
+                            if frame_idx > 0:
+                                session["stats"]["total_frames"] = frame_idx
+                            session["status"] = "completed"
+                            session["stats"]["status"] = "completed"
+                            session["stats"]["progress"] = 100.0
+                            break
                     
                     height, width = frame.shape[:2]
                     frame_idx += 1
-                    
-                    # Run the heavy ML inference in a background thread so the
-                    # FastAPI event loop stays free to serve the MJPEG stream.
+                    if frame_idx > session["stats"]["total_frames"]:
+                        session["stats"]["total_frames"] = frame_idx
+
+                    if frame_idx % 50 == 0:
+                        logger.info(
+                            f"Session {session_id}: heartbeat -- frame {frame_idx}/{total_frames} "
+                            f"({round(time.time() - start_time, 1)}s elapsed)"
+                        )
+
+                    # Run heavy ML inference in a background thread with torch.inference_mode()
+                    # so no computation graphs or gradient memory leak across long video runs
                     loop = asyncio.get_running_loop()
                     annotated_frame = frame.copy()
+
+                    def _infer_frame(analyzer_inst, frame_in):
+                        if torch is not None:
+                            with torch.inference_mode():
+                                return analyzer_inst.process_frame(frame_in)
+                        return analyzer_inst.process_frame(frame_in)
+
                     try:
-                        result = await loop.run_in_executor(
-                            None, analyzer.process_frame, annotated_frame
+                        result = await asyncio.wait_for(
+                            loop.run_in_executor(None, _infer_frame, analyzer, annotated_frame),
+                            timeout=per_frame_timeout_s,
                         )
                         if not self._is_current_run(session_id, run_seq):
                             break
                         consecutive_failures = 0
-                    except Exception as frame_err:
-                        # One bad frame (corrupt decode, transient CUDA hiccup,
-                        # etc.) should not kill an otherwise-healthy session --
-                        # log it, skip it, keep the un-annotated frame in the
-                        # stream/output so timing stays in sync, and only bail
-                        # out if failures are piling up.
+                    except asyncio.TimeoutError as frame_err:
+                        # Escalate to the same failure path as an ordinary exception below --
+                        # turns an otherwise invisible freeze into a logged, handled failure.
                         consecutive_failures += 1
                         logger.warning(
-                            f"Session {session_id}: frame {frame_idx} inference failed "
-                            f"({consecutive_failures}/{max_consecutive_failures}): {frame_err}"
+                            f"Session {session_id}: frame {frame_idx} inference TIMED OUT after "
+                            f"{per_frame_timeout_s}s ({consecutive_failures}/{max_consecutive_failures}) "
+                            "-- treating as a failed frame; processing continues with the next frame."
                         )
                         if consecutive_failures >= max_consecutive_failures:
                             raise RuntimeError(
-                                f"Aborting session: {max_consecutive_failures} consecutive frame failures"
+                                f"Aborting session: {max_consecutive_failures} consecutive frame failures "
+                                f"(last: timeout after {per_frame_timeout_s}s on frame {frame_idx})"
                             ) from frame_err
                         result = {
                             "status": session["stats"].get("status", "processing"),
@@ -615,6 +704,72 @@ class VideoInferenceService:
                             "detections": [], "thumbnails": [],
                             "annotated_frame": annotated_frame,
                         }
+                    except Exception as frame_err:
+                        # One bad frame (corrupt decode, transient CUDA hiccup,
+                        # etc.) should not kill an otherwise-healthy session --
+                        # log it, skip it, keep the un-annotated frame in the
+                        # stream/output so timing stays in sync, and only bail
+                        # out if failures are piling up.
+                        consecutive_failures += 1
+                        logger.warning(
+                            f"Session {session_id}: frame {frame_idx} inference failed "
+                            f"({consecutive_failures}/{max_consecutive_failures}) "
+                            f"[{type(frame_err).__name__}]: {frame_err}",
+                            exc_info=True
+                        )
+
+                        # Emergency CPU fallback if GPU was active and failed
+                        recovered = False
+                        if hasattr(analyzer, "_device_str") and str(analyzer._device_str).lower() != "cpu":
+                            logger.warning(
+                                f"Session {session_id}: GPU inference error detected ({frame_err}); "
+                                "attempting emergency fallback to CPU..."
+                            )
+                            analyzer._device_str = "cpu"
+                            analyzer.use_half = False
+                            try:
+                                if hasattr(analyzer, "model") and analyzer.model is not None:
+                                    analyzer.model.to("cpu")
+                                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                                    try:
+                                        analyzer.embedder.device = "cpu"
+                                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                                            analyzer.embedder.model.to("cpu")
+                                        if hasattr(analyzer.embedder, "_mean"):
+                                            analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
+                                        if hasattr(analyzer.embedder, "_std"):
+                                            analyzer.embedder._std = analyzer.embedder._std.to("cpu")
+                                    except Exception:
+                                        pass
+                                # Retry the frame on CPU immediately
+                                try:
+                                    result = await loop.run_in_executor(
+                                        None, _infer_frame, analyzer, annotated_frame
+                                    )
+                                    consecutive_failures = 0
+                                    recovered = True
+                                    logger.info(f"Session {session_id}: successfully recovered on CPU for frame {frame_idx}")
+                                except Exception as cpu_err:
+                                    logger.error(f"Session {session_id}: CPU fallback retry also failed: {cpu_err}")
+                            except Exception as to_cpu_err:
+                                logger.error(f"Session {session_id}: could not move model to CPU: {to_cpu_err}")
+
+                        if consecutive_failures >= max_consecutive_failures:
+                            raise RuntimeError(
+                                f"Aborting session: {max_consecutive_failures} consecutive frame failures (last error: {frame_err})"
+                            ) from frame_err
+
+                        if not recovered:
+                            result = {
+                                "status": session["stats"].get("status", "processing"),
+                                "detected_duck_count": session["stats"].get("detected_duck_count", 0),
+                                "expected_duck_count": session["stats"].get("expected_duck_count", 0),
+                                "other_count": session["stats"].get("other_count", 0),
+                                "hand_detected": False,
+                                "missing_ids": [], "added_ids": [], "other_ids": [],
+                                "detections": [], "thumbnails": [],
+                                "annotated_frame": annotated_frame,
+                            }
                     
                     # Extract the annotated frame from analyzer result if present
                     if not self._is_current_run(session_id, run_seq):
@@ -648,6 +803,12 @@ class VideoInferenceService:
                     if success:
                         frame_bytes = buffer.tobytes()
                         session["last_frame_bytes"] = frame_bytes
+                        if frame_idx % 30 == 1 and session_dir and os.path.isdir(session_dir):
+                            try:
+                                with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf:
+                                    lf.write(frame_bytes)
+                            except Exception:
+                                pass
                         try:
                             if session["queue"].full():
                                 session["queue"].get_nowait()
@@ -668,7 +829,12 @@ class VideoInferenceService:
 
                     elapsed  = time.time() - start_time
                     fps      = frame_idx / elapsed if elapsed > 0 else 0
-                    progress = min(100.0, (frame_idx / total_frames * 100)) if total_frames > 0 else 0
+                    if total_frames > 0 and frame_idx < total_frames:
+                        progress = min(99.0, round((frame_idx / total_frames) * 100, 1))
+                    elif total_frames > 0 and frame_idx >= total_frames:
+                        progress = 99.0
+                    else:
+                        progress = 0.0
 
                     raw_detected = result.get("detected_duck_count", 0)
                     if hand_detected or result.get("status") == "HAND":
@@ -713,7 +879,14 @@ class VideoInferenceService:
                     else:
                         await asyncio.sleep(0.001)
 
-                if session["stop_event"].is_set() and self._is_current_run(session_id, run_seq):
+                if session.get("status") == "completed" and self._is_current_run(session_id, run_seq):
+                    # True EOF was reached; maintain completed status even if a stop event was set afterwards
+                    session["stats"]["status"] = "completed"
+                    session["stats"]["progress"] = 100.0
+                    if frame_idx > 0:
+                        session["stats"]["total_frames"] = frame_idx
+                        session["stats"]["frames_processed"] = frame_idx
+                elif session["stop_event"].is_set() and self._is_current_run(session_id, run_seq):
                     session["status"] = "stopped"
                     session["stats"]["status"] = "stopped"
                 elif self._is_current_run(session_id, run_seq):
@@ -747,28 +920,22 @@ class VideoInferenceService:
                 logger.error(f"Inference error in session {session_id}: {e}", exc_info=True)
                 session["status"] = "error"
                 session["stats"]["status"] = "error"
-                session["stats"]["reasons"] = [str(e)]
+                cause = getattr(e, "__cause__", None)
+                if cause and str(cause) not in str(e):
+                    session["stats"]["reasons"] = [f"{e} (Root cause: {cause})"]
+                else:
+                    session["stats"]["reasons"] = [str(e)]
             finally:
+                session["is_task_active"] = False
                 if out_writer:
                     out_writer.release()
                 if cap:
                     cap.release()
 
-                # Clean up temporary uploaded/transcoded files
-                temp_files_to_clean = list(session.get("temp_files_to_cleanup", []))
-                if temp_file_path and temp_file_path not in temp_files_to_clean:
-                    temp_files_to_clean.append(temp_file_path)
-
-                for tf in temp_files_to_clean:
-                    try:
-                        if tf and os.path.exists(tf):
-                            # Never delete camera recordings on Desktop
-                            if "Desktop" in tf and "recordings" in tf:
-                                continue
-                            os.remove(tf)
-                            logger.info(f"Cleaned up temporary upload file: {tf}")
-                    except Exception as e:
-                        logger.warning(f"Could not remove temporary file {tf}: {e}")
+                # NOTE: Source video files (temp_file_path / inference_video_path)
+                # are preserved so the user can pause, stop, and restart inference
+                # at any time without receiving "Video file not found".
+                # Cleanup is only performed when the session is explicitly cleared.
 
                 # Clean up temporary session config if in temp directory
                 try:
@@ -797,9 +964,9 @@ class VideoInferenceService:
                     if os.path.abspath(session_dir) != os.path.abspath(archive_dir):
                         if os.path.exists(output_path):
                             dest_video = os.path.join(archive_dir, video_filename)
-                            shutil.move(output_path, dest_video)
+                            shutil.copy2(output_path, dest_video)
                             session["stats"]["output_file"] = dest_video
-                            logger.info(f"[ARCHIVE] Moved annotated video to Desktop: {dest_video}")
+                            logger.info(f"[ARCHIVE] Saved annotated video copy to Desktop: {dest_video}")
 
                         if os.path.exists(results_json_path):
                             shutil.copy2(results_json_path, archive_dir)
@@ -827,12 +994,17 @@ class VideoInferenceService:
         if not session:
             return
             
-        # Send graceful termination to the stream generator
+        # Send graceful termination to the stream generator.
+        # Drain a slot if full to make room, then always put None sentinel in sequence.
         try:
-            if not session["queue"].full():
-                session["queue"].put_nowait(None)
-            else:
-                session["queue"].get_nowait()
+            q = session.get("queue")
+            if q is not None:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except (asyncio.QueueEmpty, ValueError):
+                        pass
+                q.put_nowait(None)
         except Exception:
             pass
 
@@ -843,3 +1015,9 @@ video_inference_service = VideoInferenceService()
 ml_inference_service = video_inference_service
 
 
+def _set_shared_analyzer(analyzer) -> None:
+    """Called by main.py lifespan startup to inject the pre-loaded DuckAnalyzer.
+    This avoids a second model load when the first inference session starts —
+    the model is already in GPU memory from startup."""
+    video_inference_service._shared_analyzer = analyzer
+    logger.info("[STARTUP] Pre-loaded DuckAnalyzer injected into VideoInferenceService.")

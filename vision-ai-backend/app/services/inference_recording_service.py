@@ -216,7 +216,7 @@ class InferenceRecorder:
         else:
             base_name = now.strftime("session_%Y-%m-%d_%H-%M-%S-%f_PENDING") + f"_{_sid_safe}{_ext}"
 
-        base_path = str(get_desktop_dir() / "recordings")
+        base_path = str(get_desktop_dir() / "inference_results")
 
         self._root      = os.path.join(base_path, date_folder)
         self._base_name = base_name

@@ -109,10 +109,10 @@ async def stop_stream():
 
 # ==================== MJPEG Stream ====================
 
-@router.get("/stream")
-@router.get("/stream/live")
-@router.get("/inference/stream/live")
 @router.get("/inference/stream/{session_id}")
+@router.get("/inference/stream/live")
+@router.get("/stream/live")
+@router.get("/stream")
 async def stream(request: Request, session_id: Optional[str] = None):
     """MJPEG HTTP stream — connect to this after stream/start or on canvas load.
     Subscribes a client frame queue, yields frames until client disconnects,

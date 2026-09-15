@@ -12,8 +12,61 @@ logger = logging.getLogger("video-router")
 router = APIRouter()
 
 import os
+import json
+import time
 import subprocess
 import imageio_ffmpeg
+
+def _get_registry_path() -> str:
+    try:
+        from app.core.app_paths import get_ml_output_dir
+        base_output_dir = str(get_ml_output_dir())
+    except Exception:
+        base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
+    os.makedirs(base_output_dir, exist_ok=True)
+    return os.path.join(base_output_dir, "sessions_registry.json")
+
+def _save_session_meta(
+    session_id: str,
+    session_dir: str,
+    video_file: str,
+    original_filename: str,
+    expected_ducks: int,
+    browser_video_path: Optional[str] = None,
+    raw_save_path: Optional[str] = None
+):
+    meta = {
+        "session_id": session_id,
+        "session_dir": session_dir,
+        "video_file": video_file,
+        "inference_video_path": video_file,
+        "browser_video_path": browser_video_path or video_file,
+        "raw_save_path": raw_save_path or video_file,
+        "original_filename": original_filename,
+        "expected_duck_count": expected_ducks,
+        "updated_at": time.time(),
+    }
+    try:
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, "session_meta.json"), "w") as mf:
+            json.dump(meta, mf, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not save session_meta.json for {session_id}: {e}")
+
+    try:
+        reg_file = _get_registry_path()
+        registry = {}
+        if os.path.exists(reg_file):
+            try:
+                with open(reg_file, "r") as rf:
+                    registry = json.load(rf)
+            except Exception:
+                registry = {}
+        registry[session_id] = meta
+        with open(reg_file, "w") as rf:
+            json.dump(registry, rf, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not update sessions_registry.json for {session_id}: {e}")
 
 @router.post("/upload")
 async def upload_video(
@@ -78,10 +131,10 @@ async def upload_video(
             browser_video_path = raw_save_path
         elif is_direct_local:
             # DIRECT READING: When running in Desktop EXE / Electron, read directly from the user's hard drive!
-            # Zero HTTP upload transfer and zero temporary file creation on disk.
             raw_save_path = os.path.abspath(file_path)
-            browser_video_path = raw_save_path
-            logger.info(f"[DESKTOP EXE] Direct reading video from disk with zero temp files: {raw_save_path}")
+            # Ensure browser_video_path is unique in tempdir so transcoding (if needed) never attempts in-place edit
+            browser_video_path = os.path.join(tempfile.gettempdir(), f"vision_transcode_{session_id}.mp4")
+            logger.info(f"[DESKTOP EXE] Direct reading video from disk: {raw_save_path}")
         else:
             # Web browser fallback: save uploaded video in system tempdir, auto-cleaned after inference
             raw_save_path = os.path.join(tempfile.gettempdir(), f"vision_upload_{session_id}{ext}")
@@ -107,15 +160,13 @@ async def upload_video(
                 return JSONResponse(status_code=500, content={"message": "Failed to save uploaded video."})
 
         # 1. First probe if OpenCV can directly read the raw uploaded video (instantaneous, <0.02s)
-        # Camera recordings (WebM/MP4 from MediaRecorder) lack container duration/frame-count headers in OpenCV,
-        # so they MUST be transcoded with constant framerate to ensure exact frame counts and progress calculation.
         can_read_directly = False
         frame0_bytes = None
         frame_width = None
         frame_height = None
         is_webm = raw_save_path.lower().endswith(".webm")
 
-        if not is_camera_rec and not is_webm:
+        if not is_webm:
             try:
                 import cv2
                 cap = cv2.VideoCapture(raw_save_path)
@@ -191,6 +242,7 @@ async def upload_video(
         # Save path in session state so it's ready to start when user commands
         session = ml_inference_service.sessions.get(session_id)
         if session:
+            session["session_dir"] = session_dir
             session["inference_video_path"] = effective_inference_path
             session["browser_video_path"] = browser_video_path
             if not is_camera_rec and not is_direct_local:
@@ -210,6 +262,17 @@ async def upload_video(
             if frame_width and frame_height:
                 session["stats"]["video_width"] = frame_width
                 session["stats"]["video_height"] = frame_height
+
+        # Persist session metadata into session_dir and global registry
+        _save_session_meta(
+            session_id=session_id,
+            session_dir=session_dir,
+            video_file=effective_inference_path,
+            original_filename=video_name,
+            expected_ducks=expected_ducks,
+            browser_video_path=browser_video_path,
+            raw_save_path=raw_save_path,
+        )
         
         return {
             "session_id": session_id,
@@ -228,7 +291,7 @@ from fastapi.responses import FileResponse
 @router.get("/raw/{session_id}")
 async def get_raw_video(session_id: str):
     try:
-        session = ml_inference_service.sessions.get(session_id)
+        session = _ensure_session_exists(session_id)
         if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         video_save_path = session.get("browser_video_path") or session.get("inference_video_path")
@@ -243,9 +306,14 @@ async def get_raw_video(session_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get raw video: {e}")
 
 def _ensure_session_exists(session_id: str):
+    if not session_id or str(session_id).strip() in ("", "undefined", "null"):
+        return None
+
     session = ml_inference_service.sessions.get(session_id)
     if session:
-        return session
+        v_path = session.get("inference_video_path")
+        if v_path and os.path.exists(v_path):
+            return session
 
     try:
         from app.core.app_paths import get_ml_output_dir, get_desktop_dir
@@ -265,49 +333,134 @@ def _ensure_session_exists(session_id: str):
                         break
         except Exception:
             pass
-    if os.path.isdir(session_dir):
-        candidates = []
+
+    video_file = None
+    orig_fn = "video.mp4"
+    expected_ducks = 18
+    browser_video_path = None
+
+    # 1. Check session_meta.json in session_dir
+    meta_path = os.path.join(session_dir, "session_meta.json")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as mf:
+                meta = json.load(mf)
+                cand_v = meta.get("video_file") or meta.get("inference_video_path") or meta.get("raw_save_path")
+                if cand_v and os.path.exists(cand_v):
+                    video_file = cand_v
+                orig_fn = meta.get("original_filename") or orig_fn
+                expected_ducks = int(meta.get("expected_duck_count") or expected_ducks)
+                browser_video_path = meta.get("browser_video_path")
+        except Exception as e:
+            logger.warning(f"Error reading session_meta.json for {session_id}: {e}")
+
+    # 2. Check central sessions_registry.json
+    if not video_file or not os.path.exists(video_file):
+        try:
+            reg_file = _get_registry_path()
+            if os.path.exists(reg_file):
+                with open(reg_file, "r") as rf:
+                    registry = json.load(rf)
+                    if session_id in registry:
+                        reg_meta = registry[session_id]
+                        cand_v = reg_meta.get("video_file") or reg_meta.get("inference_video_path") or reg_meta.get("raw_save_path")
+                        if cand_v and os.path.exists(cand_v):
+                            video_file = cand_v
+                        orig_fn = reg_meta.get("original_filename") or orig_fn
+                        expected_ducks = int(reg_meta.get("expected_duck_count") or expected_ducks)
+                        browser_video_path = reg_meta.get("browser_video_path")
+        except Exception as e:
+            logger.warning(f"Error reading sessions_registry.json for {session_id}: {e}")
+
+    # 3. Check temp directory for uploaded or transcoded video matching session_id
+    if not video_file or not os.path.exists(video_file):
+        temp_dir = tempfile.gettempdir()
+        temp_candidates = []
+        try:
+            for fn in os.listdir(temp_dir):
+                if session_id in fn and fn.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")):
+                    full_p = os.path.join(temp_dir, fn)
+                    if os.path.isfile(full_p) and os.path.getsize(full_p) > 1000:
+                        temp_candidates.append(full_p)
+        except Exception:
+            pass
+        if temp_candidates:
+            temp_candidates.sort(key=lambda p: 0 if "transcode" in p else 1)
+            video_file = temp_candidates[0]
+
+    # 4. Check candidate video files inside session_dir
+    if (not video_file or not os.path.exists(video_file)) and os.path.isdir(session_dir):
+        dir_candidates = []
         for f in os.listdir(session_dir):
-            if f.lower().startswith("annotated_"):
-                continue
             if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v")):
-                candidates.append(os.path.join(session_dir, f))
-        
-        candidates.sort(key=lambda p: (0 if "raw_upload" in os.path.basename(p) else 1 if "source" in os.path.basename(p) else 2))
-        
-        if candidates and os.path.exists(candidates[0]):
-            video_file = candidates[0]
-            orig_fn = os.path.basename(video_file)
-            expected_ducks = 18
-            results_file = os.path.join(session_dir, "results.json")
-            if os.path.exists(results_file):
+                full_p = os.path.join(session_dir, f)
+                if os.path.isfile(full_p) and os.path.getsize(full_p) > 1000:
+                    dir_candidates.append(full_p)
+        if dir_candidates:
+            dir_candidates.sort(key=lambda p: 1 if os.path.basename(p).lower().startswith("annotated_") else 0)
+            video_file = dir_candidates[0]
+
+    # 5. Check Desktop recordings for camera recordings
+    if not video_file or not os.path.exists(video_file):
+        try:
+            from app.core.app_paths import get_desktop_dir
+            desktop = get_desktop_dir()
+            rec_base = desktop / "recordings"
+            if rec_base.exists():
+                for date_folder in sorted(rec_base.iterdir(), reverse=True):
+                    if date_folder.is_dir():
+                        for rec_file in sorted(date_folder.iterdir(), reverse=True):
+                            if rec_file.is_file() and session_id in rec_file.name:
+                                video_file = str(rec_file)
+                                break
+                    if video_file:
+                        break
+        except Exception:
+            pass
+
+    # 6. Check results.json in session_dir
+    results_file = os.path.join(session_dir, "results.json")
+    if os.path.exists(results_file):
+        try:
+            with open(results_file, "r") as rf:
+                old_stats = json.load(rf)
+                orig_fn = old_stats.get("original_filename") or orig_fn
+                expected_ducks = int(old_stats.get("expected_duck_count", expected_ducks))
+                out_f = old_stats.get("output_file")
+                if (not video_file or not os.path.exists(video_file)) and out_f and os.path.exists(out_f):
+                    video_file = out_f
+        except Exception:
+            pass
+
+    # Resurrect session if valid video file found
+    if video_file and os.path.exists(video_file):
+        if not browser_video_path or not os.path.exists(browser_video_path):
+            browser_video_path = video_file
+
+        ml_inference_service.create_session(expected_ducks=expected_ducks, original_filename=orig_fn, session_id=session_id)
+        session = ml_inference_service.sessions.get(session_id)
+        if session:
+            session["session_dir"] = session_dir
+            session["video_path"] = video_file
+            session["inference_video_path"] = video_file
+            session["browser_video_path"] = browser_video_path
+            session["temp_file"] = video_file
+            session["status"] = "ready"
+            session["stats"]["status"] = "ready"
+            session["stats"]["expected_duck_count"] = expected_ducks
+            session["stats"]["original_filename"] = orig_fn
+
+            last_frame_path = os.path.join(session_dir, "last_frame.jpg")
+            if os.path.exists(last_frame_path):
                 try:
-                    import json
-                    with open(results_file, "r") as rf:
-                        old_stats = json.load(rf)
-                        orig_fn = old_stats.get("original_filename") or orig_fn
-                        expected_ducks = int(old_stats.get("expected_duck_count", 18))
+                    with open(last_frame_path, "rb") as lf:
+                        session["last_frame_bytes"] = lf.read()
                 except Exception:
                     pass
+            logger.info(f"Restored session {session_id} from disk: {video_file}")
+            return session
 
-            ml_inference_service.create_session(expected_ducks=expected_ducks, original_filename=orig_fn, session_id=session_id)
-            session = ml_inference_service.sessions.get(session_id)
-            if session:
-                session["inference_video_path"] = video_file
-                session["browser_video_path"] = video_file
-                session["temp_file"] = video_file
-                session["status"] = "ready"
-                session["stats"]["status"] = "ready"
-                last_frame_path = os.path.join(session_dir, "last_frame.jpg")
-                if os.path.exists(last_frame_path):
-                    try:
-                        with open(last_frame_path, "rb") as lf:
-                            session["last_frame_bytes"] = lf.read()
-                    except Exception:
-                        pass
-                logger.info(f"Restored session {session_id} from disk: {video_file}")
-                return session
-
+    logger.warning(f"Could not restore session {session_id}: no valid video file found.")
     return None
 
 @router.post("/start/{session_id}")
@@ -317,6 +470,10 @@ async def start_video_inference(session_id: str, background_tasks: BackgroundTas
         if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
+        # If an active background task is currently running, await stopping it so _gpu_lock is released
+        if session.get("is_task_active", False):
+            await ml_inference_service.stop_session(session_id, timeout=2.5)
+
         video_save_path = session.get("inference_video_path")
         if not video_save_path or not os.path.exists(video_save_path):
             return JSONResponse(status_code=400, content={"message": "Video file not found for session."})
@@ -385,11 +542,12 @@ async def get_status(session_id: str):
 @router.post("/stop/{session_id}")
 async def stop_video(session_id: str):
     try:
+        _ensure_session_exists(session_id)
         status = ml_inference_service.get_status(session_id)
         if not status:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
-        ml_inference_service.stop_session(session_id)
+        await ml_inference_service.stop_session(session_id)
         return {"message": "Stop signal sent."}
     except HTTPException:
         raise
@@ -397,6 +555,22 @@ async def stop_video(session_id: str):
         logger.error(f"[API ERROR] POST /video/stop/{session_id}: {e}", exc_info=True)
         realtime_log_service.add_log("video", "CRASH", f"Stop video inference failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to stop video inference: {e}")
+
+@router.post("/clear/{session_id}")
+async def clear_video_session(session_id: str):
+    try:
+        session = _ensure_session_exists(session_id)
+        if session:
+            await ml_inference_service.stop_session(session_id, timeout=2.5)
+            ml_inference_service.clear_session_files(session_id)
+            ml_inference_service.sessions.pop(session_id, None)
+        return {"status": "cleared", "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /video/clear/{session_id}: {e}", exc_info=True)
+        realtime_log_service.add_log("video", "CRASH", f"Clear video session failed: {e}", "error")
+        raise HTTPException(status_code=500, detail=f"Failed to clear video session: {e}")
 
 @router.get("/last_frame/{session_id}")
 async def get_last_frame(session_id: str):
@@ -514,8 +688,8 @@ class ExpectedCountUpdate(BaseModel):
 @router.post("/update_expected/{session_id}")
 async def update_expected(session_id: str, payload: ExpectedCountUpdate):
     try:
-        status = ml_inference_service.get_status(session_id)
-        if not status:
+        session = _ensure_session_exists(session_id)
+        if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
         ml_inference_service.update_expected_ducks(session_id, payload.count)
@@ -552,7 +726,18 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
 
         session = ml_inference_service.sessions.get(session_id)
         if session:
+            try:
+                from app.core.app_paths import get_ml_output_dir
+                base_output_dir = str(get_ml_output_dir())
+            except Exception:
+                base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
+            session_dir = os.path.join(base_output_dir, session_id)
+            os.makedirs(session_dir, exist_ok=True)
+
+            session["session_dir"] = session_dir
             session["inference_video_path"] = video_path
+            session["browser_video_path"] = video_path
+            session["temp_file"] = video_path
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
             try:
@@ -567,6 +752,16 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                 cap.release()
             except Exception as e:
                 logger.warning(f"Could not pre-extract first frame from {video_path}: {e}")
+
+            _save_session_meta(
+                session_id=session_id,
+                session_dir=session_dir,
+                video_file=video_path,
+                original_filename=filename,
+                expected_ducks=data.expected_ducks,
+                browser_video_path=video_path,
+                raw_save_path=video_path,
+            )
 
         return {"session_id": session_id, "status": "ready", "video_name": filename}
     except HTTPException:

@@ -30,6 +30,8 @@ def create_camera(db: Session, data: CameraCreate):
             camera.exposure = None
             camera.gain = None
             camera.focus = None
+            camera.auto_exposure = True
+            camera.auto_focus = True
         else:
             camera.auto_exposure = False
             camera.auto_focus = False

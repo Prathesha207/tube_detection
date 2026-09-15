@@ -190,6 +190,21 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
   }, [backendStats?.status, isRunning]);
 
+  // When window is un-minimized or focused, immediately refresh stream URL to display latest frame
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setStreamCacheBuster(Date.now());
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
+  }, []);
+
   const effectiveVideoUrl = useMemo(() => {
     if (!hasActiveVideo) return undefined;
     if (videoSessionId) {

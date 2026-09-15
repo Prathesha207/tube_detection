@@ -45,14 +45,12 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
         .map((duck, idx) => {
           const isProvisional = duck.provisional;
           const isMissing = duck.statusEvent === 'missing';
-          // Only actual anomalous ducks (foreign species, added/excess toy, or explicit anomaly flag) are red
+          // Only actual anomalous ducks (foreign species, excess duck, under-count frame, or explicit anomaly flag) are red
           const isIndividualAnomaly =
             !isProvisional &&
             !isMissing &&
             (duck.isAnomaly ||
-              duck.species !== 'Duck' ||
-              duck.statusEvent === 'added' ||
-              duck.statusEvent === 'other_present');
+              duck.species !== 'Duck');
           const isSelected = duck.id === selectedDuckId;
 
           // Default: Normal detected duck (Clean Emerald Green)
@@ -141,13 +139,13 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                     </span>
                   ) : isProvisional ? (
                     'WARMING_UP'
-                  ) : duck.id.startsWith('unbound') || duck.id.startsWith('extra') ? (
-                    'DUCK'
                   ) : isIndividualAnomaly ? (
                     <span className="font-black text-rose-200">
                       {duck.species === 'Duck'
-                        ? (duck.statusEvent === 'added' ? `#${duck.id} EXCESS` : `#${duck.id}`)
-                        : duck.species}
+                        ? (duck.statusEvent === 'added' || duck.id.startsWith('unbound') || duck.id.startsWith('extra')
+                            ? (duck.id.startsWith('unbound') || duck.id.startsWith('extra') ? 'EXCESS DUCK' : `#${duck.id} EXCESS`)
+                            : `#${duck.id}`)
+                        : (duck.species || 'Unknown')}
                     </span>
                   ) : (
                     `#${duck.id}`

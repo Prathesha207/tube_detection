@@ -36,13 +36,55 @@ except ImportError:
     except ImportError:
         DuckAnalyzer = None
 
-from app.ml import app_state  # shared GPU-mode flag used by video_inference_service.py too
+from app.ml import app_state  # shared GPU mutual-exclusion flag (video vs camera vs training)
+try:
+    import torch
+except ImportError:
+    torch = None
 
-logger = logging.getLogger("camera-inference")
+from app.core.logger import setup_logger
+
+logger = setup_logger("camera-inference")
+
+
+def is_cuda_operational() -> bool:
+    """Verifies that PyTorch can actually execute CUDA kernels on GPU 0,
+    rather than just checking if the driver library is queryable."""
+    if torch is None:
+        return False
+    try:
+        if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+            return False
+        t = torch.zeros((1, 1), device="cuda:0")
+        _ = t + 1.0
+        del t
+        torch.cuda.synchronize()
+        return True
+    except Exception as e:
+        logger.warning(f"CUDA is present but kernel execution failed ({e}); falling back to CPU.")
+        return False
 
 _sessions: Dict[str, Dict[str, Any]] = {}
 
 _sessions_lock = threading.Lock()
+
+# Shared DuckAnalyzer instance: loaded once at app startup (by main.py lifespan)
+# and reused for every camera session. Each session resets the analyzer state
+# (anchor, trackers, warmup) but keeps the YOLO weights in GPU memory.
+# If startup preload hasn't run yet (dev mode, or preload failed), falls back
+# to per-session construction (original behavior).
+_shared_camera_analyzer = None
+_shared_analyzer_lock = threading.Lock()
+
+
+def _set_camera_analyzer(analyzer) -> None:
+    """Called by main.py lifespan after startup preload: injects the already-loaded
+    DuckAnalyzer so camera sessions reuse it instead of loading weights from scratch."""
+    global _shared_camera_analyzer
+    with _shared_analyzer_lock:
+        _shared_camera_analyzer = analyzer
+    logger.info("[STARTUP] Pre-loaded DuckAnalyzer injected into camera_inference_service.")
+
 
 # Config path: look in app/ml/config/config.yaml first (canonical),
 # then fall back to app/ml/config.yaml (legacy) and PyInstaller bundle.
@@ -91,87 +133,148 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
                 "-- try again shortly")
 
         try:
-            with open(_CONFIG_PATH, "r") as f:
-                cfg = yaml.safe_load(f) or {}
+            # ── Try to reuse the shared preloaded analyzer (zero model reload) ──
+            with _shared_analyzer_lock:
+                preloaded = _shared_camera_analyzer
 
-            # Resolve model_path portably: app/ml/model/best.pt first (canonical),
-            # then app/ml/models/best.pt (legacy), then the value from config.yaml.
-            ml_dir = _ML_DIR
-            candidates = [
-                os.path.join(ml_dir, "model", "best.pt"),    # canonical
-                os.path.join(ml_dir, "debug", "best.pt"),    # debug folder weights
-                os.path.join(ml_dir, "models", "best.pt"),   # legacy
-            ]
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-                candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
-                candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
+            if preloaded is not None:
+                logger.info(
+                    "Reusing pre-loaded DuckAnalyzer for camera session "
+                    f"{session_id} (no model reload).")
+                analyzer = preloaded
+                # Reset all per-session state so this session starts clean
+                analyzer.expected = int(expected_duck_count)
+                analyzer.frame_idx = 0
+                analyzer.anchor_locked = False
+                analyzer.warmup_best = None
+                analyzer.warmup_count = 0
+                analyzer._last_time = None
+                analyzer._hand_hold = 0
+                analyzer._excess_sent = False
+                for attr in ("tid_to_display", "display_info", "otid_to_display",
+                              "other_info", "prov_new", "reclaim_candidates",
+                              "_prov_other"):
+                    obj = getattr(analyzer, attr, None)
+                    if isinstance(obj, dict):
+                        obj.clear()
+                for attr in ("confirmed_sent", "missing_active", "other_sent"):
+                    obj = getattr(analyzer, attr, None)
+                    if isinstance(obj, set):
+                        obj.clear()
+                for attr in ("count_history",):
+                    obj = getattr(analyzer, attr, None)
+                    if hasattr(obj, "clear"):
+                        obj.clear()
+                analyzer.next_display_id = 1
+                analyzer.num_anchor = 0
+                analyzer.next_other_display = 1
+                analyzer.num_other_anchor = 0
+                try:
+                    if hasattr(analyzer.model, "predictor"):
+                        analyzer.model.predictor = None
+                except Exception:
+                    pass
+                # Re-init MediaPipe if it was closed or graph became inactive
+                if hasattr(analyzer, "hand_backend") and analyzer.hand_backend == "mediapipe":
+                    need_reinit = False
+                    if getattr(analyzer, "_mp_hands", None) is None:
+                        need_reinit = True
+                    elif getattr(analyzer._mp_hands, "_graph", None) is None:
+                        need_reinit = True
+                    if need_reinit:
+                        try:
+                            import mediapipe as mp
+                            analyzer._mp_hands = mp.solutions.hands.Hands(
+                                static_image_mode=False,
+                                max_num_hands=2,
+                                min_detection_confidence=analyzer.hand_conf,
+                                min_tracking_confidence=analyzer.hand_track_conf,
+                            )
+                            logger.info("Re-initialized MediaPipe hands graph successfully.")
+                        except Exception as mp_err:
+                            logger.warning(f"Could not re-init MediaPipe: {mp_err}")
+            else:
+                # ── Fallback: build a fresh analyzer (dev mode or preload failed) ──
+                logger.info(
+                    f"No pre-loaded analyzer available — creating DuckAnalyzer for "
+                    f"camera session {session_id} (first-time model load).")
 
-            configured_path = cfg.get("model_path")
-            if configured_path:
-                rel = os.path.join(ml_dir, configured_path)
-                if os.path.exists(rel):
-                    candidates.append(rel)
-                if os.path.isabs(configured_path) and os.path.exists(configured_path):
-                    candidates.append(configured_path)
+                with open(_CONFIG_PATH, "r") as f:
+                    cfg = yaml.safe_load(f) or {}
 
-            resolved_model = next((c for c in candidates if c and os.path.exists(c)), None)
+                # Resolve model_path portably
+                ml_dir = _ML_DIR
+                candidates = [
+                    os.path.join(ml_dir, "model", "best.pt"),
+                    os.path.join(ml_dir, "debug", "best.pt"),
+                    os.path.join(ml_dir, "models", "best.pt"),
+                ]
+                if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                    candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
+                    candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
 
-            if not resolved_model:
-                checked = "\n  ".join(c for c in candidates if c)
-                raise FileNotFoundError(
-                    "Could not find best.pt. Checked:\n  " + checked +
-                    f"\n\nPlace your YOLO weights at: {os.path.join(ml_dir, 'model', 'best.pt')}"
-                )
+                configured_path = cfg.get("model_path")
+                if configured_path:
+                    rel = os.path.join(ml_dir, configured_path)
+                    if os.path.exists(rel):
+                        candidates.append(rel)
+                    if os.path.isabs(configured_path) and os.path.exists(configured_path):
+                        candidates.append(configured_path)
 
-            logger.info(f"[MODEL] Using weights: {resolved_model}")
-            cfg["model_path"] = resolved_model
+                resolved_model = next((c for c in candidates if c and os.path.exists(c)), None)
+                if not resolved_model:
+                    checked = "\n  ".join(c for c in candidates if c)
+                    raise FileNotFoundError(
+                        "Could not find best.pt. Checked:\n  " + checked +
+                        f"\n\nPlace your YOLO weights at: {os.path.join(ml_dir, 'model', 'best.pt')}"
+                    )
 
-            # Resolve roi_path portably (app/ml/model/hand_roi.json, app/ml/hand_roi.json, or config dir)
-            cfg_dir = os.path.dirname(os.path.abspath(_CONFIG_PATH))
-            roi_raw = cfg.get("roi_path", "model/hand_roi.json")
-            if roi_raw:
-                if os.path.isabs(roi_raw) and os.path.exists(roi_raw):
-                    cfg["roi_path"] = roi_raw
-                else:
-                    roi_candidates = [
-                        os.path.join(ml_dir, roi_raw),
-                        os.path.join(ml_dir, "model", "hand_roi.json"),
-                        os.path.join(cfg_dir, roi_raw),
-                        os.path.join(cfg_dir, "hand_roi.json"),
-                        os.path.join(ml_dir, "hand_roi.json"),
-                    ]
-                    resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
-                    cfg["roi_path"] = resolved_roi or os.path.join(cfg_dir, roi_raw)
+                logger.info(f"[MODEL] Using weights: {resolved_model}")
+                cfg["model_path"] = resolved_model
 
-            # Production mode: no disk writes from DuckAnalyzer
-            cfg["save_local"] = False
-            cfg["annotated_dir"] = None
-
-            # Dynamic device selection
-            try:
-                import torch
-                cfg["device"] = 0 if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
-            except Exception:
-                cfg["device"] = "cpu"
-
-            # Temporary session config path with resolved model_path in a guaranteed WRITABLE directory
-            try:
-                from app.core.app_paths import get_ml_session_config_dir
-                session_cfg_dir = str(get_ml_session_config_dir())
-            except Exception:
+                # Resolve roi_path portably without triggering uvicorn WatchFiles reload
+                cfg_dir = os.path.dirname(os.path.abspath(_CONFIG_PATH))
+                roi_raw = cfg.get("roi_path", "model/hand_roi.json")
+                roi_candidates = [
+                    os.path.join(ml_dir, roi_raw),
+                    os.path.join(ml_dir, "model", "hand_roi.json"),
+                    os.path.join(cfg_dir, roi_raw),
+                    os.path.join(cfg_dir, "hand_roi.json"),
+                    os.path.join(ml_dir, "hand_roi.json"),
+                ]
+                resolved_roi = next((r for r in roi_candidates if os.path.exists(r)), None)
                 import tempfile
-                session_cfg_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_sessions")
-            os.makedirs(session_cfg_dir, exist_ok=True)
-            session_cfg_path = os.path.join(session_cfg_dir, f"camera_config_{session_id}.yaml")
-            with open(session_cfg_path, "w") as f:
-                yaml.dump(cfg, f)
+                runtime_roi_path = os.path.join(tempfile.gettempdir(), "vision_hand_roi.json")
+                if resolved_roi and not os.path.exists(runtime_roi_path):
+                    try:
+                        import shutil
+                        shutil.copy2(resolved_roi, runtime_roi_path)
+                    except Exception:
+                        pass
+                cfg["roi_path"] = runtime_roi_path if os.path.exists(runtime_roi_path) else (resolved_roi or runtime_roi_path)
 
-            analyzer = DuckAnalyzer(session_cfg_path, expected_duck_count=expected_duck_count)
-            try:
-                if os.path.exists(session_cfg_path):
-                    os.remove(session_cfg_path)
-            except Exception:
-                pass
+                cfg["save_local"] = False
+                cfg["annotated_dir"] = None
+                cfg["device"] = 0 if is_cuda_operational() else "cpu"
+
+                try:
+                    from app.core.app_paths import get_ml_session_config_dir
+                    session_cfg_dir = str(get_ml_session_config_dir())
+                except Exception:
+                    import tempfile
+                    session_cfg_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_sessions")
+                os.makedirs(session_cfg_dir, exist_ok=True)
+                session_cfg_path = os.path.join(session_cfg_dir, f"camera_config_{session_id}.yaml")
+                with open(session_cfg_path, "w") as f:
+                    yaml.dump(cfg, f)
+
+                analyzer = DuckAnalyzer(session_cfg_path, expected_duck_count=expected_duck_count)
+                try:
+                    if os.path.exists(session_cfg_path):
+                        os.remove(session_cfg_path)
+                except Exception:
+                    pass
+
         except Exception:
             app_state.exit_inference("camera")
             raise
@@ -182,7 +285,7 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
             "expected_duck_count": expected_duck_count,
             "original_filename": original_filename,
             "last_active": time.time(),
-            "inference_claimed": True,  # so clear_session knows to release it
+            "inference_claimed": True,
         }
         _sessions[session_id] = session
         return session
@@ -238,11 +341,45 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
     annotated_frame = frame.copy()
     t_infer_start = time.perf_counter()
     try:
-        result = analyzer.process_frame(annotated_frame)
+        if torch is not None:
+            with torch.inference_mode():
+                result = analyzer.process_frame(annotated_frame)
+        else:
+            result = analyzer.process_frame(annotated_frame)
     except Exception as e:
-        logger.error(f"Error in DuckAnalyzer for session {session_id}: {e}", exc_info=True)
-        return {"session_id": session_id, "status": "error",
-                "reasons": [str(e)], "frames_processed": session["frames_processed"]}, frame
+        recovered = False
+        if hasattr(analyzer, "_device_str") and str(analyzer._device_str).lower() != "cpu":
+            logger.warning(
+                f"Camera session {session_id}: GPU inference error detected ({e}); "
+                "attempting emergency fallback to CPU..."
+            )
+            analyzer._device_str = "cpu"
+            analyzer.use_half = False
+            try:
+                if hasattr(analyzer, "model") and analyzer.model is not None:
+                    analyzer.model.to("cpu")
+                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                    try:
+                        analyzer.embedder.device = "cpu"
+                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                            analyzer.embedder.model.to("cpu")
+                        if hasattr(analyzer.embedder, "_mean"):
+                            analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
+                        if hasattr(analyzer.embedder, "_std"):
+                            analyzer.embedder._std = analyzer.embedder._std.to("cpu")
+                    except Exception:
+                        pass
+                with torch.inference_mode():
+                    result = analyzer.process_frame(annotated_frame)
+                recovered = True
+                logger.info(f"Camera session {session_id}: successfully recovered on CPU.")
+            except Exception as cpu_err:
+                logger.error(f"Camera session {session_id}: CPU fallback retry also failed: {cpu_err}")
+
+        if not recovered:
+            logger.error(f"Error in DuckAnalyzer for session {session_id}: {e}", exc_info=True)
+            return {"session_id": session_id, "status": "error",
+                    "reasons": [str(e)], "frames_processed": session["frames_processed"]}, frame
     infer_latency_ms = (time.perf_counter() - t_infer_start) * 1000
     infer_fps = round(1000.0 / infer_latency_ms, 1) if infer_latency_ms > 0 else 0.0
 
@@ -353,8 +490,13 @@ def clear_session(session_id: str) -> None:
         
         if session:
             analyzer = session.get("analyzer")
-            if analyzer and hasattr(analyzer, "close"):
-                analyzer.close()
+            with _shared_analyzer_lock:
+                is_shared = (analyzer is not None and analyzer is _shared_camera_analyzer)
+            if analyzer and not is_shared and hasattr(analyzer, "close"):
+                try:
+                    analyzer.close()
+                except Exception:
+                    pass
             # NEW: release the cross-kind GPU claim this session took at
             # creation time, so video-upload inference (or training) can start
             # once the last camera session is gone.

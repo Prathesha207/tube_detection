@@ -32,10 +32,10 @@ debug: true
 # deep appearance embedding for re-ID (fixes similar-colour duck id swaps).
 # needs:  pip install transformers torchvision  (torch already installed)
 # off by default; set true to enable. backend: auto|siglip|resnet.
-use_embedder: true
+use_embedder: false
 embedder_backend: resnet
 embed_weight: 0.5
-swap_verify_min_app: 0.5  
+swap_verify_min_app: 0.0  
 # anchor
 warmup_frames: 20
 warmup_require_exact: false   # FIX (Issue 1): do not hang 300 frames on a count mismatch

@@ -71,7 +71,18 @@ class RecordingSession:
         self.video_path = os.path.join(folder, self.filename)
         self.width  = width
         self.height = height
-        self.fmt    = fmt
+        # Initialize all state stop()/add_frame() touch BEFORE attempting to open
+        # the container, so a failed open leaves a fully-formed (just inert)
+        # object instead of a half-built one that crashes on the first stop().
+        self.frame_queue = queue.Queue(maxsize=1000)
+        self.is_running  = False
+        # Set start clock at session creation — not on first frame — so the
+        # container duration matches the wall-clock recording time exactly.
+        self._start_mono: float = time.monotonic()
+        self._frames_written = 0
+        self._last_bgr = None       # last frame received, used for pad-frame on stop
+        self._last_pts_ms: int = 0  # PTS of that frame
+        self.thread = None
 
         try:
             self.container = av.open(self.video_path, mode="w")
@@ -85,18 +96,9 @@ class RecordingSession:
                 self.stream.options = options
         except Exception as e:
             logger.error(f"[RECORD] Failed to open container: {e}")
-            self.is_running = False
             return
 
-        self.frame_queue = queue.Queue(maxsize=1000)
-        self.is_running  = True
-        # Set start clock at session creation — not on first frame — so the
-        # container duration matches the wall-clock recording time exactly.
-        self._start_mono: float = time.monotonic()
-        self._frames_written = 0
-        self._last_bgr = None       # last frame received, used for pad-frame on stop
-        self._last_pts_ms: int = 0  # PTS of that frame
-
+        self.is_running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
         logger.info(f"[RECORD] Started: {self.video_path} | format={fmt} ({codec_name}) | {width}x{height}")
@@ -192,9 +194,15 @@ class RecordingSession:
             f"[RECORD] Stopping — {self.frame_queue.qsize()} frames still in queue"
         )
         self.is_running = False
-        self.thread.join(timeout=30.0)
-        if self.thread.is_alive():
-            logger.warning("[RECORD] Worker thread did not finish within 30 s")
+        if self.thread is not None:
+            self.thread.join(timeout=30.0)
+            if self.thread.is_alive():
+                logger.warning("[RECORD] Worker thread did not finish within 30 s")
+        else:
+            logger.warning(
+                f"[RECORD] stop() called on a session whose container never "
+                f"opened successfully: {self.video_path}"
+            )
         # Container is already closed by the worker's finally block
         duration = time.monotonic() - self._start_mono
         return {

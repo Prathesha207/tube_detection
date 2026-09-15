@@ -138,10 +138,12 @@ export function useAnomalyStatus({
       hasMissingDuck ||
       hasForeign
     );
-    let message = hasHand ? 'HAND DETECTED' : isAnomaly ? 'ANOMALY' : 'NORMAL';
+    let message = hasHand ? 'HAND DETECTED' : isAnomaly ? 'ANOMALY' : isWarmingUp ? 'WARMING' : 'NORMAL';
     let subMessage = hasHand
       ? 'Hand detected in frame. Evaluation paused until hand is removed.'
-      : `${detectedCount} ducks detected in target area. Count matches expected (${expectedFromMl}).`;
+      : isWarmingUp
+        ? 'Warming up AI engine and acquiring targets...'
+        : `${detectedCount} ducks detected in target area. Count matches expected (${expectedFromMl}).`;
     let type: AnomalyStatus['type'] = 'NONE';
 
     if (hasHand) {

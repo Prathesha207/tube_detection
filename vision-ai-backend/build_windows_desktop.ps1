@@ -32,29 +32,82 @@ $VenvPython = Join-Path $ReleaseVenv 'Scripts\python.exe'
 
 # Auto-detect acceleration if 'auto' is specified
 if ($Acceleration -eq 'auto') {
-  $NvidiaGpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
-  if ($null -ne $NvidiaGpus -and @($NvidiaGpus).Count -gt 0) {
+  $HasNvidia = $false
+  $ComputeCap = 0.0
+
+  # 1. Primary detection: nvidia-smi (reliable for Optimus laptops and all NVIDIA drivers)
+  $SmiOutput = & nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>$null
+  if ($LASTEXITCODE -eq 0 -and $null -ne $SmiOutput) {
+    $HasNvidia = $true
+    $ComputeCaps = $SmiOutput | ForEach-Object {
+        $parts = $_ -split ','
+        if ($parts.Count -ge 2) { [float]$parts[1].Trim() } else { 0.0 }
+    }
+    if ($ComputeCaps) { $ComputeCap = ($ComputeCaps | Measure-Object -Maximum).Maximum }
+    Write-Host "nvidia-smi detected NVIDIA GPU(s) with max Compute Capability: $ComputeCap"
+  } else {
+    # 2. Fallback detection: WMI
+    $NvidiaGpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "NVIDIA" }
+    if ($null -ne $NvidiaGpus -and @($NvidiaGpus).Count -gt 0) {
+      $HasNvidia = $true
+      Write-Host "WMI detected NVIDIA GPU: $(($NvidiaGpus | Select-Object -First 1).Name)"
+    }
+  }
+
+  if ($HasNvidia) {
     $Acceleration = 'cuda'
-    Write-Host "Auto-detected NVIDIA GPU: $(($NvidiaGpus | Select-Object -First 1).Name); targeting CUDA acceleration."
+    
+    # 3. Target appropriate CUDA wheels based on Compute Capability
+    # sm_120 (12.0) = Blackwell (RTX 50-series) -> cu126+
+    # sm_89 (8.9) = Ada Lovelace (RTX 40-series) -> cu124
+    if ($ComputeCap -ge 12.0) {
+      $TargetCuda = "cu126"
+      $CudaIndex = "https://download.pytorch.org/whl/cu126"
+      Write-Host "Targeting CUDA 12.6+ (cu126) for Blackwell (RTX 50-series) support."
+    } elseif ($ComputeCap -ge 8.9) {
+      $TargetCuda = "cu124"
+      $CudaIndex = "https://download.pytorch.org/whl/cu124"
+      Write-Host "Targeting CUDA 12.4 (cu124) for Ada/Ampere optimization."
+    } else {
+      $TargetCuda = "cu121"
+      $CudaIndex = "https://download.pytorch.org/whl/cu121"
+      Write-Host "Targeting CUDA 12.1 (cu121) for broad compatibility."
+    }
   } else {
     $Acceleration = 'cpu'
+    $TargetCuda = "cpu"
     Write-Host "No NVIDIA GPU detected on build host; targeting CPU acceleration."
   }
+} else {
+  $TargetCuda = if ($Acceleration -eq 'cuda') { "cu121" } else { "cpu" }
+  $CudaIndex = if ($Acceleration -eq 'cuda') { "https://download.pytorch.org/whl/cu121" } else { "https://download.pytorch.org/whl/cpu" }
 }
 
-# Verify CUDA PyTorch and TorchVision
-$HasCuda = & $VenvPython -c "import torch; print(torch.cuda.is_available() or 'cu' in torch.__version__)" 2>$null
+if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
+
+# Verify PyTorch and TorchVision status
+$CurrentTorchVer = & $VenvPython -c "import torch; print(torch.__version__)" 2>$null
 $HasTorchVision = & $VenvPython -c "import torchvision; import importlib.metadata; _ = importlib.metadata.version('torchvision'); print('True')" 2>$null
-Write-Host "CUDA PyTorch status in environment: $HasCuda | TorchVision metadata status: $HasTorchVision"
-if (($Acceleration -eq 'cuda' -and $HasCuda -ne 'True') -or ($HasTorchVision -ne 'True' -and $Acceleration -eq 'cuda')) {
-  $CudaIndex = if ($env:PYTORCH_CUDA_INDEX) { $env:PYTORCH_CUDA_INDEX } else { 'https://download.pytorch.org/whl/cu121' }
-  Write-Host "Installing CUDA PyTorch & TorchVision from $CudaIndex..."
-  & $VenvPython -m pip install --index-url $CudaIndex torch torchvision
-  if ($LASTEXITCODE -ne 0) { throw "Could not install CUDA PyTorch from $CudaIndex." }
-} elseif (($Acceleration -eq 'cpu' -and $HasCuda -eq 'True') -or ($HasTorchVision -ne 'True' -and $Acceleration -eq 'cpu')) {
-  Write-Host 'Installing CPU-only PyTorch & TorchVision for CPU bundle...'
-  & $VenvPython -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-  if ($LASTEXITCODE -ne 0) { throw "Could not install CPU PyTorch from PyTorch CPU index." }
+
+Write-Host "Installed PyTorch version: $CurrentTorchVer | TorchVision status: $HasTorchVision"
+
+if ($Acceleration -eq 'cuda') {
+  # Force reinstall if the installed PyTorch doesn't match our targeted CUDA wheel (or is missing)
+  if ($CurrentTorchVer -notmatch $TargetCuda -or $HasTorchVision -ne 'True') {
+    Write-Host "Installing/Updating CUDA PyTorch & TorchVision from $CudaIndex..."
+    & $VenvPython -m pip install --index-url $CudaIndex torch torchvision --upgrade --force-reinstall
+    if ($LASTEXITCODE -ne 0) { throw "Could not install CUDA PyTorch from $CudaIndex." }
+  } else {
+    Write-Host "Correct CUDA PyTorch ($TargetCuda) is already installed."
+  }
+} elseif ($Acceleration -eq 'cpu') {
+  if ($CurrentTorchVer -match 'cu' -or -not $CurrentTorchVer -or $HasTorchVision -ne 'True') {
+    Write-Host 'Installing CPU-only PyTorch & TorchVision for CPU bundle...'
+    & $VenvPython -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision --upgrade --force-reinstall
+    if ($LASTEXITCODE -ne 0) { throw "Could not install CPU PyTorch from PyTorch CPU index." }
+  } else {
+    Write-Host "Correct CPU PyTorch is already installed."
+  }
 }
 
 $DuckAnalyzerWheel = Get-ChildItem -Path (Join-Path $BackendDir 'app\ml') -Filter 'duck_analyzer-*.whl' -Recurse |

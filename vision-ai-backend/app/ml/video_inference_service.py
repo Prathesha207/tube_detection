@@ -14,6 +14,7 @@ When NOT to use this file:
   use `camera_inference_service.py` instead!
 
 Main exports:
+
 - `video_inference_service = VideoInferenceService()`
 - `ml_inference_service` (backward compatibility alias)
 """
@@ -683,6 +684,17 @@ class VideoInferenceService:
                     annotated_frame = frame.copy()
 
                     def _infer_frame(analyzer_inst, frame_in):
+                        # Prevent YOLO BoT-SORT/ByteTrack from accumulating endless history over 1-hour videos
+                        try:
+                            if hasattr(analyzer_inst, "model") and hasattr(analyzer_inst.model, "predictor"):
+                                pred = analyzer_inst.model.predictor
+                                if pred and hasattr(pred, "trackers"):
+                                    for t in getattr(pred, "trackers", []):
+                                        if hasattr(t, "removed_stracks") and len(t.removed_stracks) > 100:
+                                            t.removed_stracks = t.removed_stracks[-50:]
+                        except Exception:
+                            pass
+                            
                         if torch is not None:
                             with torch.inference_mode():
                                 return analyzer_inst.process_frame(frame_in)

@@ -450,7 +450,7 @@ def health_check():
 
 
 @app.get("/health")
-def get_health():
+async def get_health():
     """Health check endpoint for frontend readiness polling.
     Returns 'starting' while the ML model is loading, 'ready' once it is done.
     Electron's waitForBackend() polls this until it sees 'ready'."""

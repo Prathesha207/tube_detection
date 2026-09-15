@@ -151,7 +151,7 @@ if ($BackendCheck -eq 'INSTALLED') {
     Write-Host "Installing backend requirements..."
     $ReqFile = Join-Path $BackendDir 'requirements.txt'
     if (Test-Path $ReqFile) {
-        $CudaIndex = if ($env:PYTORCH_CUDA_INDEX) { $env:PYTORCH_CUDA_INDEX } else { 'https://download.pytorch.org/whl/cu121' }
+        $CudaIndex = if ($env:PYTORCH_CUDA_INDEX) { $env:PYTORCH_CUDA_INDEX } else { 'https://download.pytorch.org/whl/cu124' }
         & $VenvPython -m pip install --prefer-binary --extra-index-url $CudaIndex -r $ReqFile
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install Python requirements from $ReqFile."
@@ -173,12 +173,56 @@ if ($BackendCheck -eq 'INSTALLED') {
 Write-Host ""
 Write-Host "[4/7] Verifying PyTorch, torchvision, and hardware acceleration..." -ForegroundColor Yellow
 
-$NvidiaGpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
-$HasNvidia = ($null -ne $NvidiaGpus -and @($NvidiaGpus).Count -gt 0)
+# 1. Comprehensive NVIDIA hardware and driver detection
+$HasNvidia = $false
+$ComputeCap = 0.0
 
-if (-not $HasNvidia) {
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+# Try nvidia-smi first (extracts compute capability for exact CUDA version matching)
+$SmiPath = "nvidia-smi"
+if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+    $SmiCandidates = @(
+        "$env:SystemRoot\System32\nvidia-smi.exe",
+        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        "${env:ProgramFiles(x86)}\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+    )
+    foreach ($cand in $SmiCandidates) {
+        if (Test-Path $cand) { $SmiPath = $cand; break }
+    }
+}
+if ($SmiPath -ne "nvidia-smi" -or (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+    $SmiOutput = & $SmiPath --query-gpu=name,compute_cap --format=csv,noheader 2>$null
+    if ($LASTEXITCODE -eq 0 -and $null -ne $SmiOutput) {
         $HasNvidia = $true
+        $ComputeCaps = $SmiOutput | ForEach-Object {
+            $parts = $_ -split ','
+            if ($parts.Count -ge 2) { [float]$parts[1].Trim() } else { 0.0 }
+        }
+        if ($ComputeCaps) { $ComputeCap = ($ComputeCaps | Measure-Object -Maximum).Maximum }
+        Write-Host "[GPU INFO] nvidia-smi detected NVIDIA GPU(s) with max Compute Capability: $ComputeCap" -ForegroundColor Cyan
+    }
+}
+
+# Fallback detection if nvidia-smi fails or is missing
+if (-not $HasNvidia) {
+    $AllVideoControllers = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+    $NvidiaGpus = @($AllVideoControllers) | Where-Object {
+        ($_.Name -match 'NVIDIA|GeForce|Quadro|Tesla|RTX') -or
+        ($_.Caption -match 'NVIDIA|GeForce|Quadro|Tesla|RTX') -or
+        ($_.Description -match 'NVIDIA|GeForce|Quadro|Tesla|RTX') -or
+        ($_.VideoProcessor -match 'NVIDIA|GeForce|RTX') -or
+        ($_.AdapterCompatibility -match 'NVIDIA') -or
+        ($_.PNPDeviceID -match 'VEN_10DE')
+    }
+    if ($null -ne $NvidiaGpus -and @($NvidiaGpus).Count -gt 0) {
+        $HasNvidia = $true
+    } else {
+        $NvidiaDriverFiles = @(
+            "$env:SystemRoot\System32\nvcuda.dll",
+            "$env:SystemRoot\System32\nvapi64.dll"
+        )
+        foreach ($ndf in $NvidiaDriverFiles) {
+            if (Test-Path $ndf) { $HasNvidia = $true; break }
+        }
     }
 }
 
@@ -187,32 +231,50 @@ $TorchCheck = & $VenvPython -c "
 import torch
 try:
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        torch.cuda.init()
         t = torch.zeros((1, 1), device='cuda:0')
         _ = t + 1.0
         del t
-        print('CUDA_OPERATIONAL')
+        print('CUDA_OPERATIONAL:' + torch.cuda.get_device_name(0))
     else:
         print('CPU_OPERATIONAL')
 except Exception as e:
-    print('DRIVER_TOO_OLD')
+    print('CUDA_ERROR:' + str(e))
 " 2>$null
 
 $TorchVisionCheck = & $VenvPython -c "import torchvision; import importlib.metadata; _ = importlib.metadata.version('torchvision'); print('TV_OK')" 2>$null
 
-if ($TorchCheck -eq 'CUDA_OPERATIONAL' -and $TorchVisionCheck -eq 'TV_OK') {
-    $GpuName = if ($NvidiaGpus) { ($NvidiaGpus | Select-Object -First 1).Name } else { 'NVIDIA GPU' }
-    Write-Host "[OK] PyTorch and torchvision are already installed and verified operational on $GpuName." -ForegroundColor Green
-} elseif ($TorchCheck -eq 'CPU_OPERATIONAL' -and $TorchVisionCheck -eq 'TV_OK' -and -not $HasNvidia) {
-    Write-Host "[OK] CPU PyTorch and torchvision are already installed and operational for CPU inference." -ForegroundColor Green
+$GpuName = if ($NvidiaGpus) { ($NvidiaGpus | Select-Object -First 1).Name } else { 'NVIDIA GPU' }
+
+if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
+    Write-Host "[OK] PyTorch and torchvision are already installed and verified operational on $GpuName (GPU Accelerated)." -ForegroundColor Green
 } elseif ($HasNvidia) {
-    Write-Host "[INFO] NVIDIA GPU detected. Ensuring CUDA PyTorch and torchvision are installed..." -ForegroundColor Cyan
-    $CudaIndex = if ($env:PYTORCH_CUDA_INDEX) { $env:PYTORCH_CUDA_INDEX } else { 'https://download.pytorch.org/whl/cu121' }
+    Write-Host "[INFO] NVIDIA GPU detected ($GpuName). Installing CUDA-accelerated PyTorch and torchvision..." -ForegroundColor Cyan
+    if ($ComputeCap -ge 12.0) {
+        $TargetCuda = 'cu126'
+        $CudaIndex = 'https://download.pytorch.org/whl/cu126'
+    } elseif ($ComputeCap -ge 8.9 -or $ComputeCap -eq 0.0) {
+        $TargetCuda = 'cu124'
+        $CudaIndex = 'https://download.pytorch.org/whl/cu124'
+    } else {
+        $TargetCuda = 'cu121'
+        $CudaIndex = 'https://download.pytorch.org/whl/cu121'
+    }
+    if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
+    Write-Host "[GPU INFO] Targeting CUDA $TargetCuda for maximum compatibility/performance." -ForegroundColor Cyan
+    Write-Host "Fetching CUDA wheels from $CudaIndex..."
     & $VenvPython -m pip install --upgrade --index-url $CudaIndex torch torchvision
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install CUDA PyTorch and torchvision from $CudaIndex."
+        Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu121 fallback..." -ForegroundColor Yellow
+        & $VenvPython -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch torchvision
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install CUDA PyTorch and torchvision."
+        }
     }
+} elseif ($TorchCheck -eq 'CPU_OPERATIONAL' -and $TorchVisionCheck -eq 'TV_OK') {
+    Write-Host "[OK] CPU PyTorch and torchvision are already installed and operational for CPU inference." -ForegroundColor Green
 } else {
-    Write-Host "[INFO] CPU mode detected. Ensuring PyTorch and torchvision are installed..." -ForegroundColor Cyan
+    Write-Host "[INFO] No NVIDIA GPU hardware detected on this PC. Installing CPU-only PyTorch and torchvision..." -ForegroundColor Cyan
     & $VenvPython -m pip install --upgrade torch torchvision
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to install CPU PyTorch and torchvision."

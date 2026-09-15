@@ -49,23 +49,50 @@ from app.core.logger import setup_logger
 logger = setup_logger("video-inference")
 
 
+import time
+
+_cuda_operational_cached = None
+
 def is_cuda_operational() -> bool:
     """Verifies that PyTorch can actually execute CUDA kernels on GPU 0,
     rather than just checking if the driver library is queryable."""
+    global _cuda_operational_cached
+    if _cuda_operational_cached is not None:
+        return _cuda_operational_cached
     if torch is None:
         return False
-    try:
-        if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
-            return False
-        # Test real tensor allocation and computation on cuda:0
-        t = torch.zeros((1, 1), device="cuda:0")
-        _ = t + 1.0
-        del t
-        torch.cuda.synchronize()
-        return True
-    except Exception as e:
-        logger.warning(f"CUDA is present but kernel execution failed ({e}); falling back to CPU.")
+
+    if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+        # Do not log here on every call; setup scripts handle the "no cuda" warning
         return False
+
+    # Robust retry loop to wake up GPU from power-saving / D3 sleep
+    for attempt in range(1, 4):
+        try:
+            if not torch.cuda.is_initialized():
+                torch.cuda.init()
+            torch.cuda.set_device(0)
+            
+            # Enable high-performance flags for modern GPUs (RTX 5050/4000/3000)
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cudnn.benchmark = True
+
+            t = torch.zeros((1, 1), device="cuda:0")
+            _ = t + 1.0
+            del t
+            torch.cuda.synchronize(0)
+            _cuda_operational_cached = True
+            return True
+        except Exception as e:
+            logger.warning(f"CUDA initialization attempt {attempt}/3 encountered: {e}. Retrying...")
+            time.sleep(0.3)
+    
+    logger.error("CUDA is present but kernel execution failed after 3 attempts; falling back to CPU.")
+    _cuda_operational_cached = False
+    return False
 
 class VideoInferenceService:
     def __init__(self):
@@ -125,6 +152,28 @@ class VideoInferenceService:
         else:
             logger.info("Reusing in-memory DuckAnalyzer (instant session reset, no model reload)...")
             analyzer = self._shared_analyzer
+            
+            # GPU re-assertion: If device was downgraded to CPU but GPU is working, restore it!
+            if str(getattr(analyzer, "_device_str", "")).lower() == "cpu" and is_cuda_operational():
+                logger.info("GPU is operational — restoring shared analyzer to CUDA from CPU.")
+                analyzer._device_str = "cuda:0"
+                analyzer.use_half = bool(analyzer.cfg.get("use_half", False))
+                if hasattr(analyzer, "model") and analyzer.model is not None:
+                    analyzer.model.to("cuda:0")
+                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                    try:
+                        analyzer.embedder.device = "cuda:0"
+                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                            analyzer.embedder.model.to("cuda:0")
+                        if hasattr(analyzer.embedder, "_mean"):
+                            analyzer.embedder._mean = analyzer.embedder._mean.to("cuda:0")
+                        if hasattr(analyzer.embedder, "_std"):
+                            analyzer.embedder._std = analyzer.embedder._std.to("cuda:0")
+                    except Exception:
+                        pass
+            if hasattr(analyzer, "_gpu_fail_count"):
+                analyzer._gpu_fail_count = 0
+
             analyzer.expected = int(expected_duck_count)
             analyzer.cfg["results_json_path"] = results_json_path
             analyzer.cfg["thumbnail_dir"] = thumbnail_dir
@@ -708,6 +757,8 @@ class VideoInferenceService:
                         if not self._is_current_run(session_id, run_seq):
                             break
                         consecutive_failures = 0
+                        if hasattr(analyzer, "_gpu_fail_count"):
+                            analyzer._gpu_fail_count = 0
                     except asyncio.TimeoutError as frame_err:
                         # Escalate to the same failure path as an ordinary exception below --
                         # turns an otherwise invisible freeze into a logged, handled failure.
@@ -748,21 +799,29 @@ class VideoInferenceService:
 
                         # Emergency CPU fallback if GPU was active and failed
                         recovered = False
+                        if not hasattr(analyzer, "_gpu_fail_count"):
+                            analyzer._gpu_fail_count = 0
+                            
                         if hasattr(analyzer, "_device_str") and str(analyzer._device_str).lower() != "cpu":
+                            analyzer._gpu_fail_count += 1
                             logger.warning(
-                                f"Session {session_id}: GPU inference error detected ({frame_err}); "
-                                "attempting emergency fallback to CPU..."
+                                f"Session {session_id}: GPU frame error #{analyzer._gpu_fail_count} ({frame_err}); "
+                                "retrying this frame on CPU."
                             )
-                            analyzer._device_str = "cpu"
-                            analyzer.use_half = False
-                            try:
-                                if hasattr(analyzer, "model") and analyzer.model is not None:
-                                    analyzer.model.to("cpu")
-                                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
-                                    try:
-                                        analyzer.embedder.device = "cpu"
-                                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
-                                            analyzer.embedder.model.to("cpu")
+                            
+                            # If we hit 5 consecutive GPU failures, downgrade permanently
+                            if analyzer._gpu_fail_count >= 5:
+                                logger.error(f"Session {session_id}: GPU failed 5 times — downgrading session to CPU permanently.")
+                                analyzer._device_str = "cpu"
+                                analyzer.use_half = False
+                                try:
+                                    if hasattr(analyzer, "model") and analyzer.model is not None:
+                                        analyzer.model.to("cpu")
+                                    if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                                        try:
+                                            analyzer.embedder.device = "cpu"
+                                            if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                                                analyzer.embedder.model.to("cpu")
                                         if hasattr(analyzer.embedder, "_mean"):
                                             analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
                                         if hasattr(analyzer.embedder, "_std"):

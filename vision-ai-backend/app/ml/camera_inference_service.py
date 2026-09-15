@@ -44,22 +44,47 @@ from app.core.logger import setup_logger
 logger = setup_logger("camera-inference")
 
 
+import time
+
+_cuda_operational_cached = None
+
 def is_cuda_operational() -> bool:
     """Verifies that PyTorch can actually execute CUDA kernels on GPU 0,
     rather than just checking if the driver library is queryable."""
+    global _cuda_operational_cached
+    if _cuda_operational_cached is not None:
+        return _cuda_operational_cached
     if torch is None:
         return False
-    try:
-        if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
-            return False
-        t = torch.zeros((1, 1), device="cuda:0")
-        _ = t + 1.0
-        del t
-        torch.cuda.synchronize()
-        return True
-    except Exception as e:
-        logger.warning(f"CUDA is present but kernel execution failed ({e}); falling back to CPU.")
+
+    if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
         return False
+
+    for attempt in range(1, 4):
+        try:
+            if not torch.cuda.is_initialized():
+                torch.cuda.init()
+            torch.cuda.set_device(0)
+            
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cudnn.benchmark = True
+
+            t = torch.zeros((1, 1), device="cuda:0")
+            _ = t + 1.0
+            del t
+            torch.cuda.synchronize(0)
+            _cuda_operational_cached = True
+            return True
+        except Exception as e:
+            logger.warning(f"CUDA initialization attempt {attempt}/3 encountered: {e}. Retrying...")
+            time.sleep(0.3)
+            
+    logger.error("CUDA is present but kernel execution failed after 3 attempts; falling back to CPU.")
+    _cuda_operational_cached = False
+    return False
 
 _sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -151,6 +176,28 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
                     "Reusing pre-loaded DuckAnalyzer for camera session "
                     f"{session_id} (no model reload).")
                 analyzer = preloaded
+                
+                # GPU re-assertion: If device was downgraded to CPU but GPU is working, restore it!
+                if str(getattr(analyzer, "_device_str", "")).lower() == "cpu" and is_cuda_operational():
+                    logger.info("GPU is operational — restoring shared analyzer to CUDA from CPU.")
+                    analyzer._device_str = "cuda:0"
+                    analyzer.use_half = bool(analyzer.cfg.get("use_half", False))
+                    if hasattr(analyzer, "model") and analyzer.model is not None:
+                        analyzer.model.to("cuda:0")
+                    if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                        try:
+                            analyzer.embedder.device = "cuda:0"
+                            if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                                analyzer.embedder.model.to("cuda:0")
+                            if hasattr(analyzer.embedder, "_mean"):
+                                analyzer.embedder._mean = analyzer.embedder._mean.to("cuda:0")
+                            if hasattr(analyzer.embedder, "_std"):
+                                analyzer.embedder._std = analyzer.embedder._std.to("cuda:0")
+                        except Exception:
+                            pass
+                if hasattr(analyzer, "_gpu_fail_count"):
+                    analyzer._gpu_fail_count = 0
+
                 # Reset all per-session state so this session starts clean
                 analyzer.expected = int(expected_duck_count)
                 analyzer.frame_idx = 0
@@ -364,29 +411,39 @@ def run_inference(frame, session_id: str, expected_duck_count: int = 18,
                 result = analyzer.process_frame(annotated_frame)
         else:
             result = analyzer.process_frame(annotated_frame)
+        if hasattr(analyzer, "_gpu_fail_count"):
+            analyzer._gpu_fail_count = 0
     except Exception as e:
         recovered = False
+        if not hasattr(analyzer, "_gpu_fail_count"):
+            analyzer._gpu_fail_count = 0
+            
         if hasattr(analyzer, "_device_str") and str(analyzer._device_str).lower() != "cpu":
+            analyzer._gpu_fail_count += 1
             logger.warning(
-                f"Camera session {session_id}: GPU inference error detected ({e}); "
-                "attempting emergency fallback to CPU..."
+                f"Camera session {session_id}: GPU frame error #{analyzer._gpu_fail_count} ({e}); "
+                "retrying this frame on CPU."
             )
-            analyzer._device_str = "cpu"
-            analyzer.use_half = False
-            try:
-                if hasattr(analyzer, "model") and analyzer.model is not None:
-                    analyzer.model.to("cpu")
-                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
-                    try:
-                        analyzer.embedder.device = "cpu"
-                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
-                            analyzer.embedder.model.to("cpu")
-                        if hasattr(analyzer.embedder, "_mean"):
-                            analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
-                        if hasattr(analyzer.embedder, "_std"):
-                            analyzer.embedder._std = analyzer.embedder._std.to("cpu")
-                    except Exception:
-                        pass
+            
+            # If we hit 5 consecutive GPU failures, downgrade permanently
+            if analyzer._gpu_fail_count >= 5:
+                logger.error(f"Camera session {session_id}: GPU failed 5 times — downgrading session to CPU permanently.")
+                analyzer._device_str = "cpu"
+                analyzer.use_half = False
+                try:
+                    if hasattr(analyzer, "model") and analyzer.model is not None:
+                        analyzer.model.to("cpu")
+                    if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                        try:
+                            analyzer.embedder.device = "cpu"
+                            if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                                analyzer.embedder.model.to("cpu")
+                            if hasattr(analyzer.embedder, "_mean"):
+                                analyzer.embedder._mean = analyzer.embedder._mean.to("cpu")
+                            if hasattr(analyzer.embedder, "_std"):
+                                analyzer.embedder._std = analyzer.embedder._std.to("cpu")
+                        except Exception:
+                            pass
                 with torch.inference_mode():
                     result = analyzer.process_frame(annotated_frame)
                 recovered = True

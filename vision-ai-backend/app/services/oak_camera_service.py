@@ -1392,9 +1392,12 @@ class OakCameraService:
         logger.info("[INFERENCE] Stopping...")
         self._inference_stop.set()
         
+        # Stop offline feed thread immediately so it stops queueing frames
+        if self._offline_thread and self._offline_thread.is_alive():
+            self._stop_offline_thread()
 
         if self._inference_thread and self._inference_thread.is_alive():
-            self._inference_thread.join(timeout=10.0)
+            self._inference_thread.join(timeout=2.0)
             if self._inference_thread.is_alive():
                 logger.warning("[INFERENCE] Thread did not stop in time — will self-terminate")
 
@@ -1402,35 +1405,21 @@ class OakCameraService:
         if self._inference_session_id:
             logger.info(f"[INFERENCE] Clearing session: {self._inference_session_id}")
             clear_session(self._inference_session_id)
-        
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info("[INFERENCE] GPU cache cleared")
-        except Exception:
-            pass
 
         self._inference_thread = None
         self._inference_watchdog_thread = None
         self._inference_result_queue = None
         self._inference_session_id = None
         self._inference_offline = False
-        
 
-        # Stop offline thread if it was running
-        offline_was_running = self._offline_thread and self._offline_thread.is_alive()
-        if offline_was_running:
-            self._stop_offline_thread()
+        streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
+        recording_active = self._active_recording is not None
+        # Keep capture threads alive if streaming or camera pipeline is running
+        if not streaming_active and not recording_active and not self._is_running:
+            logger.info("[INFERENCE] Camera not streaming or running — stopping capture threads")
+            self._stop_capture_threads()
         else:
-            streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
-            recording_active = self._active_recording is not None
-            # Keep capture threads alive if streaming or camera pipeline is running
-            if not streaming_active and not recording_active and not self._is_running:
-                logger.info("[INFERENCE] Camera not streaming or running — stopping capture threads")
-                self._stop_capture_threads()
-            else:
-                logger.info(f"[INFERENCE] Camera active (streaming={streaming_active}, recording={recording_active}, running={self._is_running}) — keeping capture threads running")
+            logger.info(f"[INFERENCE] Camera active (streaming={streaming_active}, recording={recording_active}, running={self._is_running}) — keeping capture threads running")
 
         logger.info("[INFERENCE] Stopped")
         self._stop_gpu_sampler()

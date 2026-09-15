@@ -132,10 +132,22 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
                 f"GPU is currently in use by {active_kind or 'another process'} "
                 "-- try again shortly")
 
+        global _shared_camera_analyzer
         try:
             # ── Try to reuse the shared preloaded analyzer (zero model reload) ──
             with _shared_analyzer_lock:
                 preloaded = _shared_camera_analyzer
+
+            if preloaded is None:
+                try:
+                    from app.ml.video_inference_service import video_inference_service
+                    if video_inference_service._shared_analyzer is not None:
+                        preloaded = video_inference_service._shared_analyzer
+                        with _shared_analyzer_lock:
+                            _shared_camera_analyzer = preloaded
+                        logger.info("Reusing DuckAnalyzer loaded by video service for camera session (instant start, no reload)...")
+                except Exception:
+                    pass
 
             if preloaded is not None:
                 logger.info(
@@ -269,6 +281,15 @@ def _get_or_create_session(session_id: str, expected_duck_count: int,
                     yaml.dump(cfg, f)
 
                 analyzer = DuckAnalyzer(session_cfg_path, expected_duck_count=expected_duck_count)
+                with _shared_analyzer_lock:
+                    if _shared_camera_analyzer is None:
+                        _shared_camera_analyzer = analyzer
+                try:
+                    from app.ml.video_inference_service import video_inference_service
+                    if video_inference_service._shared_analyzer is None:
+                        video_inference_service._shared_analyzer = analyzer
+                except Exception:
+                    pass
                 try:
                     if os.path.exists(session_cfg_path):
                         os.remove(session_cfg_path)
@@ -490,16 +511,12 @@ def clear_session(session_id: str) -> None:
         
         if session:
             analyzer = session.get("analyzer")
-            with _shared_analyzer_lock:
-                is_shared = (analyzer is not None and analyzer is _shared_camera_analyzer)
-            if analyzer and not is_shared and hasattr(analyzer, "close"):
-                try:
-                    analyzer.close()
-                except Exception:
-                    pass
-            # NEW: release the cross-kind GPU claim this session took at
-            # creation time, so video-upload inference (or training) can start
-            # once the last camera session is gone.
+            if analyzer is not None:
+                with _shared_analyzer_lock:
+                    global _shared_camera_analyzer
+                    if _shared_camera_analyzer is None:
+                        _shared_camera_analyzer = analyzer
+            # Release cross-kind GPU claim so video or other sessions can start
             if session.get("inference_claimed"):
                 app_state.exit_inference("camera")
             

@@ -99,12 +99,30 @@ class VideoInferenceService:
         thumbnail_dir: str,
     ):
         if self._shared_analyzer is None:
+            # Check if camera_inference_service already loaded an analyzer
+            try:
+                from app.ml import camera_inference_service
+                with camera_inference_service._shared_analyzer_lock:
+                    if camera_inference_service._shared_camera_analyzer is not None:
+                        self._shared_analyzer = camera_inference_service._shared_camera_analyzer
+                        logger.info("Reusing in-memory DuckAnalyzer from camera service (instant start, no model reload)...")
+            except Exception:
+                pass
+
+        if self._shared_analyzer is None:
             logger.info("Initializing DuckAnalyzer (loading YOLO weights into memory once)...")
             analyzer = DuckAnalyzer(
                 session_config_path,
                 expected_duck_count=expected_duck_count
             )
             self._shared_analyzer = analyzer
+            try:
+                from app.ml import camera_inference_service
+                with camera_inference_service._shared_analyzer_lock:
+                    if camera_inference_service._shared_camera_analyzer is None:
+                        camera_inference_service._shared_camera_analyzer = analyzer
+            except Exception:
+                pass
             return analyzer
         else:
             logger.info("Reusing in-memory DuckAnalyzer (instant session reset, no model reload)...")
@@ -289,7 +307,7 @@ class VideoInferenceService:
             # Gracefully wait for the active frame processing task to exit and release _gpu_lock
             start_wait = time.time()
             while session.get("is_task_active", False) and (time.time() - start_wait < timeout):
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
 
     def clear_session_files(self, session_id: str):
         """Explicitly called only when the user clears/resets the video session."""
@@ -585,13 +603,17 @@ class VideoInferenceService:
 
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
                 if total_frames <= 0:
-                    try:
-                        import imageio_ffmpeg
-                        nframes, _ = imageio_ffmpeg.count_frames_and_secs(temp_file_path)
-                        if nframes and nframes > 0:
-                            total_frames = int(nframes)
-                    except Exception:
-                        pass
+                    cached_total = session.get("stats", {}).get("total_frames", 0)
+                    if cached_total and cached_total > 0:
+                        total_frames = cached_total
+                    else:
+                        try:
+                            import imageio_ffmpeg
+                            nframes, _ = imageio_ffmpeg.count_frames_and_secs(temp_file_path)
+                            if nframes and nframes > 0:
+                                total_frames = int(nframes)
+                        except Exception:
+                            pass
                 session["stats"]["total_frames"] = max(1, total_frames)
                 
                 # Setup VideoWriter to save annotated output
@@ -875,7 +897,12 @@ class VideoInferenceService:
                     expected_playback_time = frame_idx / pacing_fps
                     current_playback_time = time.time() - start_time
                     if expected_playback_time > current_playback_time:
-                        await asyncio.sleep(expected_playback_time - current_playback_time)
+                        sleep_time = min(1.0, expected_playback_time - current_playback_time)
+                        try:
+                            await asyncio.wait_for(session["stop_event"].wait(), timeout=sleep_time)
+                            break  # stop_event was triggered, break out of decoding loop immediately
+                        except asyncio.TimeoutError:
+                            pass
                     else:
                         await asyncio.sleep(0.001)
 
@@ -949,45 +976,74 @@ class VideoInferenceService:
                 if claimed_inference_lock:
                     app_state.exit_inference("video")
 
-                # ── Archive permanent copy exclusively to Desktop/inference_results ──
-                try:
-                    from datetime import datetime
-                    import shutil
-                    from app.core.app_paths import get_desktop_dir
-
-                    desktop = get_desktop_dir()
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    archive_dir = os.path.join(str(desktop), "inference_results", today_str, session_id)
-                    os.makedirs(archive_dir, exist_ok=True)
-
-                    # If session_dir is already the archive folder on Desktop, no moving/copying is needed
-                    if os.path.abspath(session_dir) != os.path.abspath(archive_dir):
-                        if os.path.exists(output_path):
-                            dest_video = os.path.join(archive_dir, video_filename)
-                            shutil.copy2(output_path, dest_video)
-                            session["stats"]["output_file"] = dest_video
-                            logger.info(f"[ARCHIVE] Saved annotated video copy to Desktop: {dest_video}")
-
-                        if os.path.exists(results_json_path):
-                            shutil.copy2(results_json_path, archive_dir)
-
-                        last_frame_file = os.path.join(session_dir, "last_frame.jpg")
-                        if os.path.exists(last_frame_file):
-                            shutil.copy2(last_frame_file, archive_dir)
-                    else:
-                        session["stats"]["output_file"] = output_path
-                        logger.info(f"[ARCHIVE] Video and artifacts saved directly on Desktop: {session_dir}")
-
-                    session["stats"]["archived_results_dir"] = archive_dir
-                    logger.info(f"[ARCHIVE] Successfully finalized inference results in: {archive_dir}")
-                except Exception as arch_err:
-                    logger.warning(f"[ARCHIVE] Could not finalize inference results to Desktop: {arch_err}")
-
                 # Never close the replacement stream or schedule expiry for a
                 # newer run of this same session.
                 if self._is_current_run(session_id, run_seq):
                     await self._cleanup_session(session_id)
                 logger.info(f"Finished inference for session {session_id} with status {session['status']}")
+
+        # ── End of async with self._gpu_lock ──
+        # Offload archiving to background I/O executor OUTSIDE of _gpu_lock,
+        # and ONLY when inference genuinely finished/completed (never stall a restart on stop/pause).
+        if session.get("status") == "completed":
+            self._archive_completed_session(
+                session_id=session_id,
+                session_dir=session_dir,
+                output_path=output_path,
+                video_filename=video_filename,
+                results_json_path=results_json_path,
+            )
+
+    def _archive_completed_session(
+        self,
+        session_id: str,
+        session_dir: str,
+        output_path: str,
+        video_filename: str,
+        results_json_path: str,
+    ):
+        """Asynchronously archives final video and artifacts in the background
+        without blocking the GPU lock or delaying new inference runs."""
+        def _do_archive():
+            try:
+                from datetime import datetime
+                import shutil
+                from app.core.app_paths import get_desktop_dir
+
+                desktop = get_desktop_dir()
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                archive_dir = os.path.join(str(desktop), "inference_results", today_str, session_id)
+                os.makedirs(archive_dir, exist_ok=True)
+
+                if os.path.abspath(session_dir) != os.path.abspath(archive_dir):
+                    if output_path and os.path.exists(output_path):
+                        dest_video = os.path.join(archive_dir, video_filename)
+                        shutil.copy2(output_path, dest_video)
+                        session = self.sessions.get(session_id)
+                        if session and "stats" in session:
+                            session["stats"]["output_file"] = dest_video
+                        logger.info(f"[ARCHIVE] Saved annotated video copy to Desktop: {dest_video}")
+
+                    if results_json_path and os.path.exists(results_json_path):
+                        shutil.copy2(results_json_path, archive_dir)
+
+                    last_frame_file = os.path.join(session_dir, "last_frame.jpg")
+                    if os.path.exists(last_frame_file):
+                        shutil.copy2(last_frame_file, archive_dir)
+                else:
+                    session = self.sessions.get(session_id)
+                    if session and "stats" in session:
+                        session["stats"]["output_file"] = output_path
+                    logger.info(f"[ARCHIVE] Video and artifacts saved directly on Desktop: {session_dir}")
+
+                session = self.sessions.get(session_id)
+                if session and "stats" in session:
+                    session["stats"]["archived_results_dir"] = archive_dir
+                logger.info(f"[ARCHIVE] Successfully finalized inference results in: {archive_dir}")
+            except Exception as arch_err:
+                logger.warning(f"[ARCHIVE] Could not finalize inference results to Desktop: {arch_err}")
+
+        self._io_executor.submit(_do_archive)
 
     async def _cleanup_session(self, session_id: str):
         session = self.sessions.get(session_id)

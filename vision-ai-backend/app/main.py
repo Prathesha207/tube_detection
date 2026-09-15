@@ -8,6 +8,20 @@ import sys
 import uuid
 import subprocess
 from pathlib import Path
+
+# --- PyInstaller PyTorch CUDA DLL Fix ---
+if getattr(sys, 'frozen', False):
+    bundle_dir = sys._MEIPASS
+    torch_lib = os.path.join(bundle_dir, 'torch', 'lib')
+    if os.path.exists(torch_lib):
+        os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(torch_lib)
+            except Exception:
+                pass
+# ----------------------------------------
+
 from app.api.router import router
 from app.core.database import Base, engine
 from app.utils.exceptions import AppException

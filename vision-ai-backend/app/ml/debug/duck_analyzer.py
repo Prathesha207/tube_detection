@@ -598,14 +598,19 @@ class DuckAnalyzer:
     def _is_cuda_operational():
         try:
             import torch
-            if not (torch.cuda.is_available() and torch.cuda.device_count() > 0):
+            if not torch.cuda.is_available():
+                print("[GPU] CUDA is_available() is False. Ensure NVIDIA drivers are updated and PyTorch DLLs are packaged.")
+                return False
+            if torch.cuda.device_count() == 0:
+                print("[GPU] CUDA device_count() is 0. No NVIDIA GPU detected by PyTorch.")
                 return False
             t = torch.zeros((1, 1), device="cuda:0")
             _ = t + 1.0
             del t
             torch.cuda.synchronize()
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[GPU] CUDA operational test failed with exception: {e}")
             return False
 
     @classmethod

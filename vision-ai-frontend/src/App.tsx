@@ -398,32 +398,25 @@ export default function App() {
     setPendingSourceSwitch(null);
     setSelectedDuckId(null);
 
-    // 4. Restore target source state if previously cached
-    const cached = sourceStateCache.current[targetKey];
-    if (cached && (cached.ducks.length > 0 || cached.framesProcessed > 0)) {
-      setDucks(cached.ducks);
-      useInferenceStore.getState().replaceStats(cached.stats);
-      setFramesProcessed(cached.framesProcessed);
-      setFps(cached.fps);
-      setUptimeSeconds(cached.uptimeSeconds);
-      setSelectedDuckId(cached.selectedDuckId);
-      if (cached.videoDimensions) video.setVideoDimensions(cached.videoDimensions);
-      if (cached.lastCameraFrame && isTargetCamera) setLastCameraFrame(cached.lastCameraFrame);
-      if (cached.lastVideoFrame && !isTargetCamera) setLastVideoFrame(cached.lastVideoFrame);
+    // 4. Force a clean slate for the target source (fixes bug where old galleries persist)
+    sourceStateCache.current[targetKey] = null;
+    setDucks([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
+    setFramesProcessed(0);
+    setFps(0);
+    setUptimeSeconds(0);
+    setSelectedDuckId(null);
+    if (isTargetCamera) {
+      setLastCameraFrame(undefined);
     } else {
-      // Clean slate for new un-run source
-      setDucks([]);
-      useInferenceStore.getState().resetStats();
-      resetBBoxCache();
-      setFramesProcessed(0);
-      setFps(0);
-      setUptimeSeconds(0);
-      setSelectedDuckId(null);
+      setLastVideoFrame(undefined);
     }
 
     if (isTargetCamera) {
       camera.setCameraStartingState('ready');
       camera.setIsStreaming(false);
+      video.clearCameraRecording(); // CRITICAL: prevent old recordings from hijacking the camera UI and showing the video inference card
       addLog(`Stream source switched to: ${targetType.toUpperCase()}`, 'info');
       showToast('info', 'Switched to OAK Camera mode');
       // No auto-start — CameraStandbyCard renders until user clicks Start Stream.

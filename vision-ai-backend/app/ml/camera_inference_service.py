@@ -29,12 +29,9 @@ import yaml
 from typing import Dict, Any, Optional, Tuple
 
 try:
-    from duck_analyzer import DuckAnalyzer
+    from app.ml.debug.duck_analyzer import DuckAnalyzer
 except ImportError:
-    try:
-        from app.ml.debug.duck_analyzer import DuckAnalyzer
-    except ImportError:
-        DuckAnalyzer = None
+    DuckAnalyzer = None
 
 from app.ml import app_state  # shared GPU mutual-exclusion flag (video vs camera vs training)
 try:

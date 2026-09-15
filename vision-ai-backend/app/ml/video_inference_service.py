@@ -32,12 +32,9 @@ import cv2
 import concurrent.futures
 
 try:
-    from duck_analyzer import DuckAnalyzer           # installed whl (primary)
+    from app.ml.debug.duck_analyzer import DuckAnalyzer
 except ImportError:
-    try:
-        from app.ml.debug.duck_analyzer import DuckAnalyzer
-    except ImportError:
-        DuckAnalyzer = None
+    DuckAnalyzer = None
 
 try:
     import torch
@@ -169,13 +166,10 @@ class VideoInferenceService:
             analyzer._tray_gone = 0
             analyzer._hand_hold = 0
             try:
-                if hasattr(analyzer, "model") and hasattr(analyzer.model, "predictor") and analyzer.model.predictor:
-                    if hasattr(analyzer.model.predictor, "trackers") and analyzer.model.predictor.trackers:
-                        for t in analyzer.model.predictor.trackers:
-                            if hasattr(t, "reset"):
-                                t.reset()
-                    else:
-                        analyzer.model.predictor = None
+                if hasattr(analyzer, "model"):
+                    # Forcefully destroy the predictor to guarantee a 100% clean tracker state
+                    # on the next run. t.reset() is often insufficient and leaks memory/history.
+                    analyzer.model.predictor = None
             except Exception:
                 pass
 
@@ -891,20 +885,10 @@ class VideoInferenceService:
                         "video_height":           height,
                     })
                     
-                    # Yield control back to loop so FastAPI can serve other requests
-                    # Pace the inference to match original video framerate for smooth frontend playback (clamped to at least 15 FPS)
-                    pacing_fps = max(15.0, video_fps if video_fps > 0 else 30.0)
-                    expected_playback_time = frame_idx / pacing_fps
-                    current_playback_time = time.time() - start_time
-                    if expected_playback_time > current_playback_time:
-                        sleep_time = min(1.0, expected_playback_time - current_playback_time)
-                        try:
-                            await asyncio.wait_for(session["stop_event"].wait(), timeout=sleep_time)
-                            break  # stop_event was triggered, break out of decoding loop immediately
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(0.001)
+                    # Yield control back to loop so FastAPI can serve other requests and check for stop signals
+                    if session["stop_event"].is_set():
+                        break
+                    await asyncio.sleep(0.001)
 
                 if session.get("status") == "completed" and self._is_current_run(session_id, run_seq):
                     # True EOF was reached; maintain completed status even if a stop event was set afterwards

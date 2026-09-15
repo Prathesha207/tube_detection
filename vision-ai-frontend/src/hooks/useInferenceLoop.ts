@@ -57,7 +57,7 @@ export function useInferenceLoop({
     if (!isRunning) return;
 
     const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
-    const effectiveVideoSessionId = cameraRecordSessionId || videoSessionId;
+    const effectiveVideoSessionId = isCameraSource ? cameraRecordSessionId : videoSessionId;
     const isLive = isCameraSource && !effectiveVideoSessionId;
 
     if (!isLive && !effectiveVideoSessionId) return;

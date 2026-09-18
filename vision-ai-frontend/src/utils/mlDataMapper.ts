@@ -67,7 +67,6 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
   // bug this rewrite's docstring says was already fixed once (bogus red
   // boxes from a naive count mismatch) -- it just crept back in here.
   const backendReasons: string[] = Array.isArray(data.reasons) ? data.reasons : [];
-  const isTooFewDucks = !isWarmingUp && backendReasons.includes('too_few_ducks');
 
   // Pre-collect locked DUCK bounding boxes only (used below purely to
   // de-duplicate stray unbound duck detections that overlap an already-locked
@@ -154,13 +153,7 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
         }
       }
 
-      const expectedCount = Number(data.expected_duck_count || _fallbackExpected || 18);
-      const detectedDuckCount = Number(data.detected_duck_count || 0);
-
-      const rawNumId = Number(rawId);
-      const isExcessById = isDuck && !isNaN(rawNumId) && expectedCount > 0 && rawNumId > expectedCount;
       const isExcessDetection = !isProvisional && (
-        isExcessById ||
         d.excess === true ||
         d.status === 'excess' ||
         excessIds.includes(displayId) ||
@@ -178,19 +171,9 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
         eventStatus = 'other_present';
       }
 
-      // User requirement:
-      // 1. "18 detected · expected 20": When expected count is higher (expectedCount > detectedDuckCount),
-      //    turn ALL boxes to RED!
-      // 2. "18 detected · expected 17": When expected count is less (expectedCount < detectedDuckCount),
-      //    turn ONLY the excess duck to RED (normal ducks 1..expectedCount remain GREEN).
-      // 3. Other species (foreign toy): ONLY the other species is RED, and normal ducks stay GREEN.
-      // 4. Missing ducks: missing duck is displayed as anomaly (AMBER/DASHED).
-      const isUnderCount = !isWarmingUp && (
-        expectedCount > detectedDuckCount && detectedDuckCount > 0
-      );
-
       const isAnomaly = !isProvisional && (
-        isUnderCount ||
+        d.isAnomaly === true || 
+        d.is_anomaly === true ||
         isOther ||
         isExcessDetection ||
         isMissingDetection

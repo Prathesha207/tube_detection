@@ -137,7 +137,7 @@ def _preload_model_background():
             cfg_path = os.path.join(os.path.dirname(__file__), "ml", "config", "config.yaml")
 
         try:
-            from app.ml.debug.duck_analyzer import DuckAnalyzer
+            from app.ml.debug.duck_anomaly_run import DuckAnalyzer
         except ImportError:
             DuckAnalyzer = None
 

@@ -85,34 +85,35 @@ export default function App() {
   const initialSession = useMemo(() => loadSessionState(), []);
   // Seed isRunning and all metrics from session so Ctrl+R keeps stats and ducks visible
   const [isRunning, setIsRunning] = useState<boolean>(() => {
-    return initialSession?.isRunning ?? false;
+    return (initialSession as any)?.isRunning ?? false;
   });
   const [isStarting, setIsStarting] = useState<boolean>(false);
   const [fps, setFps] = useState<number>(() => {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return 0;
-    return initialSession?.fps ?? 0;
+    return (initialSession as any)?.fps ?? 0;
   });
   const [framesProcessed, setFramesProcessed] = useState<number>(() => {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return 0;
-    return initialSession?.framesProcessed ?? 0;
+    return (initialSession as any)?.framesProcessed ?? 0;
   });
   const [uptimeSeconds, setUptimeSeconds] = useState<number>(() => {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return 0;
-    return initialSession?.uptimeSeconds ?? 0;
+    return (initialSession as any)?.uptimeSeconds ?? 0;
   });
   const [expectedDucks, setExpectedDucks] = useState<number>(() => initialSession?.expectedDucks ?? 18);
   const [ducks, setDucks] = useState<import('./types').DuckEntity[]>(() => {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return [];
-    return initialSession?.ducks ?? [];
+    return (initialSession as any)?.ducks ?? [];
   });
-  const [lastCameraFrame, setLastCameraFrame] = useState<string | undefined>(() => initialSession?.lastCameraFrame);
-  const [lastVideoFrame, setLastVideoFrame] = useState<string | undefined>(() => initialSession?.lastVideoFrame);
+  const [lastCameraFrame, setLastCameraFrame] = useState<string | undefined>(() => (initialSession as any)?.lastCameraFrame);
+  const [lastVideoFrame, setLastVideoFrame] = useState<string | undefined>(() => (initialSession as any)?.lastVideoFrame);
 
   // Restore inference store stats from session on mount
   useEffect(() => {
-    if (initialSession?.stats && initialSession.stats.status !== 'idle') {
-      if (initialSession.sourceType !== 'oak-camera' && initialSession.sourceType !== 'webcam') {
-        useInferenceStore.getState().replaceStats(initialSession.stats);
+    const stats = (initialSession as any)?.stats;
+    if (stats && stats.status !== 'idle') {
+      if (initialSession?.sourceType !== 'oak-camera' && initialSession?.sourceType !== 'webcam') {
+        useInferenceStore.getState().replaceStats(stats);
       }
     }
   }, [initialSession]);
@@ -133,18 +134,11 @@ export default function App() {
 
   // Keep sessionStorage in sync with live inference state & results
   useEffect(() => {
-    const isCamera = sourceType === 'oak-camera' || sourceType === 'webcam';
     saveSessionState({
-      isRunning,
       sourceType,
       expectedDucks,
-      ...(ducks.length > 0 && !isCamera ? { ducks } : {}),
-      ...(framesProcessed > 0 && !isCamera ? { framesProcessed, fps, uptimeSeconds } : {}),
-      stats: isCamera ? undefined : useInferenceStore.getState().stats,
-      lastCameraFrame: isCamera ? lastCameraFrame : undefined,
-      lastVideoFrame: !isCamera ? lastVideoFrame : undefined,
     });
-  }, [isRunning, sourceType, expectedDucks, ducks, framesProcessed, fps, uptimeSeconds, lastCameraFrame, lastVideoFrame]);
+  }, [sourceType, expectedDucks]);
 
   // Snapshot cache to preserve complete run state across source toggling
   interface SourceStateSnapshot {
@@ -300,14 +294,15 @@ export default function App() {
     const st = (saved.sourceType || sourceType) as StreamSourceType;
     const isVideo = st === 'uploaded-video' || st === 'sample-pond';
     const isCamera = st === 'oak-camera' || st === 'webcam';
+    const savedIsRunning = (saved as any).isRunning;
 
     if (isVideo && saved.videoSessionId) {
       const sessionId = saved.videoSessionId;
       fetch(`${getApiBaseUrl()}/video/status/${sessionId}`, { method: 'GET', cache: 'no-store' })
         .then(async (res) => {
           if (res.status === 404) {
-            if (saved.isRunning) {
-              saveSessionState({ isRunning: false });
+            if (savedIsRunning) {
+              saveSessionState({} as any);
               setIsRunning(false);
               addLog('Video session no longer exists on backend — inference stopped.', 'info');
             }
@@ -335,16 +330,26 @@ export default function App() {
             setDucks(incomingDucks);
           }
 
-          if (saved.isRunning) {
+          const backendIsRunning = data.status === 'processing' || data.status === 'warming' || data.status === 'queued';
+          
+          if (backendIsRunning) {
+            if (!savedIsRunning) {
+               setIsRunning(true);
+            }
             addLog('🔄 Page refreshed — reconnecting to active video inference session...', 'info');
-          } else if (incomingDucks.length > 0 || (data.frames_processed || 0) > 0) {
-            addLog('🔄 Page refreshed — restored inference stats and detections.', 'info');
+          } else {
+            if (savedIsRunning) {
+               setIsRunning(false);
+               addLog('Video inference was already stopped on the backend.', 'info');
+            } else if (incomingDucks.length > 0 || (data.frames_processed || 0) > 0) {
+               addLog('🔄 Page refreshed — restored inference stats and detections.', 'info');
+            }
           }
         })
         .catch(() => {
           // Network error — leave state as restored from sessionStorage
         });
-    } else if (isCamera && saved.isRunning) {
+    } else if (isCamera && savedIsRunning) {
       addLog('🔄 Page refreshed — reconnecting to live camera inference stream...', 'info');
       camera.setIsStreaming(true);
     }
@@ -672,14 +677,8 @@ export default function App() {
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       saveSessionState({
-        isRunning: isRunningRef.current,
         sourceType: sourceTypeRef.current,
         expectedDucks: expectedDucksRef.current,
-        ducks: ducksRef.current,
-        framesProcessed: framesProcessedRef.current,
-        fps: fpsRef.current,
-        uptimeSeconds: uptimeSecondsRef.current,
-        stats: useInferenceStore.getState().stats,
       });
       if (isRunningRef.current) {
         e.preventDefault();

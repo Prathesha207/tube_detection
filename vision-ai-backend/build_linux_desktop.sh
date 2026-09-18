@@ -93,8 +93,7 @@ pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
   --collect-all depthai \
   --collect-all av \
   --collect-all duck_analyzer \
-  --collect-all mediapipe \
-  --collect-all matplotlib
+  --collect-all mediapipe
 
 # Strip non-runtime development files directly in dist/backend
 chmod +x "$BACKEND_DIR/dist/backend/backend"

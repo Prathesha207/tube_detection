@@ -26,7 +26,7 @@ if (-not [Environment]::Is64BitOperatingSystem) { throw 'A 64-bit Windows host i
 if (-not (Test-Path (Join-Path $FrontendDir 'package.json'))) { throw 'vision-ai-frontend must be beside vision-ai-backend.' }
 
 if (-not (Test-Path $ReleaseVenv)) {
-  & $Python -m venv --system-site-packages $ReleaseVenv
+  & $Python -m venv $ReleaseVenv
 }
 $VenvPython = Join-Path $ReleaseVenv 'Scripts\python.exe'
 
@@ -85,9 +85,14 @@ if ($Acceleration -eq 'auto') {
 
 if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
 
-# Verify PyTorch and TorchVision status
-$CurrentTorchVer = & $VenvPython -c "import torch; print(torch.__version__)" 2>$null
-$HasTorchVision = & $VenvPython -c "import torchvision; import importlib.metadata; _ = importlib.metadata.version('torchvision'); print('True')" 2>$null
+# Verify PyTorch and TorchVision status safely without triggering NativeCommandError on stderr
+$CurrentTorchVer = try {
+  & $VenvPython -c "try: import torch; print(torch.__version__)`nexcept Exception: pass" 2>$null
+} catch { $null }
+
+$HasTorchVision = try {
+  & $VenvPython -c "try:`n    import torchvision, importlib.metadata`n    _ = importlib.metadata.version('torchvision')`n    print('True')`nexcept Exception:`n    pass" 2>$null
+} catch { $null }
 
 Write-Host "Installed PyTorch version: $CurrentTorchVer | TorchVision status: $HasTorchVision"
 
@@ -113,7 +118,9 @@ if ($Acceleration -eq 'cuda') {
 $DuckAnalyzerWheel = Get-ChildItem -Path (Join-Path $BackendDir 'app\ml') -Filter 'duck_analyzer-*.whl' -Recurse |
   Sort-Object Name -Descending | Select-Object -First 1
 if (-not $DuckAnalyzerWheel) { throw 'The bundled duck_analyzer wheel is missing.' }
-& $VenvPython -m pip install $DuckAnalyzerWheel.FullName
+$PipExtraArgs = if ($Acceleration -eq 'cuda' -and $CudaIndex) { @('--prefer-binary', '--extra-index-url', $CudaIndex) } else { @('--prefer-binary') }
+& $VenvPython -m pip install @PipExtraArgs $DuckAnalyzerWheel.FullName
+if ($LASTEXITCODE -ne 0) { throw 'Failed to install duck_analyzer wheel.' }
 if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backend\backend.exe'))) {
   Push-Location $BackendDir
   try {
@@ -133,8 +140,8 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
       '--collect-all', 'app', '--collect-all', 'fastapi', '--collect-all', 'starlette', '--collect-all', 'uvicorn',
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',
       '--collect-all', 'ultralytics', '--collect-all', 'segmentation_models_pytorch', '--collect-all', 'depthai',
-      '--collect-all', 'av', '--collect-all', 'duck_analyzer', '--collect-all', 'mediapipe', '--collect-all', 'matplotlib',
-      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg'
+      '--collect-all', 'av', '--collect-all', 'mediapipe',
+      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg', '--collect-all', 'duck_analyzer'
     )
     & $VenvPython -m PyInstaller @PyInstallerArgs
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }

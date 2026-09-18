@@ -265,6 +265,7 @@ function createWindow() {
       nodeIntegration: false,
       webSecurity: false,
       allowRunningInsecureContent: true,
+      backgroundThrottling: false,
     },
   })
 
@@ -281,6 +282,12 @@ function createWindow() {
     if (isQuitting) return  // already confirmed, let it close
     if (isInferenceRunning) {
       event.preventDefault()
+      
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.focus()
+
       const { response } = await dialog.showMessageBox(mainWindow, {
         type: "warning",
         buttons: ["Keep Running", "Stop & Close"],
@@ -293,8 +300,20 @@ function createWindow() {
       if (response === 1) {
         // User confirmed: stop backend and quit
         isQuitting = true
-        await stopBackend()
-        app.quit()
+        
+        // Hide window immediately for snappy UX, then stop backend in background
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.hide()
+        }
+        
+        console.log("User chose to stop & close. Stopping backend...")
+        try {
+          await stopBackend()
+        } catch (err) {
+          console.error("Error during stopBackend on close:", err)
+        }
+        
+        app.exit(0) // Force exit to avoid getting stuck in Electron's quit loop
       }
       // response === 0: user clicked "Keep Running" — do nothing, window stays open
     }
@@ -408,6 +427,7 @@ async function startBackend() {
     shell: false,
     detached: process.platform !== "win32",
     windowsHide: true,
+    stdio: "ignore",
   })
 
   if (backendProcess && backendProcess.pid) {
@@ -594,13 +614,16 @@ app.on("before-quit", async (event) => {
 
   console.log("Stopping backend before quit...")
   await stopBackend()
-  app.quit()
+  app.exit(0)
 })
 
 app.on("window-all-closed", async () => {
+  if (isQuitting) return
+  isQuitting = true
+  
   await stopBackend()
   if (process.platform !== "darwin") {
-    app.quit()
+    app.exit(0)
   }
 })
 

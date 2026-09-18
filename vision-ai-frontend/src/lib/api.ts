@@ -12,7 +12,7 @@ export function getApiBaseUrl(): string {
     try {
       const saved = localStorage.getItem('vision_backend_url');
       if (saved && saved.trim() !== '') return saved.replace(/\/+$/, '');
-    } catch {}
+    } catch { }
   }
 
   // 2. Explicit env override (e.g. from .env file or Cloudflare build)
@@ -25,7 +25,7 @@ export function getApiBaseUrl(): string {
         if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
           return `${window.location.protocol}//${window.location.hostname}:${parsed.port || '8000'}`;
         }
-      } catch {}
+      } catch { }
     }
     return trimmed;
   }
@@ -43,9 +43,18 @@ export function getApiBaseUrl(): string {
 
 export const API_BASE_URL = getApiBaseUrl();
 
+// BUGFIX: video_router.py's /video/upload runs an ffmpeg transcode subprocess
+// with a 180s budget (see `timeout=180` in run_transcode()). A 15s axios
+// timeout here means any upload that needs more than 15s to transcode gets
+// aborted client-side while the backend keeps working in the background and
+// eventually finishes into a session the UI has already given up on -- which
+// looks identical to "stuck" or "offline" to the user. Raised to comfortably
+// exceed the backend's own budget. If a specific call genuinely needs to fail
+// fast (e.g. a lightweight status check), override per-call with
+// `api.get(url, { timeout: 5000 })` rather than lowering this default.
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 15000,
+  timeout: 200000,
   headers: {
     "Content-Type": "application/json",
   },

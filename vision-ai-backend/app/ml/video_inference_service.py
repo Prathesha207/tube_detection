@@ -99,6 +99,8 @@ class VideoInferenceService:
         self.sessions: Dict[str, Dict[str, Any]] = {}
         # Global lock to ensure only one GPU inference runs at a time
         self._gpu_lock = asyncio.Lock()
+        # Single-thread executor for synchronous inference to avoid blocking the asyncio event loop
+        self._ml_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Non-blocking async background executor for saving anomaly frames to disk without stalling inference
         self._io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
@@ -123,122 +125,40 @@ class VideoInferenceService:
         results_json_path: str,
         thumbnail_dir: str,
     ):
-        if self._shared_analyzer is None:
-            # Check if camera_inference_service already loaded an analyzer
-            try:
-                from app.ml import camera_inference_service
-                with camera_inference_service._shared_analyzer_lock:
-                    if camera_inference_service._shared_camera_analyzer is not None:
-                        self._shared_analyzer = camera_inference_service._shared_camera_analyzer
-                        logger.info("Reusing in-memory DuckAnalyzer from camera service (instant start, no model reload)...")
-            except Exception:
-                pass
+        logger.info("Initializing a fresh DuckAnalyzer for this video session...")
+        analyzer = DuckAnalyzer(
+            session_config_path,
+            expected_duck_count=expected_duck_count
+        )
+        
+        # Optionally, restore GPU if it was globally downgraded but is now working
+        if str(getattr(analyzer, "_device_str", "")).lower() == "cpu" and is_cuda_operational():
+            logger.info("GPU is operational — starting analyzer on CUDA.")
+            analyzer._device_str = "cuda:0"
+            analyzer.use_half = bool(analyzer.cfg.get("use_half", False))
+            if hasattr(analyzer, "model") and analyzer.model is not None:
+                analyzer.model.to("cuda:0")
+            if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
+                try:
+                    analyzer.embedder.device = "cuda:0"
+                    if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
+                        analyzer.embedder.model.to("cuda:0")
+                    if hasattr(analyzer.embedder, "_mean"):
+                        analyzer.embedder._mean = analyzer.embedder._mean.to("cuda:0")
+                    if hasattr(analyzer.embedder, "_std"):
+                        analyzer.embedder._std = analyzer.embedder._std.to("cuda:0")
+                except Exception:
+                    pass
+                    
+        if hasattr(analyzer, "_gpu_fail_count"):
+            analyzer._gpu_fail_count = 0
 
-        if self._shared_analyzer is None:
-            logger.info("Initializing DuckAnalyzer (loading YOLO weights into memory once)...")
-            analyzer = DuckAnalyzer(
-                session_config_path,
-                expected_duck_count=expected_duck_count
-            )
-            self._shared_analyzer = analyzer
-            try:
-                from app.ml import camera_inference_service
-                with camera_inference_service._shared_analyzer_lock:
-                    if camera_inference_service._shared_camera_analyzer is None:
-                        camera_inference_service._shared_camera_analyzer = analyzer
-            except Exception:
-                pass
-            return analyzer
-        else:
-            logger.info("Reusing in-memory DuckAnalyzer (instant session reset, no model reload)...")
-            analyzer = self._shared_analyzer
-            
-            # GPU re-assertion: If device was downgraded to CPU but GPU is working, restore it!
-            if str(getattr(analyzer, "_device_str", "")).lower() == "cpu" and is_cuda_operational():
-                logger.info("GPU is operational — restoring shared analyzer to CUDA from CPU.")
-                analyzer._device_str = "cuda:0"
-                analyzer.use_half = bool(analyzer.cfg.get("use_half", False))
-                if hasattr(analyzer, "model") and analyzer.model is not None:
-                    analyzer.model.to("cuda:0")
-                if hasattr(analyzer, "embedder") and analyzer.embedder is not None:
-                    try:
-                        analyzer.embedder.device = "cuda:0"
-                        if hasattr(analyzer.embedder, "model") and analyzer.embedder.model is not None:
-                            analyzer.embedder.model.to("cuda:0")
-                        if hasattr(analyzer.embedder, "_mean"):
-                            analyzer.embedder._mean = analyzer.embedder._mean.to("cuda:0")
-                        if hasattr(analyzer.embedder, "_std"):
-                            analyzer.embedder._std = analyzer.embedder._std.to("cuda:0")
-                    except Exception:
-                        pass
-            if hasattr(analyzer, "_gpu_fail_count"):
-                analyzer._gpu_fail_count = 0
-
-            analyzer.expected = int(expected_duck_count)
-            analyzer.cfg["results_json_path"] = results_json_path
-            analyzer.cfg["thumbnail_dir"] = thumbnail_dir
-            analyzer.thumbnail_dir = thumbnail_dir
-            analyzer.frame_idx = 0
-            analyzer.diag = None
-            analyzer.anchor_locked = False
-            analyzer.warmup_best = None
-            analyzer.warmup_count = 0
-            if hasattr(analyzer, "tid_to_display") and isinstance(analyzer.tid_to_display, dict):
-                analyzer.tid_to_display.clear()
-            if hasattr(analyzer, "display_info") and isinstance(analyzer.display_info, dict):
-                analyzer.display_info.clear()
-            analyzer.next_display_id = 1
-            analyzer.num_anchor = 0
-            if hasattr(analyzer, "otid_to_display") and isinstance(analyzer.otid_to_display, dict):
-                analyzer.otid_to_display.clear()
-            if hasattr(analyzer, "other_info") and isinstance(analyzer.other_info, dict):
-                analyzer.other_info.clear()
-            analyzer.next_other_display = 1
-            analyzer.num_other_anchor = 0
-            if hasattr(analyzer, "prov_new") and isinstance(analyzer.prov_new, dict):
-                analyzer.prov_new.clear()
-            if hasattr(analyzer, "reclaim_candidates") and isinstance(analyzer.reclaim_candidates, dict):
-                analyzer.reclaim_candidates.clear()
-            if hasattr(analyzer, "confirmed_sent") and isinstance(analyzer.confirmed_sent, set):
-                analyzer.confirmed_sent.clear()
-            if hasattr(analyzer, "missing_active") and isinstance(analyzer.missing_active, set):
-                analyzer.missing_active.clear()
-            if hasattr(analyzer, "other_sent") and isinstance(analyzer.other_sent, set):
-                analyzer.other_sent.clear()
-            analyzer._excess_sent = False
-            if hasattr(analyzer, "count_history") and hasattr(analyzer.count_history, "clear"):
-                analyzer.count_history.clear()
-            analyzer._last_time = None
-            analyzer._hand_hold = 0
-            if hasattr(analyzer, "_prov_other") and isinstance(analyzer._prov_other, dict):
-                analyzer._prov_other.clear()
-            analyzer._last_tray_box = None
-            analyzer._tray_gone = 0
-            analyzer._hand_hold = 0
-            try:
-                if hasattr(analyzer, "model"):
-                    # Forcefully destroy the predictor to guarantee a 100% clean tracker state
-                    # on the next run. t.reset() is often insufficient and leaks memory/history.
-                    analyzer.model.predictor = None
-            except Exception:
-                pass
-
-            # Ensure MediaPipe hands is active and re-initialized if ever closed
-            if hasattr(analyzer, "hand_backend") and analyzer.hand_backend == "mediapipe":
-                if getattr(analyzer, "_mp_hands", None) is None or getattr(analyzer._mp_hands, "_graph", None) is None:
-                    try:
-                        import mediapipe as mp
-                        analyzer._mp_hands = mp.solutions.hands.Hands(
-                            static_image_mode=False,
-                            max_num_hands=2,
-                            min_detection_confidence=analyzer.hand_conf,
-                            min_tracking_confidence=analyzer.hand_track_conf,
-                        )
-                        logger.info("Re-initialized MediaPipe hands graph successfully.")
-                    except Exception as mp_err:
-                        logger.warning(f"Could not re-initialize MediaPipe: {mp_err}")
-
-            return analyzer
+        analyzer.expected = int(expected_duck_count)
+        analyzer.cfg["results_json_path"] = results_json_path
+        analyzer.cfg["thumbnail_dir"] = thumbnail_dir
+        analyzer.thumbnail_dir = thumbnail_dir
+        
+        return analyzer
 
     def stop_all_sessions(self):
         for sid, session in self.sessions.items():
@@ -632,14 +552,15 @@ class VideoInferenceService:
                 session["stats"]["output_dir"] = session_dir
                 session["stats"]["results_json_path"] = results_json_path
 
-                cap = cv2.VideoCapture(temp_file_path)
+                # Force FFmpeg backend. The default MSMF backend on Windows often deadlocks in PyInstaller.
+                cap = cv2.VideoCapture(temp_file_path, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
                     # Some browser-uploaded codecs are not readable by the
                     # OpenCV build, but their browser-safe H.264 copy is.
                     fallback_path = session.get("browser_video_path")
                     if fallback_path and fallback_path != temp_file_path:
                         cap.release()
-                        cap = cv2.VideoCapture(fallback_path)
+                        cap = cv2.VideoCapture(fallback_path, cv2.CAP_FFMPEG)
                         if cap.isOpened():
                             logger.warning("OpenCV could not open raw upload; using browser transcode fallback")
                     if not cap.isOpened():
@@ -673,6 +594,7 @@ class VideoInferenceService:
                 frame_idx = 0
                 start_time = time.time()
                 consecutive_failures = 0
+                pending = None
                 # Abort only after 30 consecutive frame failures (not 10) so transient CUDA
                 # errors on fresh user installs (driver warm-up, OOM spikes) don't kill the
                 # session prematurely. The per-frame CPU fallback will already have fired by
@@ -750,8 +672,11 @@ class VideoInferenceService:
                         return analyzer_inst.process_frame(frame_in)
 
                     try:
+                        pending = loop.run_in_executor(
+                            self._ml_executor, _infer_frame, analyzer, annotated_frame
+                        )
                         result = await asyncio.wait_for(
-                            loop.run_in_executor(None, _infer_frame, analyzer, annotated_frame),
+                            pending,
                             timeout=per_frame_timeout_s,
                         )
                         if not self._is_current_run(session_id, run_seq):
@@ -834,7 +759,7 @@ class VideoInferenceService:
                             # Retry the frame on CPU immediately
                             try:
                                 result = await loop.run_in_executor(
-                                    None, _infer_frame, analyzer, annotated_frame
+                                    self._ml_executor, _infer_frame, analyzer, annotated_frame
                                 )
                                 consecutive_failures = 0
                                 recovered = True
@@ -1024,6 +949,32 @@ class VideoInferenceService:
                 try:
                     if session_config_path and os.path.exists(session_config_path):
                         os.remove(session_config_path)
+                except Exception:
+                    pass
+
+                # Explicitly close and dereference the analyzer to free PyTorch/CUDA and MediaPipe memory
+                try:
+                    if session.get("analyzer"):
+                        if hasattr(session["analyzer"], "close"):
+                            session["analyzer"].close()
+                        # Nullify predictor to force GC of tracker history
+                        if hasattr(session["analyzer"], "model") and hasattr(session["analyzer"].model, "predictor"):
+                            session["analyzer"].model.predictor = None
+                    session["analyzer"] = None
+                    analyzer = None
+                    import gc
+                    gc.collect()
+                    logger.info(f"Released DuckAnalyzer resources for session {session_id}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Error during DuckAnalyzer cleanup: {cleanup_err}")
+
+                try:
+                    if pending:
+                        # Give the previous frame a hard limit to finish before declaring the thread deadlocked
+                        await asyncio.wait_for(pending, timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.error("FATAL: Previous ML frame is STILL running after timeout! The ML thread is deadlocked.")
+                    raise RuntimeError("ML thread deadlocked. Session aborted to prevent application freeze.")
                 except Exception:
                     pass
 

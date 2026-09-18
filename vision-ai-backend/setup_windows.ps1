@@ -226,10 +226,11 @@ if (-not $HasNvidia) {
     }
 }
 
-# Test if an existing PyTorch and torchvision are already installed and whether CUDA is operational
-$TorchCheck = & $VenvPython -c "
-import torch
+# Test if an existing PyTorch and torchvision are already installed and whether CUDA is operational safely
+$TorchCheck = try {
+    & $VenvPython -c "
 try:
+    import torch
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         torch.cuda.init()
         t = torch.zeros((1, 1), device='cuda:0')
@@ -241,8 +242,18 @@ try:
 except Exception as e:
     print('CUDA_ERROR:' + str(e))
 " 2>$null
+} catch { $null }
 
-$TorchVisionCheck = & $VenvPython -c "import torchvision; import importlib.metadata; _ = importlib.metadata.version('torchvision'); print('TV_OK')" 2>$null
+$TorchVisionCheck = try {
+    & $VenvPython -c "
+try:
+    import torchvision, importlib.metadata
+    _ = importlib.metadata.version('torchvision')
+    print('TV_OK')
+except Exception:
+    pass
+" 2>$null
+} catch { $null }
 
 $GpuName = if ($NvidiaGpus) { ($NvidiaGpus | Select-Object -First 1).Name } else { 'NVIDIA GPU' }
 

@@ -23,7 +23,7 @@ duck_class_id: 0
 other_class_id: 1
 
 # detection
-conf: 0.5
+conf: 0.4
 
 device: 0
 use_half: false      # Set false for GTX 1060 (Pascal lacks Tensor Cores; FP32 is ~20% faster)

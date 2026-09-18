@@ -120,7 +120,7 @@ export function useVideoPipeline({
     setCustomVideoUrl(url);
     setCustomVideoName(name);
     setSourceType('uploaded-video');
-    setAutoStartRecordedInference(false);
+    setAutoStartRecordedInference(true);
     setCameraStartingState('ready');
 
     // Clean slate: clear prior detections, frame counts, and stats for the new video
@@ -132,12 +132,11 @@ export function useVideoPipeline({
 
     if (sessionId) {
       setVideoSessionId(sessionId);
-      await startVideoInference(sessionId);
-    } else {
-      setIsRunning(false);
-      showToast('success', `Video ready. Click "Start Inference" to evaluate.`);
-      addLog(`Video loaded: "${name}". Ready for inference.`, 'info');
     }
+    
+    setIsRunning(false);
+    showToast('success', `Video uploaded. Starting inference automatically...`);
+    addLog(`Video loaded: "${name}". Auto-starting inference.`, 'info');
   };
 
   const handleClearVideo = () => {
@@ -195,7 +194,7 @@ export function useVideoPipeline({
       const response = await fetch(`${getApiBaseUrl()}/video/start/${sid}`, { method: 'POST' });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.message || 'Unable to start inference');
+        throw new Error(body.detail || body.message || 'Unable to start inference');
       }
       setIsRunning(true);
       showToast('success', 'Inference started');

@@ -2,17 +2,17 @@
 # All thresholds and paths live here. Edit these, not the code.
 
 # paths
-# Portable paths relative to app/ml/ (works on every user PC):
 model_path: "model/best.pt"
 # hand / pose model (skips a frame when a hand is present)
 # hand detection
-hand_backend: mediapipe     # default; use "yolo" to fall back to a pose model
+hand_backend: mediapipe    # default; use "yolo" to fall back to a pose model
 hand_conf: 0.6              # MediaPipe min_detection_confidence
 hand_track_conf: 0.5
 hand_hold_frames: 2 
-# hand ROI: relative to app/ml/
+# hand ROI: draw ONCE with draw_roi.py; hand short-circuit fires only
+# when a hand overlaps this box. Delete the file to revert to whole-frame.
 roi_path: "model/hand_roi.json"
-# --- local saving (production = false: services manage session dirs portably on any PC) ---
+# --- local saving (for YOUR reference/debugging) ---
 save_local: false
 thumbnail_dir: null
 annotated_dir: null
@@ -23,13 +23,11 @@ duck_class_id: 0
 other_class_id: 1
 
 # detection
-conf: 0.5
-iou: 0.7
-imgsz: 640
+conf: 0.4
 
 device: 0
-use_half: false      # Set false for GTX 1060 (Pascal lacks Tensor Cores; FP32 is ~20% faster)
-gpu_benchmark: false
+use_half: false       # FP16 on GPU (~2x faster). Set false to disable.
+gpu_benchmark: true  # one-time TFLOP/s print at startup (optional; set false later)
 debug: false
 # deep appearance embedding for re-ID (fixes similar-colour duck id swaps).
 # needs:  pip install transformers torchvision  (torch already installed)
@@ -37,7 +35,7 @@ debug: false
 use_embedder: false
 embedder_backend: resnet
 embed_weight: 0.5
-swap_verify_min_app: 0.0  
+swap_verify_min_app: 0.5  
 # anchor
 warmup_frames: 20
 warmup_require_exact: false   # FIX (Issue 1): do not hang 300 frames on a count mismatch
@@ -63,7 +61,14 @@ strict_count: true
 rebind_pos_weight: 0.5
 rebind_app_weight: 0.5
 rebind_threshold: 0.2     # lower = easier to reclaim a slot (fewer false MISSING)
+# a rebind must ALSO clear this appearance similarity, so a wrong-colour duck
+# drifting over a missing duck's spot can't silently reclaim the slot (which
+# masked the loss and forced a false NORMAL). Raise toward 0.5 if a different
+# duck still steals a slot; lower toward 0.25 if genuine returns are rejected.
 rebind_min_app: 0.35
+# when two ducks are within crowd_dist_frac*diagonal of each other,
+# position can't tell them apart, so lean on colour: use this heavier
+# appearance weight for the crowded match (fixes id drift when close).
 rebind_app_weight_crowded: 0.5
 crowd_dist_frac: 0.06
 

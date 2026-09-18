@@ -1396,17 +1396,68 @@ class OakCameraService:
         if self._offline_thread and self._offline_thread.is_alive():
             self._stop_offline_thread()
 
+        # BUGFIX: this used to join(timeout=2.0), log a warning if the thread
+        # was still alive, and then fall through anyway to unconditionally
+        # call clear_session() -> app_state.exit_inference("camera") and null
+        # out self._inference_thread. That releases the cross-kind GPU claim
+        # (and defeats start_inference()'s "already_running" guard) while the
+        # worker thread can still be mid-call inside analyzer.process_frame()
+        # on the GPU. The very next /video/start can then pass
+        # try_enter_inference("video") and load a second DuckAnalyzer onto
+        # the same GPU while the camera thread is still using it -- two
+        # threads hitting the same CUDA context concurrently, which is
+        # exactly the kind of thing that can wedge the whole process badly
+        # enough to look like "backend OFFLINE". This is the backend half of
+        # the race useInferenceLoop.ts's "GPU-contention fix" comment was
+        # working around from the frontend side.
+        #
+        # Fix: only release the claim / clear the session once the thread is
+        # actually confirmed dead. If it's still alive after the timeout, we
+        # leave self._inference_thread pointing at it (so start_inference()'s
+        # existing "already_running" guard keeps correctly refusing a new
+        # start) and hand off to a background watcher that does an unbounded
+        # join and releases the claim only when the thread genuinely exits.
+        thread_confirmed_dead = True
         if self._inference_thread and self._inference_thread.is_alive():
             self._inference_thread.join(timeout=2.0)
             if self._inference_thread.is_alive():
-                logger.warning("[INFERENCE] Thread did not stop in time — will self-terminate")
+                thread_confirmed_dead = False
+                stuck_thread = self._inference_thread
+                stuck_session_id = self._inference_session_id
+                logger.warning(
+                    "[INFERENCE] Worker thread did not stop within 2s -- it is "
+                    "still using the GPU. NOT releasing the camera's GPU claim "
+                    "yet; a background watcher will release it once the thread "
+                    "actually exits."
+                )
 
-        # ── Clean up inference session ──
-        if self._inference_session_id:
+                def _wait_and_release(thread=stuck_thread, session_id=stuck_session_id):
+                    thread.join()  # unbounded -- the native call WILL return eventually
+                    logger.info(
+                        f"[INFERENCE] Delayed-stopped worker thread for session "
+                        f"{session_id} has now actually exited -- releasing GPU claim."
+                    )
+                    try:
+                        clear_session(session_id)
+                    except Exception as e:
+                        logger.error(f"[INFERENCE] clear_session during delayed release failed: {e}")
+
+                threading.Thread(
+                    target=_wait_and_release,
+                    name="oak-inference-delayed-release",
+                    daemon=True,
+                ).start()
+
+        # ── Clean up inference session (only if the thread is actually gone) ──
+        if thread_confirmed_dead and self._inference_session_id:
             logger.info(f"[INFERENCE] Clearing session: {self._inference_session_id}")
             clear_session(self._inference_session_id)
 
-        self._inference_thread = None
+        # Only forget the thread reference once it's confirmed dead -- otherwise
+        # start_inference()'s already_running guard must keep seeing it so a
+        # second worker can't start on top of the still-running one.
+        if thread_confirmed_dead:
+            self._inference_thread = None
         self._inference_watchdog_thread = None
         self._inference_result_queue = None
         self._inference_session_id = None
@@ -1602,6 +1653,14 @@ class OakCameraService:
         """App shutdown — stop capture threads if running, cleanup pipeline, disconnect device."""
         async with self._lifecycle_lock:
             try:
+                self.stop_inference()
+                
+                # If a recording is active, we should attempt to stop it gracefully
+                if self._active_recording and getattr(self._active_recording, "session_id", None):
+                    self.stop_recording(self._active_recording.session_id)
+                elif self._inference_session_id:
+                    self.stop_recording(self._inference_session_id)
+                    
                 self._close_stream_queue()
                 self._stop_capture_threads()
                 self._cleanup_pipeline()

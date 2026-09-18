@@ -46,6 +46,10 @@ def start_recording(data: StartRecordingRequest, db: Session = Depends(get_db)):
         }
     except HTTPException:
         raise
+    except RuntimeError as e:
+        logger.warning(f"[API ERROR] POST /recording/start failed: {e}")
+        realtime_log_service.add_log("record", "ERROR", str(e), "error")
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error(f"[API ERROR] POST /recording/start failed: {e}", exc_info=True)
         realtime_log_service.add_log("record", "CRASH", f"Start recording failed: {e}", "error")

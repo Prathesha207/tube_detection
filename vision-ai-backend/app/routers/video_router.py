@@ -291,7 +291,7 @@ from fastapi.responses import FileResponse
 @router.get("/raw/{session_id}")
 async def get_raw_video(session_id: str):
     try:
-        session = _ensure_session_exists(session_id)
+        session = await _ensure_session_exists(session_id)
         if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         video_save_path = session.get("browser_video_path") or session.get("inference_video_path")
@@ -305,7 +305,7 @@ async def get_raw_video(session_id: str):
         realtime_log_service.add_log("video", "CRASH", f"Get raw video failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to get raw video: {e}")
 
-def _ensure_session_exists(session_id: str):
+async def _ensure_session_exists(session_id: str):
     if not session_id or str(session_id).strip() in ("", "undefined", "null"):
         return None
 
@@ -466,13 +466,18 @@ def _ensure_session_exists(session_id: str):
 @router.post("/start/{session_id}")
 async def start_video_inference(session_id: str, background_tasks: BackgroundTasks):
     try:
-        session = _ensure_session_exists(session_id)
+        session = await _ensure_session_exists(session_id)
         if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
         # If an active background task is currently running, await stopping it so _gpu_lock is released
         if session.get("is_task_active", False):
             await ml_inference_service.stop_session(session_id, timeout=2.5)
+            # Wait up to 3s for the old task to fully exit and release _gpu_lock
+            import time as _time
+            _deadline = _time.time() + 3.0
+            while session.get("is_task_active", False) and _time.time() < _deadline:
+                await asyncio.sleep(0.05)
 
         video_save_path = session.get("inference_video_path")
         if not video_save_path or not os.path.exists(video_save_path):
@@ -483,13 +488,17 @@ async def start_video_inference(session_id: str, background_tasks: BackgroundTas
         # keep the old run alive. start_run invalidates that old task and clears
         # its queued MJPEG frames before the new task begins.
         run_seq = ml_inference_service.start_run(session_id)
-        background_tasks.add_task(
-            ml_inference_service.process_video_task,
-            session_id,
-            video_save_path,
-            session.get("original_filename"),
-            run_seq,
+        
+        # Explicitly create the task and store it so stop_session can await its termination
+        task = asyncio.create_task(
+            ml_inference_service.process_video_task(
+                session_id,
+                video_save_path,
+                session.get("original_filename"),
+                run_seq,
+            )
         )
+        session["task"] = task
             
         return {"status": "started", "session_id": session_id}
     except HTTPException:
@@ -502,7 +511,7 @@ async def start_video_inference(session_id: str, background_tasks: BackgroundTas
 @router.get("/stream/{session_id}")
 async def stream_video(session_id: str, request: Request):
     try:
-        _ensure_session_exists(session_id)
+        await _ensure_session_exists(session_id)
         status = ml_inference_service.get_status(session_id)
         if not status:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
@@ -527,7 +536,7 @@ async def stream_video(session_id: str, request: Request):
 @router.get("/status/{session_id}")
 async def get_status(session_id: str):
     try:
-        _ensure_session_exists(session_id)
+        await _ensure_session_exists(session_id)
         status = ml_inference_service.get_status(session_id)
         if not status:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
@@ -542,12 +551,14 @@ async def get_status(session_id: str):
 @router.post("/stop/{session_id}")
 async def stop_video(session_id: str):
     try:
-        _ensure_session_exists(session_id)
+        await _ensure_session_exists(session_id)
         status = ml_inference_service.get_status(session_id)
         if not status:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
-        await ml_inference_service.stop_session(session_id)
+        # BUGFIX: bound the wait so a wedged task can't hang this request
+        # (see stop_session() docstring in video_inference_service.py).
+        await ml_inference_service.stop_session(session_id, timeout=3.0)
         return {"message": "Stop signal sent."}
     except HTTPException:
         raise
@@ -559,9 +570,9 @@ async def stop_video(session_id: str):
 @router.post("/clear/{session_id}")
 async def clear_video_session(session_id: str):
     try:
-        session = _ensure_session_exists(session_id)
+        session = await _ensure_session_exists(session_id)
         if session:
-            await ml_inference_service.stop_session(session_id, timeout=2.5)
+            await ml_inference_service.stop_session(session_id, timeout=3.0)
             ml_inference_service.clear_session_files(session_id)
             ml_inference_service.sessions.pop(session_id, None)
         return {"status": "cleared", "session_id": session_id}
@@ -572,10 +583,37 @@ async def clear_video_session(session_id: str):
         realtime_log_service.add_log("video", "CRASH", f"Clear video session failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to clear video session: {e}")
 
+@router.post("/reset/{session_id}")
+async def reset_video_session(session_id: str):
+    try:
+        session = await _ensure_session_exists(session_id)
+        if session:
+            # 1. Stop the task fully and await it (bounded -- see stop_session docstring)
+            await ml_inference_service.stop_session(session_id, timeout=3.0)
+            # 2. Release resources natively
+            if "analyzer" in session and session["analyzer"] is not None:
+                try:
+                    if hasattr(session["analyzer"], "model") and session["analyzer"].model is not None:
+                        session["analyzer"].model.predictor = None
+                except:
+                    pass
+                session["analyzer"] = None
+            # 3. Clear temp files
+            ml_inference_service.clear_session_files(session_id)
+            # 4. Remove session from memory
+            ml_inference_service.sessions.pop(session_id, None)
+        return {"status": "reset", "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /video/reset/{session_id}: {e}", exc_info=True)
+        realtime_log_service.add_log("video", "CRASH", f"Reset video session failed: {e}", "error")
+        raise HTTPException(status_code=500, detail=f"Failed to reset video session: {e}")
+
 @router.get("/last_frame/{session_id}")
 async def get_last_frame(session_id: str):
     try:
-        session = _ensure_session_exists(session_id)
+        session = await _ensure_session_exists(session_id)
         frame_bytes = session.get("last_frame_bytes") if session else None
         
         if not frame_bytes:
@@ -688,7 +726,7 @@ class ExpectedCountUpdate(BaseModel):
 @router.post("/update_expected/{session_id}")
 async def update_expected(session_id: str, payload: ExpectedCountUpdate):
     try:
-        session = _ensure_session_exists(session_id)
+        session = await _ensure_session_exists(session_id)
         if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
@@ -770,5 +808,3 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
         logger.error(f"[API ERROR] POST /video/inference/path: {e}", exc_info=True)
         realtime_log_service.add_log("video", "CRASH", f"Start path inference failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to start path inference: {e}")
-
-

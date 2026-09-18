@@ -56,6 +56,29 @@ _bundled_torch_hub = resource_path(os.path.join("app", "ml", "torch_hub"))
 if os.path.exists(_bundled_torch_hub):
     os.environ["TORCH_HOME"] = _bundled_torch_hub
 
+# -------------------------------------------------------------------------
+# CRITICAL FIX FOR PYINSTALLER + PYTORCH DEADLOCKS
+# -------------------------------------------------------------------------
+# PyTorch/OpenMP often deadlocks when run inside a ThreadPoolExecutor on Windows 
+# from a PyInstaller executable. We must force single-threading for the backend BLAS/OMP.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+try:
+    import cv2
+    cv2.setNumThreads(0)
+except Exception:
+    pass
+
+try:
+    import torch
+    torch.set_num_threads(1)
+except Exception:
+    pass
+
 from app.main import app
 
 def setup_db():

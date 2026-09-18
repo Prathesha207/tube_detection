@@ -9,21 +9,13 @@
 const KEY = 'vision_monitor_session_state';
 
 export interface PersistedSessionState {
-  isRunning: boolean;
   sourceType: string;
   videoSessionId: string | null;
   customVideoUrl: string | undefined;
   customVideoName: string | undefined;
   expectedDucks?: number;
-  framesProcessed?: number;
-  fps?: number;
-  uptimeSeconds?: number;
-  ducks?: any[];
-  stats?: any;
   selectedDuckId?: string | null;
   videoDimensions?: { width: number; height: number } | null;
-  lastCameraFrame?: string;
-  lastVideoFrame?: string;
 }
 
 export function saveSessionState(state: Partial<PersistedSessionState>) {
@@ -32,22 +24,7 @@ export function saveSessionState(state: Partial<PersistedSessionState>) {
     const merged = { ...existing, ...state };
     sessionStorage.setItem(KEY, JSON.stringify(merged));
   } catch {
-    // If quota exceeded (e.g. from large base64 thumbnails), strip heavy fields and retry
-    try {
-      const existing = loadSessionState() ?? ({} as PersistedSessionState);
-      const fallbackState = { ...existing, ...state };
-      if (Array.isArray(fallbackState.ducks)) {
-        fallbackState.ducks = fallbackState.ducks.map((d: any) => {
-          if (!d) return d;
-          const { thumbnail, ...rest } = d;
-          return rest;
-        });
-      }
-      if (fallbackState.stats && Array.isArray(fallbackState.stats.thumbnails)) {
-        fallbackState.stats = { ...fallbackState.stats, thumbnails: [] };
-      }
-      sessionStorage.setItem(KEY, JSON.stringify(fallbackState));
-    } catch {}
+    // sessionStorage quota exceeded or other error
   }
 }
 

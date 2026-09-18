@@ -71,6 +71,20 @@ class RecordingSession:
         self.video_path = os.path.join(folder, self.filename)
         self.width  = width
         self.height = height
+        # BUGFIX: `fmt` was only ever a local variable in __init__ -- stop()
+        # reads self.fmt when building its return dict, which raised
+        # AttributeError on every single recording stop (this was thrown
+        # after the file was already correctly flushed/closed by the worker
+        # thread, so the .mp4/.avi/.mkv on disk was actually fine -- but the
+        # exception then propagated out of RecordingSession.stop() ->
+        # recording_service.stop_recording() -> oak_camera_service's
+        # stop_recording()/stop(), which has no try/except around this call.
+        # When stop() is the camera-shutdown path, that exception aborted
+        # shutdown BEFORE _close_stream_queue()/_stop_capture_threads()/
+        # _cleanup_pipeline()/disconnect() could run -- leaving the pipeline
+        # and device connected, which is exactly the kind of state that makes
+        # the next camera start fail or the app look wedged.
+        self.fmt = fmt
         # Initialize all state stop()/add_frame() touch BEFORE attempting to open
         # the container, so a failed open leaves a fully-formed (just inert)
         # object instead of a half-built one that crashes on the first stop().
@@ -263,6 +277,24 @@ def start_recording(
 
     root_path = _resolve_recording_path(root_path)
     session = RecordingSession(session_id, width, height, fps, root_path, recording_format)
+
+    # BUGFIX: if av.open() failed inside RecordingSession.__init__, it logs
+    # and returns early, leaving is_running=False and thread=None -- but this
+    # function used to store that broken session into active_recordings and
+    # return session.video_path unconditionally, exactly as if recording had
+    # started. The caller (oak_camera_service.start_recording) then logs
+    # "[RECORD] Session active" and happily feeds it frames for the entire
+    # session -- every one of them silently dropped by add_frame()'s
+    # `if not self.is_running: return` guard -- producing a recording button
+    # that appears to work but writes nothing, with no error anywhere.
+    if not session.is_running:
+        raise RuntimeError(
+            f"Recording container failed to open for session {session_id} "
+            "(see the '[RECORD] Failed to open container' log line above for "
+            "the underlying cause) -- refusing to report a successful start "
+            "for a session that would silently record zero frames."
+        )
+
     active_recordings[session_id] = session
     return session.video_path
 

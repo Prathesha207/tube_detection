@@ -73,10 +73,16 @@ export function useInferenceLoop({
             const data = JSON.parse(event.data);
             if (!isMounted) return;
             useInferenceStore.getState().setStats(data);
+
+            if (data.status === 'error' || data.status === 'stopped' || data.done) {
+              setIsRunning(false);
+              return;
+            }
+
             if (data.frame && setLastCameraFrame) {
               setLastCameraFrame(data.frame);
             }
-            if (data.status !== 'queued' && data.status !== 'error' && data.status !== 'idle') {
+            if (data.status !== 'queued' && data.status !== 'idle') {
               setFps(data.metrics?.fps || data.fps || 0);
               setFramesProcessed(data.frames_processed || 0);
               setUptimeSeconds(Math.floor((data.frames_processed || 0) / (data.metrics?.fps || data.fps || 30)));
@@ -102,9 +108,11 @@ export function useInferenceLoop({
       return () => { isMounted = false; if (ws) ws.close(); };
     }
 
-    // ---- Polling branch: covers BOTH uploaded video AND camera-recording ----
     const sessionId = effectiveVideoSessionId as string;
 
+    // React's strict mode / unmounts could overlap. We use a generation ref 
+    // to absolutely ensure an older inflight fetch cannot overwrite a newer generation's state.
+    const runGeneration = Date.now() + Math.random();
     let isMounted = true;
     let timeoutId: ReturnType<typeof setTimeout>;
     let consecutive404s = 0;
@@ -133,7 +141,12 @@ export function useInferenceLoop({
 
         useInferenceStore.getState().setStats(data);
 
-        if (data.status !== 'queued' && data.status !== 'error' && data.status !== 'idle') {
+        if (data.status === 'error' || data.status === 'stopped' || data.done) {
+          setIsRunning(false);
+          return;
+        }
+
+        if (data.status !== 'queued' && data.status !== 'idle') {
           setFps(data.fps || 0);
           setFramesProcessed(data.frames_processed || 0);
           setUptimeSeconds(Math.floor((data.frames_processed || 0) / (data.fps || 30)));
@@ -171,8 +184,7 @@ export function useInferenceLoop({
         return;
 
       } catch (err) {
-      } finally {
-        if (isMounted && !timeoutId && isRunning) {
+        if (isMounted && isRunning) {
           timeoutId = setTimeout(pollBackend, 200);
         }
       }
@@ -240,6 +252,22 @@ export function useInferenceLoop({
         await startCameraPipeline();
         setIsStarting(false);
       } else {
+        // BUGFIX: this branch (plain uploaded-video / sample-pond "Start" after
+        // a Stop) used to call startVideoInference() directly without clearing
+        // any frontend state first. The backend now always begins a genuinely
+        // fresh run (see start_run()/_reset_session_stats() server-side), but
+        // the frontend was still showing whatever ducks/fps/progress were left
+        // over from the previous run until the first status poll came back,
+        // which is exactly the "UI shows the old inference/overlay state"
+        // symptom. Clear local state up front so the UI honestly reflects
+        // "starting fresh" immediately, matching what handleResumeInference
+        // already does for the camera-live path below.
+        setFramesProcessed(0);
+        setFps(0);
+        setUptimeSeconds(0);
+        setDucks([]);
+        useInferenceStore.getState().resetStats();
+        resetBBoxCache();
         await startVideoInference();
       }
     }
@@ -275,18 +303,94 @@ export function useInferenceLoop({
 
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
     if (isCameraMode && !cameraRecordSessionId && !videoSessionId) {
-      cameraService.stopLiveInference().catch(() => {});
+      cameraService.stopLiveInference().catch(() => { });
     }
 
     showToast('info', 'Inference paused. Last state retained.');
     addLog('Inference stopped • Detections and side cards preserved.', 'info');
   };
 
+  /**
+   * BUGFIX: this function did not exist at all. Whatever "Reset" button the
+   * UI has was either wired to nothing or, at best, to a local state clear
+   * that never touched the backend -- explaining "The Reset button
+   * currently does nothing."
+   *
+   * This fully resets both sides:
+   *  - Backend: POST /video/reset/{session_id} for every session id this
+   *    hook knows about (both uploaded-video and any loaded camera
+   *    recording). The backend reset handler stops the task, releases the
+   *    analyzer, deletes temp files, and drops the session from memory --
+   *    so the *next* upload creates a completely clean session with no
+   *    stale task/id/results/overlay/progress from before.
+   *  - Frontend: clears every piece of local run state (ducks, fps,
+   *    frames/uptime counters, the shared inference store, and the bbox
+   *    cache) so no residual overlay is drawn.
+   *
+   * IMPORTANT: this hook is only given `videoSessionId` /
+   * `cameraRecordSessionId` as read-only props -- it does not own the state
+   * that holds them, so it cannot itself forget the old session id. Pass a
+   * `clearSessionIds` callback from the parent component that sets its own
+   * videoSessionId / cameraRecordSessionId state back to null, or the next
+   * "Start" will keep pointing at the session id this function just told
+   * the backend to delete (404s / "session not found"). This is also what
+   * makes "upload another video after Reset without a page refresh" work:
+   * the parent must treat a null session id as "no session yet, next
+   * upload creates a fresh one" rather than trying to reuse the old id.
+   */
+  const handleResetInference = async (clearSessionIds?: () => void) => {
+    playWaterDropSound();
+
+    // Stop any in-flight polling / websocket loop immediately.
+    setIsRunning(false);
+    setIsStarting(false);
+
+    const sids = Array.from(new Set([videoSessionId, cameraRecordSessionId].filter(Boolean))) as string[];
+
+    for (const sid of sids) {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/video/reset/${sid}`, { method: 'POST' });
+        if (!res.ok) {
+          console.warn(`[VisionAI] Reset request for session ${sid} returned ${res.status}`);
+        }
+      } catch (err) {
+        console.error('[VisionAI] Failed to reset backend session', sid, err);
+      }
+    }
+
+    const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
+    if (isCameraMode) {
+      try { await cameraService.stopLiveInference(); } catch (e) { }
+      try { await cameraService.stopStream(); } catch (e) { }
+      setCameraIsStreaming?.(false);
+    }
+
+    setFramesProcessed(0);
+    setFps(0);
+    setUptimeSeconds(0);
+    setDucks([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
+
+    clearSessionIds?.();
+
+    showToast('info', 'Inference reset. Upload a new video or start again.');
+    addLog('Inference session fully reset • Backend and frontend state cleared.', 'info');
+  };
+
   const handleResumeInference = (startVideoInference: (customSessionId?: string) => Promise<void>) => {
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
 
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
+      // BUGFIX: same stale-overlay issue as handleToggleRunning's start
+      // branch -- this path skipped clearing frontend state entirely.
       playWaterDropSound();
+      setFramesProcessed(0);
+      setFps(0);
+      setUptimeSeconds(0);
+      setDucks([]);
+      useInferenceStore.getState().resetStats();
+      resetBBoxCache();
       void startVideoInference();
       return;
     }
@@ -316,7 +420,7 @@ export function useInferenceLoop({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ count: expectedDucks })
       })
-        .catch(() => {})
+        .catch(() => { })
         .then(() => cameraService.startLiveInference('live'))
         .then((result: any) => {
           setIsStarting(false);
@@ -347,5 +451,6 @@ export function useInferenceLoop({
     handleToggleRunning,
     handleStopInference,
     handleResumeInference,
+    handleResetInference,
   };
 }

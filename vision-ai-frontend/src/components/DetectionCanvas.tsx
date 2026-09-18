@@ -224,7 +224,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
   const activeLastFrame = isCameraSource ? lastCameraFrame : lastVideoFrame;
   const fallbackLastFrameUrl = !isRunning && isVideoSource && videoSessionId
-    ? `${getApiBaseUrl()}/video/last_frame/${videoSessionId}`
+    ? `${getApiBaseUrl()}/video/last_frame/${videoSessionId}?t=${streamCacheBuster}`
     : undefined;
   const effectiveBackdrop = activeLastFrame || fallbackLastFrameUrl;
 

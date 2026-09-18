@@ -425,16 +425,17 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                 f"latency={result.get('metrics', {}).get('latency_ms', '?')}ms"
             )
 
-            if "_raw_frame" in result:
+            ws_result = dict(result)
+            if "_raw_frame" in ws_result:
                 import cv2, base64, asyncio
-                frame = result.pop("_raw_frame")
+                frame = ws_result.pop("_raw_frame")
                 loop = asyncio.get_running_loop()
                 def _encode():
                     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
-                result["frame"] = await loop.run_in_executor(None, _encode)
+                ws_result["frame"] = await loop.run_in_executor(None, _encode)
 
-            await websocket.send_json(result)
+            await websocket.send_json(ws_result)
 
     except WebSocketDisconnect:
         logger.info(f"[INFERENCE WS] Client disconnected — session: {session_id} | total sent: {results_sent}")

@@ -113,11 +113,7 @@ export function useAnomalyStatus({
       ? backendForeign
       : ducks.filter((duck) => duck.species === 'Unknown' && !duck.provisional).length;
     const missingIds = Array.isArray(backendStats.missing_ids) ? backendStats.missing_ids : [];
-    const hasMissingDuck = !isWarmingUp && !hasHand && (
-      backendReasons.includes('missing_duck') ||
-      missingIds.length > 0 ||
-      ducks.some((duck) => !duck.provisional && duck.statusEvent === 'missing')
-    );
+    const hasMissingDuck = !isWarmingUp && !hasHand && backendReasons.includes('missing_duck');
     const difference = hasHand ? 0 : (detectedCount - expectedFromMl);
     const foreignSpecies = foreignCount > 0 ? ['Unknown'] : [];
 

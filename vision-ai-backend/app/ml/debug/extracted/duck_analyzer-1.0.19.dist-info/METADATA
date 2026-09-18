@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: duck_analyzer
+Version: 1.0.19
+Summary: Streaming duck ID and anomaly detection, plus training and dataset prep
+Requires-Python: >=3.8
+Requires-Dist: mediapipe>=0.10.0
+Requires-Dist: ultralytics>=8.3.0
+Requires-Dist: opencv-python>=4.5.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: pyyaml>=5.4.0
+Requires-Dist: torch>=2.0.0
+Requires-Dist: torchvision>=0.15.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: autodistill==0.1.29
+Requires-Dist: autodistill-grounding-dino

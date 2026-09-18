@@ -2,20 +2,22 @@
 # All thresholds and paths live here. Edit these, not the code.
 
 # paths
-model_path: "model/best.pt"
+model_path: "C:/Users/EmageVision/Documents/autodistill/runs/detect/finetune_plus200/weights/best.pt"
 # hand / pose model (skips a frame when a hand is present)
 # hand detection
 hand_backend: mediapipe    # default; use "yolo" to fall back to a pose model
-hand_conf: 0.6              # MediaPipe min_detection_confidence
+hand_conf: 0.5              # MediaPipe min_detection_confidence
 hand_track_conf: 0.5
-hand_hold_frames: 2 
+hand_hold_frames: 8 
+hand_confirm_frames: 3     # new: hand must persist 3 frames in a row
+hand_min_area_frac: 0.02
 # hand ROI: draw ONCE with draw_roi.py; hand short-circuit fires only
 # when a hand overlaps this box. Delete the file to revert to whole-frame.
-roi_path: "model/hand_roi.json"
+roi_path: "hand_roi.json"
 # --- local saving (for YOUR reference/debugging) ---
 save_local: false
-thumbnail_dir: null
-annotated_dir: null
+thumbnail_dir: "C:/Users/EmageVision/Documents/duck_classification/thumbnails"
+annotated_dir: "C:/Users/EmageVision/Documents/duck_classification/annotated_images"
 
 # expected scene (expected_duck_count supplied by frontend per request)
 expected_duck_count: null
@@ -23,7 +25,7 @@ duck_class_id: 0
 other_class_id: 1
 
 # detection
-conf: 0.4
+conf: 0.5
 
 device: 0
 use_half: false       # FP16 on GPU (~2x faster). Set false to disable.
@@ -39,7 +41,7 @@ swap_verify_min_app: 0.5
 # anchor
 warmup_frames: 20
 warmup_require_exact: false   # FIX (Issue 1): do not hang 300 frames on a count mismatch
-warmup_max_frames: 20    # FIX (Issue 1): lock quickly even on short anomaly clips
+warmup_max_frames: 50    # FIX (Issue 1): lock quickly even on short anomaly clips
 
 # matching / ID stability
 match_threshold: 0.20
@@ -74,3 +76,23 @@ crowd_dist_frac: 0.06
 
 # output
 jpeg_quality: 80
+missing_report_frames: 3
+
+occlusion_drop: 3          # this many ducks gone at once = occluded, not missing
+occlusion_max_frames: 150 
+bottle_contain: 0.7 
+
+tray_class_id: -1                 # tray gating off
+
+bottle_suppress: true
+bottle_model_path: "yolo11n.pt"   # pretrained COCO model, downloads automatically the first time
+bottle_conf: 0.3
+bottle_pad_frac: 0.05
+
+
+
+
+iou: 0.5             # was 0.7; merges overlapping duplicates in NMS
+agnostic_nms: true
+dedupe_iou: 0.5
+dedupe_contain: 0.8

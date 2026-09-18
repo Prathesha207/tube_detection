@@ -137,9 +137,12 @@ def _preload_model_background():
             cfg_path = os.path.join(os.path.dirname(__file__), "ml", "config", "config.yaml")
 
         try:
-            from app.ml.debug.duck_anomaly_run import DuckAnalyzer
+            from duck_analyzer import DuckAnalyzer
         except ImportError:
-            DuckAnalyzer = None
+            try:
+                from app.ml.debug.extracted.duck_analyzer.analyzer import DuckAnalyzer
+            except ImportError:
+                DuckAnalyzer = None
 
         if DuckAnalyzer is not None and os.path.exists(cfg_path):
             logger.info("[STARTUP] Preloading ML model into memory (GPU if available)...")

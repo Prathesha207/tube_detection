@@ -133,14 +133,14 @@ def get_duck_analyzer_class():
     if str(_script_dir) not in sys.path:
         sys.path.insert(0, str(_script_dir))
 
-    # 1. First priority: duck_analyzer.py right in debug folder
-    _debug_analyzer_file = _script_dir / "duck_analyzer.py"
+    # 1. First priority: analyzer.py right in debug folder
+    _debug_analyzer_file = _script_dir / "analyzer.py"
     if _debug_analyzer_file.exists():
         import importlib.util
-        spec = importlib.util.spec_from_file_location("duck_analyzer", str(_debug_analyzer_file))
+        spec = importlib.util.spec_from_file_location("analyzer", str(_debug_analyzer_file))
         if spec and spec.loader:
             module = importlib.util.module_from_spec(spec)
-            sys.modules["duck_analyzer"] = module
+            sys.modules["analyzer"] = module
             spec.loader.exec_module(module)
             duck_cls = getattr(module, "DuckAnalyzer", None)
             if duck_cls is not None:
@@ -164,32 +164,6 @@ def get_duck_analyzer_class():
     import duck_analyzer
     return DuckAnalyzer, getattr(duck_analyzer, "__file__", "installed_package"), "site_packages"
 
-
-def get_frame_store_class():
-    """
-    Load FrameStore from debug/frame_store.py if present.
-    """
-    _script_dir = Path(__file__).resolve().parent
-    if str(_script_dir) not in sys.path:
-        sys.path.insert(0, str(_script_dir))
-
-    _debug_frame_store_file = _script_dir / "frame_store.py"
-    if _debug_frame_store_file.exists():
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("frame_store", str(_debug_frame_store_file))
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            sys.modules["frame_store"] = module
-            spec.loader.exec_module(module)
-            store_cls = getattr(module, "FrameStore", None)
-            if store_cls is not None:
-                return store_cls
-
-    try:
-        from frame_store import FrameStore
-        return FrameStore
-    except Exception:
-        return None
 
 
 
@@ -763,7 +737,6 @@ def run_manual_inference(
     save_annotated: Optional[str],
     max_frames: Optional[int],
     output_dir: Optional[str],
-    db_path: Optional[str] = None,
     save_all_frames: bool = False,
 ) -> int:
 
@@ -954,8 +927,6 @@ def run_manual_inference(
     analyzer = None
     cap = None
     out_writer = None
-    store = None
-    resolved_db = None
 
     try:
 
@@ -1072,25 +1043,6 @@ def run_manual_inference(
             )
 
             # ------------------------------------------------------
-            # FrameStore SQLite persistence
-            # ------------------------------------------------------
-            if db_path and db_path.lower() != "none":
-                resolved_db = os.path.abspath(db_path)
-            elif db_path is None:
-                resolved_db = os.path.join(output_root, "duck_run.db")
-
-            if resolved_db:
-                try:
-                    FrameStoreCls = get_frame_store_class()
-                    if FrameStoreCls is not None:
-                        run_id = Path(image_path).stem
-                        store = FrameStoreCls(resolved_db, run_id=run_id, expected=expected_duck_count)
-                        print(f"[DB] FrameStore active -> {resolved_db}")
-                except Exception as e:
-                    print(f"[DB] [WARN] could not initialize FrameStore ({resolved_db}): {e}")
-                    store = None
-
-            # ------------------------------------------------------
             # Save raw image BEFORE analyzer
             # ------------------------------------------------------
 
@@ -1117,15 +1069,6 @@ def run_manual_inference(
                 result,
                 analyzer,
             )
-
-            # ------------------------------------------------------
-            # Log to FrameStore (SQLite + DeepEmbeddings)
-            # ------------------------------------------------------
-            if store is not None:
-                try:
-                    store.log(result, embeddings=analyzer.embeddings_for_frame(result))
-                except Exception as exc:
-                    print(f"[DB] [WARN] store.log failed for image: {exc}")
 
             # ------------------------------------------------------
             # Get backend-generated annotated frame
@@ -1390,25 +1333,6 @@ def run_manual_inference(
         )
 
         # ==========================================================
-        # FRAMESTORE SQLITE PERSISTENCE
-        # ==========================================================
-        if db_path and db_path.lower() != "none":
-            resolved_db = os.path.abspath(db_path)
-        elif db_path is None:
-            resolved_db = os.path.join(output_root, "duck_run.db")
-
-        if resolved_db:
-            try:
-                FrameStoreCls = get_frame_store_class()
-                if FrameStoreCls is not None:
-                    run_id = Path(video_path).stem
-                    store = FrameStoreCls(resolved_db, run_id=run_id, expected=expected_duck_count)
-                    print(f"[DB] FrameStore active -> {resolved_db}")
-            except Exception as e:
-                print(f"[DB] [WARN] could not initialize FrameStore ({resolved_db}): {e}")
-                store = None
-
-        # ==========================================================
         # OPTIONAL ANNOTATED VIDEO
         # ==========================================================
 
@@ -1549,15 +1473,6 @@ def run_manual_inference(
                 result,
                 analyzer,
             )
-
-            # ------------------------------------------------------
-            # Log to FrameStore (SQLite + DeepEmbeddings)
-            # ------------------------------------------------------
-            if store is not None:
-                try:
-                    store.log(result, embeddings=analyzer.embeddings_for_frame(result))
-                except Exception as exc:
-                    print(f"[DB] [WARN] store.log failed for frame {frame_no}: {exc}")
 
             # ------------------------------------------------------
             # Get annotated frame
@@ -1784,12 +1699,6 @@ def run_manual_inference(
                 f"\n    {save_annotated}"
             )
 
-        if resolved_db and os.path.exists(resolved_db):
-
-            print(
-                f"\n  FRAMESTORE SQLITE DB"
-                f"\n    {resolved_db}"
-            )
 
         print()
         print(
@@ -1837,17 +1746,7 @@ def run_manual_inference(
                     f"failed: {exc}"
                 )
 
-        # ==========================================================
-        # CLOSE FRAMESTORE
-        # ==========================================================
 
-        if store is not None:
-
-            try:
-                store.close()
-                print(f"[DB] FrameStore successfully closed: {resolved_db}")
-            except Exception as exc:
-                print(f"[DB] [WARN] FrameStore close failed: {exc}")
 
         # ==========================================================
         # REMOVE TEMP CONFIG
@@ -1939,14 +1838,7 @@ def main() -> int:
         ),
     )
 
-    parser.add_argument(
-        "--db",
-        default=None,
-        help=(
-            "Path to SQLite database to log per-frame detections and embeddings "
-            "via FrameStore (default: <output-dir>/duck_run.db; pass 'none' to disable)"
-        ),
-    )
+
 
     parser.add_argument(
         "--save-all-frames",
@@ -2021,7 +1913,6 @@ def main() -> int:
             save_annotated=args.save_annotated,
             max_frames=args.max_frames,
             output_dir=args.output_dir,
-            db_path=args.db,
             save_all_frames=args.save_all_frames,
         )
 

@@ -33,9 +33,12 @@ import cv2
 import concurrent.futures
 
 try:
-    from app.ml.debug.duck_analyzer import DuckAnalyzer
+    from duck_analyzer import DuckAnalyzer
 except ImportError:
-    DuckAnalyzer = None
+    try:
+        from app.ml.debug.extracted.duck_analyzer.analyzer import DuckAnalyzer
+    except ImportError:
+        DuckAnalyzer = None
 
 try:
     import torch
@@ -204,6 +207,8 @@ class VideoInferenceService:
                 "hand_detected": False,
                 "missing_ids": [],
                 "added_ids": [],
+                "excess_ids": [],
+                "excess_count": 0,
                 "other_ids": [],
                 "reasons": [],
                 "thumbnails": [],   # accumulates across the whole session (one-shot events)

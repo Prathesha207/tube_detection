@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 
-// A single detection box, matching DuckAnalyzer._build_record()'s
-// detections_json entries exactly (duck_analyzer.py) -- id is null until
-// the anchor locks and this object gets a permanent ID.
+// A single detection box from DuckAnalyzer
+// id is a number (-1 sentinel for unbound/untracked, never null).
+// species is 'duck' or 'other_toys'.
 export interface Detection {
-  id: string | null;
-  species: 'duck' | 'other_toy';
+  id: number;
+  species: 'duck' | 'other_toys';
   confidence: number;
   isAnomaly: boolean;
   provisional: boolean;
@@ -37,11 +37,11 @@ export interface InferenceStats {
   detected_other_toy_count: number;
   anchor_locked: boolean;
   hand_detected: boolean;
-  missing_ids: string[];
-  added_ids: string[];
-  excess_ids?: string[];
+  missing_ids: number[];
+  added_ids: number[];
+  excess_ids?: number[];
   excess_count?: number;
-  other_ids: string[];
+  other_ids: number[];
   reasons: string[];
 
   // Present on every poll response but previously untyped:

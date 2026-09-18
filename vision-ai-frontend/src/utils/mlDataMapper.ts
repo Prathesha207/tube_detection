@@ -172,8 +172,6 @@ export const mapDetectionsToDucks = (data: any, vw: number, vh: number, _fallbac
       }
 
       const isAnomaly = !isProvisional && (
-        d.isAnomaly === true || 
-        d.is_anomaly === true ||
         isOther ||
         isExcessDetection ||
         isMissingDetection

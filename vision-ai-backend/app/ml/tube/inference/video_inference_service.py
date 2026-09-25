@@ -178,6 +178,13 @@ class VideoInferenceService:
             task = session.get("task")
             if task and not task.done() and session.get("is_task_active", False):
                 task.cancel()
+            session_dir = session.get("session_dir")
+            if session_dir and session.get("last_frame_bytes"):
+                try:
+                    with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
+                        lf_out.write(session["last_frame_bytes"])
+                except Exception:
+                    pass
 
     def clear_session_files(self, session_id: str):
         session = self.sessions.get(session_id)
@@ -331,6 +338,13 @@ class VideoInferenceService:
                         session["status"] = "completed"
                         session["stats"]["status"] = "completed"
                         session["stats"]["progress"] = 100.0
+                        session_dir = session.get("session_dir")
+                        if session_dir and session.get("last_frame_bytes"):
+                            try:
+                                with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
+                                    lf_out.write(session["last_frame_bytes"])
+                            except Exception as write_err:
+                                logger.warning(f"Could not persist final last_frame.jpg: {write_err}")
                         break
                     
                     frame_idx += 1
@@ -405,6 +419,13 @@ class VideoInferenceService:
                     out_writer.release()
                 if claimed_inference_lock:
                     app_state.exit_inference("video")
+                session_dir = session.get("session_dir")
+                if session_dir and session.get("last_frame_bytes"):
+                    try:
+                        with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
+                            lf_out.write(session["last_frame_bytes"])
+                    except Exception:
+                        pass
                 session["is_task_active"] = False
                 try:
                     session["queue"].put_nowait(None)

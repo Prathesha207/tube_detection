@@ -281,9 +281,10 @@ async def upload_video(
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
             if frame0_bytes:
+                session["first_frame_bytes"] = frame0_bytes
                 session["last_frame_bytes"] = frame0_bytes
                 try:
-                    with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as f:
+                    with open(os.path.join(session_dir, "first_frame.jpg"), "wb") as f:
                         f.write(frame0_bytes)
                 except Exception:
                     pass
@@ -473,10 +474,17 @@ async def _ensure_session_exists(session_id: str):
             session["stats"]["original_filename"] = orig_fn
 
             last_frame_path = os.path.join(session_dir, "last_frame.jpg")
-            if os.path.exists(last_frame_path):
+            first_frame_path = os.path.join(session_dir, "first_frame.jpg")
+            if os.path.exists(last_frame_path) and os.path.getsize(last_frame_path) > 0:
                 try:
                     with open(last_frame_path, "rb") as lf:
                         session["last_frame_bytes"] = lf.read()
+                except Exception:
+                    pass
+            elif os.path.exists(first_frame_path) and os.path.getsize(first_frame_path) > 0:
+                try:
+                    with open(first_frame_path, "rb") as ff:
+                        session["last_frame_bytes"] = ff.read()
                 except Exception:
                     pass
             logger.info(f"Restored session {session_id} from disk: {video_file}")
@@ -629,24 +637,31 @@ async def reset_video_session(session_id: str):
 async def get_last_frame(session_id: str):
     try:
         session = await _ensure_session_exists(session_id)
-        frame_bytes = session.get("last_frame_bytes") if session else None
-        
-        if not frame_bytes:
-            try:
-                from app.core.app_paths import get_ml_output_dir
-                base_output_dir = str(get_ml_output_dir())
-            except Exception:
-                base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
+        session_dir = None
+        try:
+            from app.core.app_paths import get_ml_output_dir
+            base_output_dir = str(get_ml_output_dir())
             session_dir = os.path.join(base_output_dir, session_id)
-            
-            # 1. Check last_frame.jpg
+        except Exception:
+            session_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output", session_id)
+
+        # 1. Check last_frame.jpg on disk first
+        if session_dir:
             last_frame_file = os.path.join(session_dir, "last_frame.jpg")
             if os.path.exists(last_frame_file) and os.path.getsize(last_frame_file) > 0:
                 try:
                     with open(last_frame_file, "rb") as f:
-                        frame_bytes = f.read()
+                        disk_bytes = f.read()
+                        if disk_bytes:
+                            frame_bytes = disk_bytes
+                            if session:
+                                session["last_frame_bytes"] = disk_bytes
                 except Exception:
                     pass
+
+        # 2. Check in-memory last_frame_bytes if not found on disk
+        if not frame_bytes and session and session.get("last_frame_bytes"):
+            frame_bytes = session["last_frame_bytes"]
 
             # 2. Check anomaly_frames
             if not frame_bytes:
@@ -718,6 +733,15 @@ async def get_last_frame(session_id: str):
                             break
                     except Exception as e:
                         logger.warning(f"Failed to extract frame from {video_path}: {e}")
+
+        if not frame_bytes and session_dir:
+            first_frame_file = os.path.join(session_dir, "first_frame.jpg")
+            if os.path.exists(first_frame_file) and os.path.getsize(first_frame_file) > 0:
+                try:
+                    with open(first_frame_file, "rb") as f:
+                        frame_bytes = f.read()
+                except Exception:
+                    pass
 
         if not frame_bytes:
             return JSONResponse(status_code=404, content={"message": "No frame available."})

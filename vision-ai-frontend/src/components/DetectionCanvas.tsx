@@ -222,11 +222,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const fallbackLastFrameUrl = !isRunning && isVideoSource && videoSessionId
     ? `${getApiBaseUrl()}/video/last_frame/${videoSessionId}?t=${streamCacheBuster}`
     : undefined;
-  const effectiveBackdrop = activeLastFrame || fallbackLastFrameUrl;
+  const isVideoCompleted = backendStats?.status === 'completed';
+  const effectiveBackdrop = isVideoCompleted && fallbackLastFrameUrl
+    ? fallbackLastFrameUrl
+    : (activeLastFrame || fallbackLastFrameUrl);
 
   const captureFrame = useCallback(() => {
     const img = cameraImgRef.current;
     if (!img || !img.naturalWidth || !img.naturalHeight) return;
+    if (!isCameraSource && effectiveFramesProcessed === 0) return;
     try {
       const offscreen = document.createElement('canvas');
       offscreen.width = img.naturalWidth;
@@ -246,17 +250,24 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     } catch {
       // Ignore if tainted or cross-origin canvas security restriction
     }
-  }, [isCameraSource, onCaptureCameraFrame, onCaptureVideoFrame]);
+  }, [isCameraSource, effectiveFramesProcessed, onCaptureCameraFrame, onCaptureVideoFrame]);
+
+  // When inference starts, clear any stale captured video frame
+  useEffect(() => {
+    if (isRunning && !isCameraSource) {
+      onCaptureVideoFrame?.(undefined as any);
+    }
+  }, [isRunning, isCameraSource, onCaptureVideoFrame]);
 
   // When inference stops, capture the current frame
   useEffect(() => {
-    if (!isRunning && (videoSessionId || hasActiveVideo)) {
+    if (!isRunning && (videoSessionId || hasActiveVideo) && effectiveFramesProcessed > 0) {
       const timer = setTimeout(() => {
         captureFrame();
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [isRunning, videoSessionId, hasActiveVideo, captureFrame]);
+  }, [isRunning, videoSessionId, hasActiveVideo, effectiveFramesProcessed, captureFrame]);
 
   // Reset states on source change
   useEffect(() => {
@@ -396,7 +407,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                   }
                   setStreamError(false);
                   setIsFirstFrameLoaded((prev) => (!prev ? true : prev));
-                  if (!isRunning) {
+                  if (!isRunning && effectiveFramesProcessed > 0) {
                     captureFrame();
                   }
                 }}

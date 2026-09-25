@@ -18,7 +18,8 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
 }) => {
   const [brightness, setBrightness] = useState<number>(config?.brightness ?? 0);
   const [contrast, setContrast] = useState<number>(config?.contrast ?? 50);
-  const [exposure, setExposure] = useState<number>(config?.exposure ?? 50);
+  const [exposure, setExposure] = useState<number>(config?.exposure ?? 33);
+  const [autoExposure, setAutoExposure] = useState<boolean>(config?.autoExposure ?? true);
   const [autoFocus, setAutoFocus] = useState<boolean>(config?.autoFocus ?? true);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'adjusting'>('synced');
 
@@ -31,19 +32,22 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       if (typeof config.brightness === 'number') setBrightness(config.brightness);
       if (typeof config.contrast === 'number') setContrast(config.contrast);
       if (typeof config.exposure === 'number') setExposure(config.exposure);
+      if (typeof config.autoExposure === 'boolean') setAutoExposure(config.autoExposure);
       if (typeof config.autoFocus === 'boolean') setAutoFocus(config.autoFocus);
     }
   }, [config?.id]);
 
   // Live auto-apply function to backend
   const applyLiveControls = useCallback(
-    async (b: number, c: number, exp: number, af: boolean) => {
+    async (b: number, c: number, exp: number, ae: boolean, af: boolean) => {
       setSyncStatus('adjusting');
       try {
         await cameraService.updateLiveControls(cameraId || config?.id, {
           brightness: b,
           contrast: c,
           exposure: exp,
+          auto_exposure: ae,
+          autoExposure: ae,
           auto_focus: af,
           autoFocus: af,
         });
@@ -51,6 +55,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
           brightness: b,
           contrast: c,
           exposure: exp,
+          autoExposure: ae,
           autoFocus: af,
         });
         setSyncStatus('synced');
@@ -74,6 +79,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       brightness,
       contrast,
       exposure,
+      autoExposure,
       autoFocus,
     });
 
@@ -83,7 +89,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
 
     setSyncStatus('adjusting');
     debounceTimerRef.current = setTimeout(() => {
-      applyLiveControls(brightness, contrast, exposure, autoFocus);
+      applyLiveControls(brightness, contrast, exposure, autoExposure, autoFocus);
     }, 40);
 
     return () => {
@@ -91,30 +97,33 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [brightness, contrast, exposure, autoFocus, applyLiveControls, onUpdateConfig]);
+  }, [brightness, contrast, exposure, autoExposure, autoFocus, applyLiveControls, onUpdateConfig]);
 
   // Automatic one-click optimal calibration
   const handleAutoAdjust = () => {
     const optimalBrightness = 0;
     const optimalContrast = 50;
-    const optimalExposure = 45;
+    const optimalExposure = 33;
+    const optimalAutoExposure = true;
     const optimalAutoFocus = true;
 
     setBrightness(optimalBrightness);
     setContrast(optimalContrast);
     setExposure(optimalExposure);
+    setAutoExposure(optimalAutoExposure);
     setAutoFocus(optimalAutoFocus);
 
-    applyLiveControls(optimalBrightness, optimalContrast, optimalExposure, optimalAutoFocus);
+    applyLiveControls(optimalBrightness, optimalContrast, optimalExposure, optimalAutoExposure, optimalAutoFocus);
   };
 
   // Reset to default hardware settings
   const handleReset = () => {
     setBrightness(0);
     setContrast(50);
-    setExposure(50);
+    setExposure(33);
+    setAutoExposure(true);
     setAutoFocus(true);
-    applyLiveControls(0, 50, 50, true);
+    applyLiveControls(0, 50, 33, true, true);
   };
 
   const getSliderStyle = (val: number, min: number, max: number) => {
@@ -202,27 +211,56 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
           />
         </div>
 
-        {/* Exposure Time */}
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-primary)]">
-            <span>Exposure Time</span>
-            <span className="font-mono text-xs font-bold text-[var(--accent-pond)] bg-[var(--accent-pond-subtle)] px-1.5 py-0.5 rounded">
-              {exposure} ms
+        {/* Auto Exposure Toggle */}
+        <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]">
+          <div>
+            <span className="text-xs font-semibold text-[var(--text-primary)] block">
+              Auto Exposure
+            </span>
+            <span className="text-[10px] text-[var(--text-secondary)]">
+              Real stream exposure & high FPS (Recommended)
             </span>
           </div>
-          <input
-            type="range"
-            min={10}
-            max={100}
-            value={exposure}
-            onChange={(e) => setExposure(parseInt(e.target.value, 10))}
-            style={getSliderStyle(exposure, 10, 100)}
-            className="w-full h-1.5 rounded cursor-pointer transition-all"
-          />
+          <button
+            type="button"
+            onClick={() => setAutoExposure(!autoExposure)}
+            aria-pressed={autoExposure}
+            title={autoExposure ? 'Auto-exposure enabled' : 'Auto-exposure disabled'}
+            className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+              autoExposure ? 'bg-[var(--accent-pond)]' : 'bg-[var(--border-color)]'
+            }`}
+          >
+            <span
+              className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                autoExposure ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
         </div>
 
+        {/* Manual Exposure Time Slider (visible when autoExposure is false) */}
+        {!autoExposure && (
+          <div className="flex flex-col gap-1 pl-2 border-l-2 border-[var(--accent-pond)] transition-all">
+            <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-primary)]">
+              <span>Manual Exposure</span>
+              <span className="font-mono text-xs font-bold text-[var(--accent-pond)] bg-[var(--accent-pond-subtle)] px-1.5 py-0.5 rounded">
+                {exposure} ms
+              </span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={33}
+              value={exposure}
+              onChange={(e) => setExposure(parseInt(e.target.value, 10))}
+              style={getSliderStyle(exposure, 1, 33)}
+              className="w-full h-1.5 rounded cursor-pointer transition-all"
+            />
+          </div>
+        )}
+
         {/* Continuous Auto-Focus Toggle */}
-        <div className="flex items-center justify-between pt-2 border-t border-[var(--border-color)]">
+        <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]">
           <div>
             <span className="text-xs font-semibold text-[var(--text-primary)] block">
               Continuous Auto-Focus

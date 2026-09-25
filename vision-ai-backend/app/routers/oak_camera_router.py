@@ -294,6 +294,8 @@ class CameraControlsRequest(BaseModel):
     contrast: Optional[int] = None
     auto_focus: Optional[bool] = None
     autoFocus: Optional[bool] = None
+    auto_exposure: Optional[bool] = None
+    autoExposure: Optional[bool] = None
 
 @router.post("/controls")
 def update_controls(
@@ -304,6 +306,7 @@ def update_controls(
     brightness: int | None = None,
     contrast: int | None = None,
     auto_focus: bool | None = None,
+    auto_exposure: bool | None = None,
 ):
     try:
         exp = body.exposure if body and body.exposure is not None else exposure
@@ -312,6 +315,7 @@ def update_controls(
         b = body.brightness if body and body.brightness is not None else brightness
         c = body.contrast if body and body.contrast is not None else contrast
         af = (body.auto_focus if body and body.auto_focus is not None else (body.autoFocus if body and body.autoFocus is not None else auto_focus))
+        ae = (body.auto_exposure if body and body.auto_exposure is not None else (body.autoExposure if body and body.autoExposure is not None else auto_exposure))
 
         oak_camera_service.update_controls(
             exposure=exp,
@@ -320,6 +324,7 @@ def update_controls(
             brightness=b,
             contrast=c,
             auto_focus=af,
+            auto_exposure=ae,
         )
         return {"status": "ok"}
     except HTTPException:

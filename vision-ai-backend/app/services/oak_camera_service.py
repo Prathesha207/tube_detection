@@ -80,7 +80,7 @@ class OakCameraService:
         # ---- Camera settings ----
         self.control_mode: str = "auto"
         self.current_brightness: int = 0
-        self.current_contrast: int = 0
+        self.current_contrast: int = 50
         self.current_fps: float = 0.0
         self._configured_fps: int = 30
         self._ae_limit_us: int | None = None  # None = manual mode
@@ -297,8 +297,10 @@ class OakCameraService:
                 init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
                 init_ctrl.setManualExposure(exposure, gain)
                 init_ctrl.setManualFocus(focus)
-                init_ctrl.setBrightness(int(config.brightness or 0))
-                init_ctrl.setContrast(int(config.contrast or 0))
+                hw_b = max(-10, min(10, int(round(int(config.brightness or 0) / 5.0))))
+                hw_c = max(-10, min(10, int(round((int(config.contrast or 50) - 50) / 5.0))))
+                init_ctrl.setBrightness(hw_b)
+                init_ctrl.setContrast(hw_c)
                 logger.info(f"[PIPELINE] Manual: exp={exposure}, gain={gain}, focus={focus}")
 
             encoder = pipeline.create(dai.node.VideoEncoder)
@@ -576,22 +578,28 @@ class OakCameraService:
                     continue
 
                 try:
-                    bgr = pkt.getCvFrame()
+                    raw_bgr = pkt.getCvFrame()
                 except Exception as e:
                     logger.warning(f"[CONVERT] getCvFrame failed: {e}")
                     continue
 
                 if not _first_frame_logged:
-                    logger.info(f"[CONVERT] First frame received — shape={bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
+                    logger.info(f"[CONVERT] First frame received — shape={raw_bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
                     _first_frame_logged = True
 
-                if self.control_mode == "manual" or self.current_brightness != 0 or self.current_contrast != 0:
-                    bgr = self._apply_adjustments(bgr)
+                # Apply software adjustments ONLY when explicitly non-neutral and in manual mode.
+                # Default contrast (50 or 0) and brightness 0 is neutral.
+                is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
+                if not is_neutral and self.control_mode == "manual":
+                    display_bgr = self._apply_adjustments(raw_bgr)
+                else:
+                    display_bgr = raw_bgr
 
-                self._latest_bgr = bgr  # GIL-safe single reference assignment
+                self._latest_bgr = display_bgr  # GIL-safe single reference assignment
 
                 if self._active_recording is not None:
-                    self._active_recording.add_frame(bgr)
+                    # Feed the authentic, unmodified camera stream frame to the recording
+                    self._active_recording.add_frame(raw_bgr)
                     record_frames += 1
 
                 frames += 1
@@ -705,8 +713,20 @@ class OakCameraService:
     # ==================== Image Adjustments ====================
 
     def _apply_adjustments(self, frame: np.ndarray) -> np.ndarray:
-        alpha = 1.0 + (self.current_contrast / 100.0)
-        beta = float(self.current_brightness)
+        c = self.current_contrast
+        b = self.current_brightness
+
+        # If neutral, return frame directly without copying or modifying
+        if (c == 0 or c == 50) and b == 0:
+            return frame
+
+        # Contrast: 50 is neutral (1.0x). 0..100 maps to 0.0x..2.0x
+        alpha = (float(c) / 50.0) if c > 0 else 1.0
+        beta = float(b)
+
+        if abs(alpha - 1.0) < 0.01 and abs(beta) < 0.01:
+            return frame
+
         return cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
 
     # ==================== Camera Controls ====================
@@ -719,6 +739,7 @@ class OakCameraService:
         brightness: int | None = None,
         contrast: int | None = None,
         auto_focus: bool | None = None,
+        auto_exposure: bool | None = None,
     ) -> None:
         if brightness is not None:
             self.current_brightness = int(brightness)
@@ -734,16 +755,53 @@ class OakCameraService:
 
         ctrl = dai.CameraControl()
 
-        if exposure is not None:
+        # --- Exposure Control ---
+        # If auto_exposure is explicitly True, or auto_exposure is not requested and exposure <= 0:
+        if auto_exposure is True:
+            try:
+                ctrl.setAutoExposureEnable()
+                if self._ae_limit_us is not None:
+                    try:
+                        ctrl.setAutoExposureLimit(self._ae_limit_us)
+                    except Exception:
+                        pass
+                self.control_mode = "auto"
+                logger.info(f"[CONTROL] AutoExposure=ENABLED (ae_limit={self._ae_limit_us}us)")
+            except Exception as e:
+                logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
+        elif auto_exposure is False and exposure is not None:
             exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
-            gain_val = int(gain if gain is not None else 400)
+            # Default gain to base ISO 100 if not specified (NOT 400, which blows out image)
+            gain_val = int(gain if gain is not None else 100)
             try:
                 ctrl.setAutoExposureLock(False)
                 ctrl.setManualExposure(exp_us, gain_val)
-                logger.info(f"[CONTROL] Exposure={exp_us}us, Gain={gain_val}")
+                self.control_mode = "manual"
+                logger.info(f"[CONTROL] Manual Exposure={exp_us}us, Gain={gain_val}")
             except Exception as e:
                 logger.warning(f"[CONTROL] setManualExposure failed: {e}")
+        elif auto_exposure is None and exposure is not None:
+            if exposure <= 0:
+                try:
+                    ctrl.setAutoExposureEnable()
+                    if self._ae_limit_us is not None:
+                        ctrl.setAutoExposureLimit(self._ae_limit_us)
+                    self.control_mode = "auto"
+                    logger.info("[CONTROL] Exposure<=0 -> AutoExposure=ENABLED")
+                except Exception as e:
+                    logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
+            else:
+                exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
+                gain_val = int(gain if gain is not None else 100)
+                try:
+                    ctrl.setAutoExposureLock(False)
+                    ctrl.setManualExposure(exp_us, gain_val)
+                    self.control_mode = "manual"
+                    logger.info(f"[CONTROL] Exposure={exp_us}us, Gain={gain_val}")
+                except Exception as e:
+                    logger.warning(f"[CONTROL] setManualExposure failed: {e}")
 
+        # --- Focus Control ---
         if auto_focus is not None:
             try:
                 if auto_focus:
@@ -766,17 +824,23 @@ class OakCameraService:
             except Exception as e:
                 logger.warning(f"[CONTROL] setManualFocus failed: {e}")
 
+        # --- Hardware Brightness (-10 to 10) ---
         if brightness is not None:
             try:
-                ctrl.setBrightness(self.current_brightness)
-            except Exception:
-                pass
+                hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
+                ctrl.setBrightness(hw_b)
+                logger.info(f"[CONTROL] Hardware Brightness={hw_b}")
+            except Exception as e:
+                logger.debug(f"[CONTROL] setBrightness failed: {e}")
 
+        # --- Hardware Contrast (-10 to 10) ---
         if contrast is not None:
             try:
-                ctrl.setContrast(self.current_contrast)
-            except Exception:
-                pass
+                hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
+                ctrl.setContrast(hw_c)
+                logger.info(f"[CONTROL] Hardware Contrast={hw_c}")
+            except Exception as e:
+                logger.debug(f"[CONTROL] setContrast failed: {e}")
 
         try:
             self._control_queue.send(ctrl)
@@ -1650,7 +1714,7 @@ class OakCameraService:
                             return {"status": "error", "message": "Device connection failed"}
 
                 self.current_brightness = int(config.brightness or 0)
-                self.current_contrast = int(config.contrast or 0)
+                self.current_contrast = int(config.contrast if config.contrast is not None and config.contrast != 0 else 50)
 
                 with self._pipeline_lock:
                     self._pipeline = dai.Pipeline(self.device)

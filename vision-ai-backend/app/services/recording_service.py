@@ -65,7 +65,7 @@ class RecordingSession:
             codec_name = "libx264"
             pix_fmt    = "yuv420p"
             ext        = ".mp4"
-            options    = {"preset": "ultrafast", "crf": "18"}
+            options    = {"preset": "veryfast", "crf": "16"}
 
         self.filename = now.strftime(f"session_%Y-%m-%d_%H-%M-%S{ext}")
         self.video_path = os.path.join(folder, self.filename)

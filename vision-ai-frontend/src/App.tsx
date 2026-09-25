@@ -614,7 +614,42 @@ export default function App() {
   const handleStopInference = async () => {
     camera.setCameraStartingState('ready');
     setSelectedDuckId(null);
+    // Clear last frames so the canvas goes blank
+    setLastCameraFrame(undefined);
+    setLastVideoFrame(undefined);
+    // Clear source state cache so no stale data lingers
+    sourceStateCache.current.video = null;
+    sourceStateCache.current.camera = null;
+
+    // Stop camera streaming if it's a live camera source
+    if (isCameraSource && camera.isStreaming) {
+      camera.setIsStreaming(false);
+      try { await cameraService.stopStream(); } catch { }
+    }
+
+    // Let the inference loop handle stopping backend + clearing stats/ducks
     await inference.handleStopInference();
+
+    // Clear the video pipeline so the upload card shows again (video mode)
+    if (isVideoSource) {
+      if (video.videoSessionId) {
+        try {
+          await fetch(`${getApiBaseUrl()}/video/clear/${video.videoSessionId}`, { method: 'POST' });
+        } catch { }
+      }
+      video.setCustomVideoUrl(undefined);
+      video.setLocalPreviewUrl(undefined);
+      video.setVideoSessionId(null);
+      video.setCustomVideoName(undefined);
+    }
+
+    // Clear camera recording state (camera mode)
+    if (isCameraSource) {
+      video.clearCameraRecording();
+    }
+
+    // Clear persisted session so refresh shows a clean state
+    clearSessionState();
   };
   const handleResumeInference = async () => {
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
@@ -792,13 +827,9 @@ export default function App() {
           videoSessionId={video.videoSessionId}
           hasActiveVideo={Boolean(video.customVideoUrl || video.customVideoName)}
           onClearCustomVideo={handleClearCustomVideo}
-          onResetVideo={handleResetVideo}
-          onResetCamera={handleResetCamera}
-          isCameraConnected={camera.effectiveCameraConfig.connected}
           cameraStartingState={camera.cameraStartingState}
           cameraRecordSessionId={video.cameraRecordSessionId}
           onClearCameraRecord={handleClearCameraRecord}
-          hasDetections={ducks.length > 0 || framesProcessed > 0}
         />
 
         <div className="w-full flex flex-col lg:flex-row items-stretch flex-1 min-h-0 gap-4">

@@ -282,20 +282,6 @@ export function useInferenceLoop({
     for (const sid of sids) {
       try {
         await fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' });
-        const res = await fetch(`${getApiBaseUrl()}/video/status/${sid}`);
-        if (res.ok) {
-          const data = await res.json();
-          useInferenceStore.getState().setStats(data);
-          if (typeof data.fps === 'number' && data.fps > 0) {
-            setFps(data.fps);
-          }
-          const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
-          const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-          const incomingDucks = mapDetectionsToDucks(data, vw, vh, expectedDucks);
-          if (data.status !== "HAND" && !data.hand_detected) {
-            setDucks(incomingDucks);
-          }
-        }
       } catch (err) {
         console.error("Failed to stop backend inference", err);
       }
@@ -306,8 +292,16 @@ export function useInferenceLoop({
       cameraService.stopLiveInference().catch(() => { });
     }
 
-    showToast('info', 'Inference paused. Last state retained.');
-    addLog('Inference stopped • Detections and side cards preserved.', 'info');
+    // Full reset: clear all frontend state so UI is ready for a new inference
+    setFramesProcessed(0);
+    setFps(0);
+    setUptimeSeconds(0);
+    setDucks([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
+
+    showToast('info', 'Inference stopped • Ready for new inference');
+    addLog('Inference stopped • Canvas, detections, and cards cleared.', 'info');
   };
 
   /**

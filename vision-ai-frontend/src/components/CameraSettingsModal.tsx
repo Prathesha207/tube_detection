@@ -330,7 +330,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                       value={localConfig.targetFps}
                       onChange={(e) => setLocalConfig({ ...localConfig, targetFps: parseInt(e.target.value, 10) })}
                       style={getSliderStyle(localConfig.targetFps, 1, 60)}
-                      className="w-full h-1.5 rounded cursor-pointer transition-all border border-[var(--border-color)]"
+                      className="w-full h-1.5 rounded cursor-pointer transition-all"
                     />
                   </div>
                 </div>
@@ -677,7 +677,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 value={localConfig.brightness}
                 onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10) })}
                 style={getSliderStyle(localConfig.brightness, -50, 50)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all border border-[var(--border-color)]"
+                className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
             </div>
 
@@ -693,7 +693,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 value={localConfig.contrast}
                 onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10) })}
                 style={getSliderStyle(localConfig.contrast, 0, 100)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all border border-[var(--border-color)]"
+                className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
             </div>
 
@@ -709,7 +709,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 value={localConfig.exposure}
                 onChange={(e) => setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10) })}
                 style={getSliderStyle(localConfig.exposure, 10, 100)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all border border-[var(--border-color)]"
+                className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
             </div>
 

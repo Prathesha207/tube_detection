@@ -1,6 +1,6 @@
 import React from 'react';
 import { StreamSourceType } from '../types';
-import { Video, Camera, Play, Square, RotateCcw, Loader2 } from 'lucide-react';
+import { Video, Camera, Play, Square, Loader2 } from 'lucide-react';
 import { playWaterDropSound } from '../utils/audio';
 import { NumberStepper } from './ui/NumberStepper';
 import { useInferenceStore } from '../store/inferenceStore';
@@ -18,8 +18,7 @@ interface SourceSelectorProps {
   videoSessionId?: string | null;
   hasActiveVideo?: boolean;
   onClearCustomVideo?: () => void;
-  onResetVideo?: () => void;
-  onResetCamera?: () => void;
+
   isRunning?: boolean;
   isStarting?: boolean;
   isRecording?: boolean;
@@ -34,7 +33,7 @@ interface SourceSelectorProps {
   cameraStartingState?: 'idle' | 'waking_camera' | 'waiting_frame' | 'ready';
   cameraRecordSessionId?: string | null;
   onClearCameraRecord?: () => void;
-  hasDetections?: boolean;
+
 }
 
 export const SourceSelector: React.FC<SourceSelectorProps> = ({
@@ -47,8 +46,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   customVideoUrl,
   hasActiveVideo = false,
   onClearCustomVideo: _onClearCustomVideo,
-  onResetVideo,
-  onResetCamera,
   isRunning = false,
   isStarting = false,
   isRecording = false,
@@ -63,15 +60,8 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   cameraStartingState = 'ready',
   cameraRecordSessionId,
   onClearCameraRecord,
-  hasDetections = false,
 }) => {
   const isVideoLoading = useInferenceStore((state) => state.isVideoLoading);
-  const stats = useInferenceStore((state) => state.stats);
-  const hasCameraDetections = Boolean(
-    hasDetections ||
-    (stats.frames_processed > 0 && stats.status !== 'idle') ||
-    (stats.detections && stats.detections.length > 0)
-  );
 
   const handleSourceClick = (targetType: StreamSourceType) => {
     playWaterDropSound();
@@ -257,35 +247,7 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                 </div>
               )}
 
-              {/* Reset button for Video */}
-              {(isVideoMode && hasActiveVideo) && (
-                <button
-                  onClick={() => {
-                    playWaterDropSound();
-                    onResetVideo?.();
-                  }}
-                  title="Reset video playback and detections"
-                  className="h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-100 hover:text-white border border-slate-600/80 text-[11px] sm:text-xs font-semibold shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
-                >
-                  <RotateCcw className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                  <span className="hidden sm:inline">RESET</span>
-                </button>
-              )}
 
-              {/* Reset button for Camera: visible while running OR when stopped with existing card details to reset */}
-              {isCameraMode && (isRunning || hasCameraDetections) && (isStreaming || cameraRecordSessionId) && (
-                <button
-                  onClick={() => {
-                    playWaterDropSound();
-                    onResetCamera?.();
-                  }}
-                  title="Reset detection cards, counts, and details"
-                  className="h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-100 hover:text-white border border-slate-600/80 text-[11px] sm:text-xs font-semibold shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
-                >
-                  <RotateCcw className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                  <span className="hidden sm:inline">RESET</span>
-                </button>
-              )}
             </div>
           )}
         </div>

@@ -6,7 +6,7 @@ param(
 # ==============================================================================
 # Vision Monitor - Windows Environment Setup Script
 # Configures Python virtual environment, dependencies, CUDA PyTorch,
-# DuckAnalyzer wheel, and Node.js frontend packages without errors.
+# tube inference dependencies, and Node.js frontend packages without errors.
 # ==============================================================================
 $ErrorActionPreference = 'Stop'
 
@@ -144,7 +144,7 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 # Fast check: are backend packages already installed?
-$BackendCheck = & $VenvPython -c "import fastapi, uvicorn, ultralytics, cv2, mediapipe, yaml, torchvision; print('INSTALLED')" 2>$null
+$BackendCheck = & $VenvPython -c "import fastapi, uvicorn, ultralytics, cv2, skimage, yaml, torchvision; print('INSTALLED')" 2>$null
 if ($BackendCheck -eq 'INSTALLED') {
     Write-Host "[OK] Backend dependencies (including torchvision) are already installed. (Skipping requirements reinstall)." -ForegroundColor Green
 } else {
@@ -157,7 +157,7 @@ if ($BackendCheck -eq 'INSTALLED') {
             throw "Failed to install Python requirements from $ReqFile."
         }
     }
-    $MlReqFile = Join-Path $BackendDir 'app\ml\requirements.txt'
+    $MlReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
     if (Test-Path $MlReqFile) {
         Write-Host "Installing ML requirements from $MlReqFile..."
         & $VenvPython -m pip install --prefer-binary -r $MlReqFile
@@ -274,10 +274,10 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
     if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
     Write-Host "[GPU INFO] Targeting CUDA $TargetCuda for maximum compatibility/performance." -ForegroundColor Cyan
     Write-Host "Fetching CUDA wheels from $CudaIndex..."
-    & $VenvPython -m pip install --upgrade --index-url $CudaIndex torch torchvision
+    & $VenvPython -m pip install --upgrade --force-reinstall --index-url $CudaIndex torch torchvision
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu121 fallback..." -ForegroundColor Yellow
-        & $VenvPython -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch torchvision
+        & $VenvPython -m pip install --upgrade --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch torchvision
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install CUDA PyTorch and torchvision."
         }
@@ -299,35 +299,15 @@ if ($TorchVisionVerify -ne 'VERIFIED') {
 }
 
 # ------------------------------------------------------------------------------
-# 5. Install Bundled DuckAnalyzer Wheel
+# 5. Verify tube inference dependencies
 # ------------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[5/7] Verifying DuckAnalyzer package..." -ForegroundColor Yellow
-
-$DuckAnalyzerInstalled = & $VenvPython -c "import duck_analyzer; print('INSTALLED')" 2>$null
-if ($DuckAnalyzerInstalled -eq 'INSTALLED') {
-    Write-Host "[OK] DuckAnalyzer package is already installed." -ForegroundColor Green
-} else {
-    # Sort wheels by semantic version (e.g. 1.0.15 > 1.0.9 instead of string alphabetical sort)
-    $DuckAnalyzerWheel = Get-ChildItem -Path (Join-Path $BackendDir 'app\ml') -Filter 'duck_analyzer-*.whl' -Recurse -ErrorAction SilentlyContinue |
-        Sort-Object {
-            if ($_.Name -match 'duck_analyzer-([0-9]+(\.[0-9]+)*)') {
-                try { [System.Version]$matches[1] } catch { [System.Version]'0.0.0' }
-            } else {
-                [System.Version]'0.0.0'
-            }
-        } -Descending |
-        Select-Object -First 1
-
-    if (-not $DuckAnalyzerWheel) {
-        throw "The bundled duck_analyzer wheel is missing from app\ml."
-    }
-
-    Write-Host "Installing $($DuckAnalyzerWheel.Name)..."
-    & $VenvPython -m pip install --prefer-binary --no-deps --force-reinstall $DuckAnalyzerWheel.FullName
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install $($DuckAnalyzerWheel.Name)."
-    }
+Write-Host "[5/7] Verifying tube inference packages..." -ForegroundColor Yellow
+$TubeCheck = & $VenvPython -c "from ultralytics import YOLO; import cv2, numpy, torch, torchvision, skimage; print('INSTALLED')" 2>$null
+if ($TubeCheck -ne 'INSTALLED') {
+    $TubeReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
+    & $VenvPython -m pip install --prefer-binary -r $TubeReqFile
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install tube requirements from $TubeReqFile." }
 }
 
 # ------------------------------------------------------------------------------
@@ -368,25 +348,28 @@ if ((Test-Path $NodeModulesDir) -and (Test-Path $DistHtml)) {
 Write-Host ""
 Write-Host "[7/7] Verifying inference engine and model components..." -ForegroundColor Yellow
 
-$SmokeTestResult = & $VenvPython -c "
+$SmokeTestCode = @"
 import sys
+sys.path.insert(0, r'$BackendDir')
 try:
     import torch
     import torchvision
     import importlib.metadata
     tv = importlib.metadata.version('torchvision')
     from ultralytics import YOLO
-    import duck_analyzer
+    from app.ml.tube.inference.tube_analyzer import TubeAnalyzer
     print(f'PASS|{torch.__version__}|{tv}')
 except Exception as e:
-    print(f'FAIL|{e}', file=sys.stderr)
+    print(f'FAIL|{e}')
     sys.exit(1)
-" 2>&1
+"@
 
-if ($LASTEXITCODE -ne 0 -or -not ($SmokeTestResult -match '^PASS\|')) {
+$SmokeTestResult = & $VenvPython -c $SmokeTestCode 2>&1
+
+if ($LASTEXITCODE -ne 0 -or -not ($SmokeTestResult -match 'PASS\|')) {
     throw "Pre-flight inference verification failed: $SmokeTestResult. Inference would fail at runtime."
 }
-Write-Host "[OK] Pre-flight inference smoke test PASSED! (YOLO, DuckAnalyzer, and torchvision ready)." -ForegroundColor Green
+Write-Host "[OK] Pre-flight inference smoke test PASSED! (tube inference and torchvision ready)." -ForegroundColor Green
 
 # ------------------------------------------------------------------------------
 # Completion Summary

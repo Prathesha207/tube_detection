@@ -9,3 +9,5 @@ class CameraLiveControl(BaseModel):
     focus: Optional[int] = None
     brightness: Optional[int] = None
     contrast: Optional[int] = None
+    auto_focus: Optional[bool] = None
+    autoFocus: Optional[bool] = None

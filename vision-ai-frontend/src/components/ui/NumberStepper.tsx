@@ -1,6 +1,5 @@
 import React from 'react';
 import { Plus, Minus } from 'lucide-react';
-import { playWaterDropSound } from '../../utils/audio';
 
 export interface NumberStepperProps {
   value: number;
@@ -22,14 +21,12 @@ export const NumberStepper: React.FC<NumberStepperProps> = ({
   className = '',
 }) => {
   const handleIncrement = () => {
-    playWaterDropSound();
     if (value + step <= max) {
       onChange(value + step);
     }
   };
 
   const handleDecrement = () => {
-    playWaterDropSound();
     if (value - step >= min) {
       onChange(value - step);
     }

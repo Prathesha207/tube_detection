@@ -1,6 +1,5 @@
 import React from 'react';
 import { BookOpen, AlertTriangle, Sparkles } from 'lucide-react';
-import { playWaterDropSound } from '../utils/audio';
 import { Modal, Button } from './ui';
 
 interface HelpModalProps {
@@ -22,7 +21,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
           variant="primary"
           size="md"
           onClick={() => {
-            playWaterDropSound();
             onClose();
           }}
         >
@@ -32,24 +30,24 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
     >
       <div className="space-y-4 text-xs leading-relaxed text-[var(--text-primary)]">
         
-        {/* Section 1: How Detection & Anomaly Rules Work */}
+        {/* Section 1: How Tube Tracing & Anomaly Rules Work */}
         <div className="p-3.5 rounded-2xl bg-[var(--status-warn-bg)] border border-[var(--status-warn-border)]">
           <h3 className="font-bold text-sm text-[var(--status-warn-text)] mb-1.5 flex items-center gap-1.5">
             <AlertTriangle className="w-4 h-4 text-[var(--status-warn-text)]" />
-            Anomaly Detection Logic
+            Tube Tracing & Anomaly Logic
           </h3>
           <ul className="space-y-1.5 text-[var(--text-secondary)]">
-            <li>• <strong className="text-[var(--text-primary)]">Detected = Expected:</strong> Status is <span className="text-[var(--status-normal-text)] font-bold">NORMAL ✓</span></li>
-            <li>• <strong className="text-[var(--text-primary)]">Detected &gt; Expected:</strong> Triggers <span className="text-[var(--status-anomaly-text)] font-bold">ANOMALY (+Count Drift)</span></li>
-            <li>• <strong className="text-[var(--text-primary)]">Detected &lt; Expected:</strong> Triggers <span className="text-[var(--status-anomaly-text)] font-bold">ANOMALY (Missing Ducks)</span></li>
-            <li>• <strong className="text-[var(--text-primary)]">Foreign Species:</strong> (Unknown, Heron, Predator) triggers instant <span className="text-[var(--status-anomaly-text)] font-bold">ANOMALY Alert</span>.</li>
+            <li>• <strong className="text-[var(--text-primary)]">Heads & Tails Balanced:</strong> When each tube head is paired with a matching tail by diameter, status is <span className="text-[var(--status-normal-text)] font-bold">NORMAL ✓</span>.</li>
+            <li>• <strong className="text-[var(--text-primary)]">Unmatched Ends:</strong> Odd count or disparate diameter between ends triggers <span className="text-[var(--status-anomaly-text)] font-bold">UNMATCHED END</span> alert.</li>
+            <li>• <strong className="text-[var(--text-primary)]">Width Check:</strong> Disagreement between edge gradients and mask width triggers <span className="text-[var(--status-warn-text)] font-bold">CHECK WIDTH</span> warning.</li>
+            <li>• <strong className="text-[var(--text-primary)]">No Tubing Mask:</strong> Missing or detached tubing segmentation polygon triggers <span className="text-[var(--status-anomaly-text)] font-bold">NO TUBING</span> alert.</li>
           </ul>
         </div>
 
         {/* Section 2: Vision Monitor Capabilities */}
         <div>
           <h3 className="font-bold text-sm text-[var(--text-primary)] mb-2 flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-[var(--accent-duck)]" />
+            <Sparkles className="w-4 h-4 text-[var(--accent-tube)]" />
             Vision Capabilities
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">

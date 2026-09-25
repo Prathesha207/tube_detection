@@ -5,7 +5,9 @@ build/
 __pycache__/
 output/
 *.mp4
+*.avi
 *.whl
 !vision-ai-backend/app/ml/whl/*.whl
 manual_inference_output/
 vision-ai-frontend/release-backend/
+

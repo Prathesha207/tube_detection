@@ -6,7 +6,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import depthai as dai
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -286,21 +286,40 @@ async def get_available_devices():
 
 # ==================== Camera Controls ====================
 
+class CameraControlsRequest(BaseModel):
+    exposure: Optional[int] = None
+    gain: Optional[int] = None
+    focus: Optional[int] = None
+    brightness: Optional[int] = None
+    contrast: Optional[int] = None
+    auto_focus: Optional[bool] = None
+    autoFocus: Optional[bool] = None
+
 @router.post("/controls")
 def update_controls(
+    body: Optional[CameraControlsRequest] = Body(default=None),
     exposure: int | None = None,
     gain: int | None = None,
     focus: int | None = None,
     brightness: int | None = None,
     contrast: int | None = None,
+    auto_focus: bool | None = None,
 ):
     try:
+        exp = body.exposure if body and body.exposure is not None else exposure
+        g = body.gain if body and body.gain is not None else gain
+        f = body.focus if body and body.focus is not None else focus
+        b = body.brightness if body and body.brightness is not None else brightness
+        c = body.contrast if body and body.contrast is not None else contrast
+        af = (body.auto_focus if body and body.auto_focus is not None else (body.autoFocus if body and body.autoFocus is not None else auto_focus))
+
         oak_camera_service.update_controls(
-            exposure=exposure,
-            gain=gain,
-            focus=focus,
-            brightness=brightness,
-            contrast=contrast,
+            exposure=exp,
+            gain=g,
+            focus=f,
+            brightness=b,
+            contrast=c,
+            auto_focus=af,
         )
         return {"status": "ok"}
     except HTTPException:
@@ -353,27 +372,10 @@ def stop_inference():
         realtime_log_service.add_log("inference", "CRASH", f"Inference stop failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to stop inference: {e}")
 
-class ExpectedCountUpdate(BaseModel):
-    count: int
-
-@router.post("/inference/update_expected/{session_id}")
-async def update_expected(session_id: str, payload: ExpectedCountUpdate):
-    try:
-        from app.ml.camera_inference_service import update_expected_ducks
-        update_expected_ducks(session_id, payload.count)
-        return {"message": "Expected duck count updated."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[API ERROR] POST /oak/inference/update_expected/{session_id}: {e}", exc_info=True)
-        realtime_log_service.add_log("inference", "CRASH", f"Update expected count failed: {e}", "error")
-        raise HTTPException(status_code=500, detail=f"Failed to update expected count: {e}")
-
-
 @router.get("/inference/status/{session_id}")
 async def get_camera_inference_status(session_id: str):
     try:
-        from app.ml.camera_inference_service import get_session_status
+        from app.ml.tube.inference.camera_inference_service import get_session_status
         status = get_session_status(session_id)
         if not status:
             return {"status": "idle", "session_id": session_id}

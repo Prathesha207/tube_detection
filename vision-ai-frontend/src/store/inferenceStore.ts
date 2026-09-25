@@ -1,63 +1,36 @@
 import { create } from 'zustand';
+import type { TubeDetection } from '../types';
 
-// A single detection box from DuckAnalyzer
-// id is a number (-1 sentinel for unbound/untracked, never null).
-// species is 'duck' or 'other_toys'.
-export interface Detection {
-  id: number;
-  species: 'duck' | 'other_toys';
-  confidence: number;
-  isAnomaly: boolean;
-  provisional: boolean;
-  bbox: [number, number, number, number]; // [x1, y1, x2, y2] pixel corners from backend
-  thumbnail: string | null; // base64 data URI, or null if the crop failed
-}
+export type { TubeDetection };
+export type Detection = TubeDetection;
 
-// Two different things share this one field, because the backend does:
-//   1. session["stats"]["status"] = "processing"   (once, before the frame loop)
-//   2. session["stats"].update({"status": result["status"], ...})  (every frame,
-//      overwriting #1 with whatever DuckAnalyzer returned)
-// So "processing" is essentially never what you actually see live -- after
-// frame 1 it's always one of the FrameStatus values below. The session-
-// lifecycle values only show up before processing starts or after it ends.
 export type SessionLifecycleStatus =
-  | 'idle' | 'queued' | 'processing' | 'completed' | 'error' | 'stopped';
-export type FrameStatus = 'WARMING' | 'NORMAL' | 'ANOMALY' | 'HAND';
+  | 'idle' | 'queued' | 'processing' | 'completed' | 'error' | 'stopped' | 'paused';
+export type FrameStatus = 'WARMING' | 'NORMAL' | 'ANOMALY' | string;
 
 export interface InferenceStats {
-  [x: string]: any;
   session_id: string;
   status: SessionLifecycleStatus | FrameStatus;
+  frame?: number;
   frames_processed: number;
   total_frames: number;
   progress: number;
   fps: number;
-  detected_duck_count: number;
-  expected_duck_count: number;
-  detected_other_toy_count: number;
-  anchor_locked: boolean;
-  hand_detected: boolean;
-  missing_ids: number[];
-  added_ids: number[];
-  excess_ids?: number[];
-  excess_count?: number;
-  other_ids: number[];
-  reasons: string[];
+  latency_ms?: number;
 
-  // Present on every poll response but previously untyped:
-  detections: Detection[];
+  // Tube ML fields from TubeAnalyzer / run_video_frames:
+  heads_count: number;
+  tails_count: number;
+  detections: TubeDetection[];
+  bigger_tube: TubeDetection | null;
+  smaller_tube: TubeDetection | null;
+
   video_width: number;
   video_height: number;
   original_filename: string | null;
-
-  // Only present once the analyzer has actually started (i.e. not on the
-  // very first "queued" response) -- optional so callers must check.
   output_dir?: string;
-  results_json_path?: string;
-  thumbnail_dir?: string;
-  // Only present if config.yaml has save_raw_frames: true.
-  frames_dir?: string;
-  anomaly_frames_dir?: string;
+  output_file?: string;
+  reasons?: string[];
 }
 
 interface InferenceStoreState {
@@ -74,26 +47,21 @@ interface InferenceStoreState {
 const initialStats: InferenceStats = {
   session_id: '',
   status: 'idle',
+  frame: 0,
   frames_processed: 0,
   total_frames: 0,
   progress: 0,
   fps: 0,
-  detected_duck_count: 0,
-  expected_duck_count: 18, // matches App.tsx's own default -- keep these two in sync if you change one
-  detected_other_toy_count: 0,
-  anchor_locked: false,
-  hand_detected: false,
-  missing_ids: [],
-  added_ids: [],
-  excess_ids: [],
-  excess_count: 0,
-  other_ids: [],
-  reasons: [],
+  latency_ms: 0,
+  heads_count: 0,
+  tails_count: 0,
   detections: [],
-  thumbnails: [],
+  bigger_tube: null,
+  smaller_tube: null,
   video_width: 0,
   video_height: 0,
   original_filename: null,
+  reasons: [],
 };
 
 export const useInferenceStore = create<InferenceStoreState>((set) => ({
@@ -102,23 +70,12 @@ export const useInferenceStore = create<InferenceStoreState>((set) => ({
   isRecording: false,
   setIsRecording: (recording) => set({ isRecording: recording }),
   setVideoLoading: (loading) => set({ isVideoLoading: loading }),
-  setStats: (newStats) => set((state) => {
-    let mergedThumbnails = state.stats.thumbnails || [];
-    if (Array.isArray(newStats.thumbnails) && newStats.thumbnails.length > 0) {
-      const existing = new Set(mergedThumbnails.map((t: any) => `${t.id}_${t.event}`));
-      const fresh = newStats.thumbnails.filter((t: any) => !existing.has(`${t.id}_${t.event}`));
-      if (fresh.length > 0) {
-        mergedThumbnails = [...mergedThumbnails, ...fresh];
-      }
-    }
-    return {
-      stats: {
-        ...state.stats,
-        ...newStats,
-        thumbnails: mergedThumbnails,
-      },
-    };
-  }),
+  setStats: (newStats) => set((state) => ({
+    stats: {
+      ...state.stats,
+      ...newStats,
+    },
+  })),
   replaceStats: (stats) => set({ stats }),
   resetStats: () => set({ stats: initialStats }),
 }));

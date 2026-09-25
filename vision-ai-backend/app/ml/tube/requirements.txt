@@ -1,0 +1,21 @@
+# Core dependencies for run_video_frames.py / measure_from_masks.py
+ultralytics>=8.3.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# --- GPU note ---
+# The line below installs the CPU-only build of torch by default.
+# For GPU (CUDA) support on Windows, do NOT rely on this file for torch/torchvision.
+# Instead, run this separately, matching your installed NVIDIA driver's CUDA version
+# (check with `nvidia-smi`, top-right "CUDA Version" field):
+#
+#   pip uninstall torch torchvision -y
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# Then install the rest of this file normally:
+#   pip install -r requirements.txt
+#
+# If you install torch/torchvision via the CUDA index URL first, pip will see
+# they're already satisfied and skip them when this file is installed after.
+torch>=2.2.0
+torchvision>=0.17.0

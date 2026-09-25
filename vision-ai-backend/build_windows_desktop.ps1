@@ -115,12 +115,10 @@ if ($Acceleration -eq 'cuda') {
   }
 }
 
-$DuckAnalyzerWheel = Get-ChildItem -Path (Join-Path $BackendDir 'app\ml') -Filter 'duck_analyzer-*.whl' -Recurse |
-  Sort-Object Name -Descending | Select-Object -First 1
-if (-not $DuckAnalyzerWheel) { throw 'The bundled duck_analyzer wheel is missing.' }
-$PipExtraArgs = if ($Acceleration -eq 'cuda' -and $CudaIndex) { @('--prefer-binary', '--extra-index-url', $CudaIndex) } else { @('--prefer-binary') }
-& $VenvPython -m pip install @PipExtraArgs $DuckAnalyzerWheel.FullName
-if ($LASTEXITCODE -ne 0) { throw 'Failed to install duck_analyzer wheel.' }
+& $VenvPython -m pip install --prefer-binary -r (Join-Path $BackendDir 'requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Failed to install backend requirements.' }
+& $VenvPython -m pip install --prefer-binary -r (Join-Path $BackendDir 'app\ml\tube\requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Failed to install tube inference requirements.' }
 if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backend\backend.exe'))) {
   Push-Location $BackendDir
   try {
@@ -141,7 +139,7 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',
       '--collect-all', 'ultralytics', '--collect-all', 'segmentation_models_pytorch', '--collect-all', 'depthai',
       '--collect-all', 'av', '--collect-all', 'mediapipe',
-      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg', '--collect-all', 'duck_analyzer'
+      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg'
     )
     & $VenvPython -m PyInstaller @PyInstallerArgs
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }

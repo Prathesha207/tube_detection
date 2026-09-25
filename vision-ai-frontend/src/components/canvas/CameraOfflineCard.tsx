@@ -1,6 +1,5 @@
 import React from 'react';
 import { CameraOff, Video, RotateCcw } from 'lucide-react';
-import { playWaterDropSound } from '../../utils/audio';
 
 interface CameraOfflineCardProps {
   onSwitchToVideo: () => void;
@@ -42,7 +41,6 @@ export const CameraOfflineCard: React.FC<CameraOfflineCardProps> = ({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            playWaterDropSound();
             onSwitchToVideo();
           }}
           className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95"
@@ -55,7 +53,6 @@ export const CameraOfflineCard: React.FC<CameraOfflineCardProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              playWaterDropSound();
               onRetryConnection();
             }}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[var(--btn-secondary-bg)] hover:bg-[var(--btn-secondary-hover)] border border-[var(--btn-secondary-border)] text-[var(--btn-secondary-text)] font-semibold text-xs transition-all cursor-pointer active:scale-95"

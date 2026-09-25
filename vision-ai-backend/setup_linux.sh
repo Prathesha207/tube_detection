@@ -25,9 +25,7 @@ fi
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
-if [[ -f "$BACKEND_DIR/app/ml/requirements.txt" ]]; then
-  python -m pip install -r "$BACKEND_DIR/app/ml/requirements.txt"
-fi
+python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
 
 # The base requirements remain portable. Replace generic torch with CUDA torch
 # only when this Linux machine has an NVIDIA driver and GPU.
@@ -58,13 +56,6 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 else
   echo "No NVIDIA GPU detected; keeping CPU-compatible PyTorch."
 fi
-
-DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
-if [[ -z "$DUCK_ANALYZER_WHEEL" ]]; then
-  echo "The bundled duck_analyzer wheel is missing."
-  exit 1
-fi
-python -m pip install "$DUCK_ANALYZER_WHEEL"
 
 # Check Luxonis OAK camera udev rules on Linux
 if [[ ! -f /etc/udev/rules.d/80-movidius.rules ]]; then

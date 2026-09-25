@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { getApiBaseUrl } from '../lib/api';
-import { playWaterDropSound } from '../utils/audio';
 import { useInferenceStore } from '../store/inferenceStore';
 import { showToast } from '../lib/toast';
 
 export const useVideoUpload = (
   fileInputRef: React.RefObject<HTMLInputElement | null>,
-  expectedDucks: number,
   onVideoUploaded?: (videoUrl: string, fileName: string, sessionId?: string, isCameraRecording?: boolean) => void | Promise<void>,
   recordedFile?: File | null,
   clearRecording?: () => void,
@@ -19,8 +17,6 @@ export const useVideoUpload = (
   const blobUrlRef = useRef<string | null>(null);
 
   const processUploadedFile = async (file: File, isRecorded: boolean = false) => {
-    playWaterDropSound();
-
     setUploadProgress(0);
     useInferenceStore.getState().setVideoLoading(true);
 
@@ -35,7 +31,6 @@ export const useVideoUpload = (
     }
 
     formData.append('file', file);
-    formData.append('expected_ducks', expectedDucks.toString());
     formData.append('is_camera_recording', isRec ? 'true' : 'false');
     const fpsMatch = file.name.match(/_(\d+)fps/i);
     if (fpsMatch) {
@@ -141,7 +136,6 @@ export const useVideoUpload = (
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             video_path: filePath,
-            expected_ducks: expectedDucks,
           }),
         });
 

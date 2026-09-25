@@ -78,7 +78,7 @@ export const useContainerFit = (
 
   // The canvas lives inside the fitted video viewport, which can change size when
   // metadata arrives without causing the outer container to resize. Keep its
-  // bitmap dimensions in sync so ripple coordinates match the visible frame.
+  // bitmap dimensions in sync so coordinates match the visible frame.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;

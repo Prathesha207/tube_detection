@@ -5,7 +5,7 @@ import asyncio
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Request, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 
-from app.ml.video_inference_service import video_inference_service, ml_inference_service
+from app.ml.tube.inference.video_inference_service import video_inference_service, ml_inference_service
 from app.services.realtime_log_service import realtime_log_service
 
 logger = logging.getLogger("video-router")
@@ -31,7 +31,6 @@ def _save_session_meta(
     session_dir: str,
     video_file: str,
     original_filename: str,
-    expected_ducks: int,
     browser_video_path: Optional[str] = None,
     raw_save_path: Optional[str] = None
 ):
@@ -43,7 +42,6 @@ def _save_session_meta(
         "browser_video_path": browser_video_path or video_file,
         "raw_save_path": raw_save_path or video_file,
         "original_filename": original_filename,
-        "expected_duck_count": expected_ducks,
         "updated_at": time.time(),
     }
     try:
@@ -68,11 +66,41 @@ def _save_session_meta(
     except Exception as e:
         logger.warning(f"Could not update sessions_registry.json for {session_id}: {e}")
 
+def _delete_session_meta(session_id: str):
+    if not session_id:
+        return
+    try:
+        reg_file = _get_registry_path()
+        if os.path.exists(reg_file):
+            try:
+                with open(reg_file, "r") as rf:
+                    registry = json.load(rf)
+            except Exception:
+                registry = {}
+            if session_id in registry:
+                registry.pop(session_id, None)
+                with open(reg_file, "w") as rf:
+                    json.dump(registry, rf, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not remove {session_id} from sessions_registry.json: {e}")
+
+    try:
+        from app.core.app_paths import get_ml_output_dir
+        base_output_dir = str(get_ml_output_dir())
+    except Exception:
+        base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
+    session_dir = os.path.join(base_output_dir, session_id)
+    meta_path = os.path.join(session_dir, "session_meta.json")
+    if os.path.exists(meta_path):
+        try:
+            os.remove(meta_path)
+        except Exception:
+            pass
+
 @router.post("/upload")
 async def upload_video(
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
-    expected_ducks: int = Form(18),
     is_camera_recording: bool = Form(False),
     fps: Optional[int] = Form(None),
 ):
@@ -104,7 +132,7 @@ async def upload_video(
         # NEW: create_session() now raises RuntimeError while a training job
         # owns the GPU -- surface that as 409 instead of letting it 500.
         try:
-            session_id = ml_inference_service.create_session(expected_ducks, original_filename=video_name)
+            session_id = ml_inference_service.create_session(original_filename=video_name)
         except RuntimeError as e:
             return JSONResponse(status_code=409, content={"message": str(e)})
 
@@ -269,7 +297,6 @@ async def upload_video(
             session_dir=session_dir,
             video_file=effective_inference_path,
             original_filename=video_name,
-            expected_ducks=expected_ducks,
             browser_video_path=browser_video_path,
             raw_save_path=raw_save_path,
         )
@@ -336,7 +363,6 @@ async def _ensure_session_exists(session_id: str):
 
     video_file = None
     orig_fn = "video.mp4"
-    expected_ducks = 18
     browser_video_path = None
 
     # 1. Check session_meta.json in session_dir
@@ -349,7 +375,6 @@ async def _ensure_session_exists(session_id: str):
                 if cand_v and os.path.exists(cand_v):
                     video_file = cand_v
                 orig_fn = meta.get("original_filename") or orig_fn
-                expected_ducks = int(meta.get("expected_duck_count") or expected_ducks)
                 browser_video_path = meta.get("browser_video_path")
         except Exception as e:
             logger.warning(f"Error reading session_meta.json for {session_id}: {e}")
@@ -367,7 +392,6 @@ async def _ensure_session_exists(session_id: str):
                         if cand_v and os.path.exists(cand_v):
                             video_file = cand_v
                         orig_fn = reg_meta.get("original_filename") or orig_fn
-                        expected_ducks = int(reg_meta.get("expected_duck_count") or expected_ducks)
                         browser_video_path = reg_meta.get("browser_video_path")
         except Exception as e:
             logger.warning(f"Error reading sessions_registry.json for {session_id}: {e}")
@@ -425,7 +449,6 @@ async def _ensure_session_exists(session_id: str):
             with open(results_file, "r") as rf:
                 old_stats = json.load(rf)
                 orig_fn = old_stats.get("original_filename") or orig_fn
-                expected_ducks = int(old_stats.get("expected_duck_count", expected_ducks))
                 out_f = old_stats.get("output_file")
                 if (not video_file or not os.path.exists(video_file)) and out_f and os.path.exists(out_f):
                     video_file = out_f
@@ -437,7 +460,7 @@ async def _ensure_session_exists(session_id: str):
         if not browser_video_path or not os.path.exists(browser_video_path):
             browser_video_path = video_file
 
-        ml_inference_service.create_session(expected_ducks=expected_ducks, original_filename=orig_fn, session_id=session_id)
+        ml_inference_service.create_session(original_filename=orig_fn, session_id=session_id)
         session = ml_inference_service.sessions.get(session_id)
         if session:
             session["session_dir"] = session_dir
@@ -447,7 +470,6 @@ async def _ensure_session_exists(session_id: str):
             session["temp_file"] = video_file
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
-            session["stats"]["expected_duck_count"] = expected_ducks
             session["stats"]["original_filename"] = orig_fn
 
             last_frame_path = os.path.join(session_dir, "last_frame.jpg")
@@ -551,15 +573,10 @@ async def get_status(session_id: str):
 @router.post("/stop/{session_id}")
 async def stop_video(session_id: str):
     try:
-        await _ensure_session_exists(session_id)
-        status = ml_inference_service.get_status(session_id)
-        if not status:
-            return JSONResponse(status_code=404, content={"message": "Session not found."})
-        
-        # BUGFIX: bound the wait so a wedged task can't hang this request
-        # (see stop_session() docstring in video_inference_service.py).
-        await ml_inference_service.stop_session(session_id, timeout=3.0)
-        return {"message": "Stop signal sent."}
+        session = ml_inference_service.sessions.get(session_id)
+        if session:
+            await ml_inference_service.stop_session(session_id, timeout=1.0)
+        return {"message": "Stop signal sent.", "session_id": session_id}
     except HTTPException:
         raise
     except Exception as e:
@@ -570,11 +587,12 @@ async def stop_video(session_id: str):
 @router.post("/clear/{session_id}")
 async def clear_video_session(session_id: str):
     try:
-        session = await _ensure_session_exists(session_id)
+        session = ml_inference_service.sessions.get(session_id)
         if session:
-            await ml_inference_service.stop_session(session_id, timeout=3.0)
+            await ml_inference_service.stop_session(session_id, timeout=1.0)
             ml_inference_service.clear_session_files(session_id)
             ml_inference_service.sessions.pop(session_id, None)
+        _delete_session_meta(session_id)
         return {"status": "cleared", "session_id": session_id}
     except HTTPException:
         raise
@@ -586,11 +604,9 @@ async def clear_video_session(session_id: str):
 @router.post("/reset/{session_id}")
 async def reset_video_session(session_id: str):
     try:
-        session = await _ensure_session_exists(session_id)
+        session = ml_inference_service.sessions.get(session_id)
         if session:
-            # 1. Stop the task fully and await it (bounded -- see stop_session docstring)
-            await ml_inference_service.stop_session(session_id, timeout=3.0)
-            # 2. Release resources natively
+            await ml_inference_service.stop_session(session_id, timeout=1.0)
             if "analyzer" in session and session["analyzer"] is not None:
                 try:
                     if hasattr(session["analyzer"], "model") and session["analyzer"].model is not None:
@@ -598,10 +614,9 @@ async def reset_video_session(session_id: str):
                 except:
                     pass
                 session["analyzer"] = None
-            # 3. Clear temp files
             ml_inference_service.clear_session_files(session_id)
-            # 4. Remove session from memory
             ml_inference_service.sessions.pop(session_id, None)
+        _delete_session_meta(session_id)
         return {"status": "reset", "session_id": session_id}
     except HTTPException:
         raise
@@ -720,29 +735,8 @@ async def get_last_frame(session_id: str):
 
 from pydantic import BaseModel
 
-class ExpectedCountUpdate(BaseModel):
-    count: int
-
-@router.post("/update_expected/{session_id}")
-async def update_expected(session_id: str, payload: ExpectedCountUpdate):
-    try:
-        session = await _ensure_session_exists(session_id)
-        if not session:
-            return JSONResponse(status_code=404, content={"message": "Session not found."})
-        
-        ml_inference_service.update_expected_ducks(session_id, payload.count)
-        return {"message": "Expected duck count updated."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[API ERROR] POST /video/update_expected/{session_id}: {e}", exc_info=True)
-        realtime_log_service.add_log("video", "CRASH", f"Update expected count failed: {e}", "error")
-        raise HTTPException(status_code=500, detail=f"Failed to update expected count: {e}")
-
-
 class StartPathInferenceRequest(BaseModel):
     video_path: str
-    expected_ducks: int = 18
 
 @router.post("/inference/path")
 async def start_path_inference(data: StartPathInferenceRequest, background_tasks: BackgroundTasks):
@@ -758,7 +752,7 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
 
         filename = os.path.basename(video_path)
         try:
-            session_id = ml_inference_service.create_session(data.expected_ducks, original_filename=filename)
+            session_id = ml_inference_service.create_session(original_filename=filename)
         except RuntimeError as e:
             return JSONResponse(status_code=409, content={"message": str(e)})
 
@@ -796,7 +790,6 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                 session_dir=session_dir,
                 video_file=video_path,
                 original_filename=filename,
-                expected_ducks=data.expected_ducks,
                 browser_video_path=video_path,
                 raw_save_path=video_path,
             )

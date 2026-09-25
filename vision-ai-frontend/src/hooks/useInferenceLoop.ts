@@ -1,20 +1,18 @@
 import { useState, useEffect } from 'react';
-import type { StreamSourceType, LogEntry, DuckEntity } from '../types';
+import type { StreamSourceType, LogEntry, TubeEntity } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
-import { mapDetectionsToDucks, resetBBoxCache } from '../utils/mlDataMapper';
+import { mapDetectionsToTubes, resetBBoxCache } from '../utils/mlDataMapper';
 import { DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT } from '../utils/constants';
-import { playWaterDropSound } from '../utils/audio';
 
 export function useInferenceLoop({
   sourceType,
   videoSessionId,
   cameraRecordSessionId,
-  expectedDucks,
   showToast,
   addLog,
   startCameraPipeline,
-  setDucks,
+  setTubes,
   setVideoDimensions,
   cameraService,
   setCameraIsStreaming,
@@ -33,11 +31,10 @@ export function useInferenceLoop({
   sourceType: StreamSourceType;
   videoSessionId: string | null;
   cameraRecordSessionId?: string | null;
-  expectedDucks: number;
   showToast: (type: 'error' | 'success' | 'info', message: string) => void;
   addLog: (message: string, level?: LogEntry['level']) => void;
   startCameraPipeline: () => Promise<boolean>;
-  setDucks: (ducks: DuckEntity[]) => void;
+  setTubes: (tubes: TubeEntity[]) => void;
   setVideoDimensions: (dim: { width: number; height: number }) => void;
   cameraService: any;
   setCameraIsStreaming?: (val: boolean) => void;
@@ -93,10 +90,8 @@ export function useInferenceLoop({
 
               const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
               const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-              const incomingDucks = mapDetectionsToDucks(data, vw, vh, expectedDucks);
-              if (data.status !== "HAND" && !data.hand_detected) {
-                setDucks(incomingDucks);
-              }
+              const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+              setTubes(incomingTubes);
             }
           } catch (e) { }
         };
@@ -157,11 +152,8 @@ export function useInferenceLoop({
 
           const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
           const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-          const incomingDucks = mapDetectionsToDucks(data, vw, vh, expectedDucks);
-
-          if (data.status !== "HAND" && !data.hand_detected) {
-            setDucks(incomingDucks);
-          }
+          const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+          setTubes(incomingTubes);
 
           if (data.status === 'completed') {
             setIsRunning(false);
@@ -213,7 +205,6 @@ export function useInferenceLoop({
   }, [isRunning, videoSessionId, cameraRecordSessionId, sourceType]);
 
   const handleToggleRunning = async (startVideoInference: (customSessionId?: string) => Promise<void>) => {
-    playWaterDropSound();
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
 
     if (isRunning) {
@@ -256,7 +247,7 @@ export function useInferenceLoop({
         // a Stop) used to call startVideoInference() directly without clearing
         // any frontend state first. The backend now always begins a genuinely
         // fresh run (see start_run()/_reset_session_stats() server-side), but
-        // the frontend was still showing whatever ducks/fps/progress were left
+        // the frontend was still showing whatever tubes/fps/progress were left
         // over from the previous run until the first status poll came back,
         // which is exactly the "UI shows the old inference/overlay state"
         // symptom. Clear local state up front so the UI honestly reflects
@@ -265,7 +256,7 @@ export function useInferenceLoop({
         setFramesProcessed(0);
         setFps(0);
         setUptimeSeconds(0);
-        setDucks([]);
+        setTubes([]);
         useInferenceStore.getState().resetStats();
         resetBBoxCache();
         await startVideoInference();
@@ -274,14 +265,17 @@ export function useInferenceLoop({
   };
 
   const handleStopInference = async () => {
-    playWaterDropSound();
     setIsRunning(false);
 
     const sids = Array.from(new Set([videoSessionId, cameraRecordSessionId].filter(Boolean))) as string[];
 
     for (const sid of sids) {
       try {
-        await fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' });
+        const ctrl = new AbortController();
+        const tId = setTimeout(() => ctrl.abort(), 1500);
+        fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST', signal: ctrl.signal })
+          .catch(() => { })
+          .finally(() => clearTimeout(tId));
       } catch (err) {
         console.error("Failed to stop backend inference", err);
       }
@@ -296,7 +290,7 @@ export function useInferenceLoop({
     setFramesProcessed(0);
     setFps(0);
     setUptimeSeconds(0);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
 
@@ -317,7 +311,7 @@ export function useInferenceLoop({
    *    analyzer, deletes temp files, and drops the session from memory --
    *    so the *next* upload creates a completely clean session with no
    *    stale task/id/results/overlay/progress from before.
-   *  - Frontend: clears every piece of local run state (ducks, fps,
+   *  - Frontend: clears every piece of local run state (tubes, fps,
    *    frames/uptime counters, the shared inference store, and the bbox
    *    cache) so no residual overlay is drawn.
    *
@@ -333,8 +327,6 @@ export function useInferenceLoop({
    * upload creates a fresh one" rather than trying to reuse the old id.
    */
   const handleResetInference = async (clearSessionIds?: () => void) => {
-    playWaterDropSound();
-
     // Stop any in-flight polling / websocket loop immediately.
     setIsRunning(false);
     setIsStarting(false);
@@ -362,7 +354,7 @@ export function useInferenceLoop({
     setFramesProcessed(0);
     setFps(0);
     setUptimeSeconds(0);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
 
@@ -378,11 +370,10 @@ export function useInferenceLoop({
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
       // BUGFIX: same stale-overlay issue as handleToggleRunning's start
       // branch -- this path skipped clearing frontend state entirely.
-      playWaterDropSound();
       setFramesProcessed(0);
       setFps(0);
       setUptimeSeconds(0);
-      setDucks([]);
+      setTubes([]);
       useInferenceStore.getState().resetStats();
       resetBBoxCache();
       void startVideoInference();
@@ -391,7 +382,6 @@ export function useInferenceLoop({
 
     if (isCameraMode && cameraRecordSessionId) {
       // Resuming inference on a loaded recording — video-service path with GPU guard
-      playWaterDropSound();
       (async () => {
         try { await cameraService.stopLiveInference(); } catch (e) { }
         try { await cameraService.stopStream(); } catch (e) { }
@@ -401,21 +391,14 @@ export function useInferenceLoop({
       return;
     }
 
-    playWaterDropSound();
     setFramesProcessed(0);
     setFps(0);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     setIsStarting(true);
     if (isCameraMode) {
-      fetch(`${getApiBaseUrl()}/oak/inference/update_expected/live`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count: expectedDucks })
-      })
-        .catch(() => { })
-        .then(() => cameraService.startLiveInference('live'))
+      cameraService.startLiveInference('live')
         .then((result: any) => {
           setIsStarting(false);
           if (result?.status === 'error') throw new Error(result.message || 'Inference start failed');

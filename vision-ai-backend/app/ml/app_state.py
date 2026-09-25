@@ -15,7 +15,7 @@ than silently fighting inference for VRAM.
 
 NEW: the same problem exists BETWEEN the two inference paths -- a video
 upload session and a live camera session can each load their own
-DuckAnalyzer (their own YOLO model instance) into VRAM at the same time,
+TubeAnalyzer (their own YOLO model instance) into VRAM at the same time,
 with nothing stopping it. active_inference_kind tracks which *kind* of
 inference currently owns the GPU ("video" or "camera"). Multiple sessions
 of the SAME kind are still allowed to overlap (that's existing, intentional

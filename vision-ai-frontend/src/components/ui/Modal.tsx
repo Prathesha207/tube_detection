@@ -2,7 +2,6 @@ import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { lockScroll, unlockScroll } from '../../utils/scrollLock';
-import { playWaterDropSound } from '../../utils/audio';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -47,7 +46,6 @@ export const Modal: React.FC<ModalProps> = ({
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) {
-      playWaterDropSound();
       onClose();
     }
   };
@@ -87,7 +85,6 @@ export const Modal: React.FC<ModalProps> = ({
             </div>
             <button
               onClick={() => {
-                playWaterDropSound();
                 onClose();
               }}
               aria-label="Close dialog"

@@ -8,10 +8,7 @@ import {
   HelpCircle, 
   Video, 
   Bot,
-  Volume2,
-  VolumeX
 } from 'lucide-react';
-import { playWaterDropSound } from '../utils/audio';
 import { IconButton } from './ui';
 import { getApiBaseUrl } from '../lib/api';
 
@@ -24,8 +21,6 @@ interface HeaderProps {
   fps?: number;
   anomalyDetected?: boolean;
   onExitToLanding?: () => void;
-  soundActive?: boolean;
-  onToggleSound?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -35,8 +30,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSettings,
   onOpenHelp,
   onExitToLanding,
-  soundActive = true,
-  onToggleSound,
 }) => {
   const [backendConnected, setBackendConnected] = useState<boolean>(false);
 
@@ -44,8 +37,15 @@ export const Header: React.FC<HeaderProps> = ({
   const checkBackendHealth = useCallback(async () => {
     try {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/health`, { method: 'GET', cache: 'no-store' });
-      setBackendConnected(res.ok);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(`${baseUrl}/health`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      setBackendConnected(res.ok || res.status === 503);
     } catch {
       setBackendConnected(false);
     }
@@ -58,14 +58,13 @@ export const Header: React.FC<HeaderProps> = ({
   }, [checkBackendHealth]);
 
   const cycleTheme = () => {
-    playWaterDropSound();
     if (theme === 'pond-light') onThemeChange('pond-dark');
     else if (theme === 'pond-dark') onThemeChange('nature');
     else onThemeChange('pond-light');
   };
 
   const getThemeIcon = () => {
-    if (theme === 'pond-light') return <Sun className="w-3.5 h-3.5 text-[var(--accent-duck)]" />;
+    if (theme === 'pond-light') return <Sun className="w-3.5 h-3.5 text-[var(--accent-tube)]" />;
     if (theme === 'pond-dark') return <Moon className="w-3.5 h-3.5 text-[var(--accent-pond)]" />;
     return <Leaf className="w-3.5 h-3.5 text-[var(--accent-pond)]" />;
   };
@@ -78,7 +77,6 @@ export const Header: React.FC<HeaderProps> = ({
         <div 
           onClick={() => {
             if (onExitToLanding) {
-              playWaterDropSound();
               onExitToLanding();
             }
           }}
@@ -113,7 +111,6 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Backend Indicator */}
             <button
               onClick={() => {
-                playWaterDropSound();
                 checkBackendHealth();
               }}
               title="FastAPI Backend Status (Click to test connection)"
@@ -129,7 +126,6 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Camera Status */}
             <button
               onClick={() => {
-                playWaterDropSound();
                 onOpenSettings();
               }}
               title="Camera Hardware Status (Click for settings)"
@@ -143,25 +139,6 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </button>
           </div>
-
-          {/* Sound Toggle Button */}
-          <IconButton
-            onClick={() => {
-              if (onToggleSound) {
-                onToggleSound();
-              }
-            }}
-            aria-label={soundActive ? 'Sound Alerts: Enabled (Click to Mute)' : 'Sound Alerts: Muted (Click to Unmute)'}
-            title={soundActive ? 'Sound Alerts: Enabled (Click to Mute)' : 'Sound Alerts: Muted (Click to Unmute)'}
-            icon={
-              soundActive ? (
-                <Volume2 className="w-3.5 h-3.5 text-[var(--accent-pond)]" />
-              ) : (
-                <VolumeX className="w-3.5 h-3.5 text-[var(--status-anomaly-text)]" />
-              )
-            }
-            size="md"
-          />
 
           {/* Theme Switcher Button */}
           <IconButton
@@ -180,7 +157,6 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Camera Settings Button */}
           <IconButton
             onClick={() => {
-              playWaterDropSound();
               onOpenSettings();
             }}
             aria-label="System Settings"
@@ -191,7 +167,6 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Help Guide Button */}
           <IconButton
             onClick={() => {
-              playWaterDropSound();
               onOpenHelp();
             }}
             aria-label="User Guide"

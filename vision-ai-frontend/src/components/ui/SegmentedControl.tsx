@@ -1,5 +1,4 @@
 import React from 'react';
-import { playWaterDropSound } from '../../utils/audio';
 
 export interface SegmentOption<T extends string> {
   value: T;
@@ -43,7 +42,6 @@ export function SegmentedControl<T extends string>({
             key={opt.value}
             type="button"
             onClick={() => {
-              playWaterDropSound();
               onChange(opt.value);
             }}
             className={`flex items-center justify-center font-bold tracking-tight cursor-pointer ${itemSizeStyles[size]} ${

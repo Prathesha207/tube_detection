@@ -1,16 +1,12 @@
 import React from 'react';
 import { StreamSourceType } from '../types';
-import { Video, Camera, Play, Square, Loader2 } from 'lucide-react';
-import { playWaterDropSound } from '../utils/audio';
-import { NumberStepper } from './ui/NumberStepper';
+import { Video, Camera, Play, Square, Loader2, Trash2 } from 'lucide-react';
 import { useInferenceStore } from '../store/inferenceStore';
 
 
 interface SourceSelectorProps {
   sourceType: StreamSourceType;
   onSourceChange: (type: StreamSourceType) => void;
-  expectedDucks: number;
-  onExpectedDucksChange: (count: number) => void;
   onOpenSettings?: () => void;
   onCustomVideoUploaded?: (videoUrl: string, fileName: string, sessionId?: string) => void;
   customVideoName?: string;
@@ -39,13 +35,11 @@ interface SourceSelectorProps {
 export const SourceSelector: React.FC<SourceSelectorProps> = ({
   sourceType,
   onSourceChange,
-  expectedDucks,
-  onExpectedDucksChange,
   onOpenSettings: _onOpenSettings,
   customVideoName,
   customVideoUrl,
   hasActiveVideo = false,
-  onClearCustomVideo: _onClearCustomVideo,
+  onClearCustomVideo,
   isRunning = false,
   isStarting = false,
   isRecording = false,
@@ -62,9 +56,10 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   onClearCameraRecord,
 }) => {
   const isVideoLoading = useInferenceStore((state) => state.isVideoLoading);
+  const storeHeads = useInferenceStore((state) => state.stats.heads_count ?? 0);
+  const storeTails = useInferenceStore((state) => state.stats.tails_count ?? 0);
 
   const handleSourceClick = (targetType: StreamSourceType) => {
-    playWaterDropSound();
     if (onRequestSwitchMode) {
       onRequestSwitchMode(targetType);
     } else {
@@ -107,26 +102,21 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
           </button>
         </div>
 
-        {/* Global Expected Count & Stream Controls */}
+        {/* Global Tube Ends Count & Stream Controls */}
         <div className="flex items-center justify-end gap-1.5 sm:gap-4 flex-shrink-0 ml-auto">
-          {/* Expected Ducks Control */}
-          <div className="flex items-center gap-1 sm:gap-3">
-            <div className="flex items-center gap-1 sm:gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-pond)] animate-pulse" />
-              <span className="text-[10px] sm:text-xs font-bold text-[var(--text-primary)]">
-                <span className="inline sm:hidden">Exp:</span>
-                <span className="hidden sm:inline">Expected Ducks:</span>
-              </span>
+          {/* Tube Ends Counter */}
+          <div className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+              <span className="text-[10px] sm:text-xs font-semibold text-[var(--text-secondary)]">Heads:</span>
+              <span className="text-xs sm:text-sm font-bold font-mono text-[var(--text-primary)]">{storeHeads}</span>
             </div>
-            <NumberStepper
-              value={expectedDucks}
-              onChange={(val) => {
-                playWaterDropSound();
-                onExpectedDucksChange(val);
-              }}
-              min={1}
-              max={50}
-            />
+            <span className="text-xs text-[var(--border-color)]">•</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[10px] sm:text-xs font-semibold text-[var(--text-secondary)]">Tails:</span>
+              <span className="text-xs sm:text-sm font-bold font-mono text-[var(--text-primary)]">{storeTails}</span>
+            </div>
           </div>
 
           {/* Stream Play/Stop Controls */}
@@ -155,7 +145,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                 <div className="flex items-center gap-1 sm:gap-2">
                   <button
                     onClick={() => {
-                      playWaterDropSound();
                       if (onStopInference) onStopInference();
                       else if (onToggleRunning) onToggleRunning();
                     }}
@@ -168,7 +157,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                   {isCameraMode && isStreaming && !cameraRecordSessionId && (
                     <button
                       onClick={() => {
-                        playWaterDropSound();
                         onStopStream?.();
                       }}
                       title="Stop camera stream and clear feed"
@@ -186,7 +174,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                     disabled={isStarting || isVideoLoading}
                     onClick={() => {
                       if (isStarting || isVideoLoading) return;
-                      playWaterDropSound();
                       if (onResumeInference) onResumeInference();
                       else if (onToggleRunning) onToggleRunning();
                     }}
@@ -216,12 +203,23 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                     </span>
                   </button>
 
+                  {/* For Uploaded Video: Allow clearing the video so the upload card reappears */}
+                  {!isCameraMode && hasActiveVideo && onClearCustomVideo && (
+                    <button
+                      onClick={() => onClearCustomVideo()}
+                      title="Clear loaded video and upload a new one"
+                      className="h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 rounded-xl bg-[var(--btn-secondary-bg)] border border-[var(--btn-secondary-border)] text-[var(--btn-secondary-text)] hover:bg-rose-500/15 hover:border-rose-500/30 hover:text-rose-600 dark:hover:text-rose-400 font-bold text-[11px] sm:text-xs shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
+                    >
+                      <Trash2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                      <span className="whitespace-nowrap">CLEAR<span className="hidden sm:inline"> VIDEO</span></span>
+                    </button>
+                  )}
+
                   {/* For Camera: allow streaming-only if user wants to align/view camera without AI */}
                   {isCameraMode && !cameraRecordSessionId && (
                     !isStreaming ? (
                       <button
                         onClick={() => {
-                          playWaterDropSound();
                           onStartStream?.();
                         }}
                         title="Start camera stream only (no AI inference)"
@@ -233,7 +231,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                     ) : (
                       <button
                         onClick={() => {
-                          playWaterDropSound();
                           onStopStream?.();
                         }}
                         title="Stop camera stream"

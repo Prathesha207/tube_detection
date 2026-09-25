@@ -8,11 +8,10 @@ import {
   Loader2,
   Usb,
   RefreshCw,
-  Trash2,
   AlertCircle,
   Radio,
+  Trash2,
 } from 'lucide-react';
-import { playWaterDropSound } from '../utils/audio';
 import { Modal, Button } from './ui';
 import { cameraService, type CameraData } from './service/cameraService';
 
@@ -120,7 +119,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
   // Connect to a SAVED camera row
   const handleConnectSaved = async (row: SavedCameraRow) => {
-    playWaterDropSound();
     setConnectingId(row.id);
     setErrorMessage(null);
     setErrorCameraId(null);
@@ -150,7 +148,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
   // Direct one-click delete without confirm popup
   const handleDelete = async (row: SavedCameraRow) => {
-    playWaterDropSound();
     setDeletingId(row.id);
     try {
       await cameraService.deleteCamera(row.id);
@@ -169,7 +166,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
   // Detect USB device
   const handleDetectUsb = async () => {
-    playWaterDropSound();
     setErrorMessage(null);
     const usb = await scanUsbDevices();
     if (usb && !newName.trim()) {
@@ -187,7 +183,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       return;
     }
 
-    playWaterDropSound();
     setConnectingId('new');
     setErrorMessage(null);
     setErrorCameraId(null);
@@ -223,7 +218,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
   };
 
   const handleSave = () => {
-    playWaterDropSound();
     onSaveConfig(localConfig);
     onClose();
   };
@@ -267,7 +261,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
           <button
             key={tab}
             onClick={() => {
-              playWaterDropSound();
               setActiveTab(tab);
             }}
             className={`pb-1 px-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${activeTab === tab
@@ -298,7 +291,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                           key={res}
                           type="button"
                           onClick={() => {
-                            playWaterDropSound();
                             setLocalConfig({ ...localConfig, resolution: res });
                           }}
                           className={`flex-1 py-1 px-2 rounded-md text-[11px] font-bold transition-all cursor-pointer text-center whitespace-nowrap ${isSelected
@@ -340,7 +332,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-[var(--text-secondary)]">Recording Video Format</span>
                     <span className="text-[10px] font-semibold text-[var(--accent-pond)]">
-                      {(localConfig.recordingFormat || 'MP4') === 'MP4' 
+                      {(localConfig.recordingFormat || 'MP4') === 'MP4'
                         ? 'MP4 container • H.264 web/universal codec'
                         : (localConfig.recordingFormat || 'MP4') === 'AVI'
                           ? 'AVI container • MJPEG analytical codec'
@@ -359,7 +351,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                           key={fmt.id}
                           type="button"
                           onClick={() => {
-                            playWaterDropSound();
                             setLocalConfig({ ...localConfig, recordingFormat: fmt.id });
                           }}
                           className={`flex-1 py-1 px-2 rounded-md text-[11px] font-bold transition-all cursor-pointer text-center whitespace-nowrap ${isSelected
@@ -392,7 +383,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      playWaterDropSound();
                       setNewType('usb');
                       setErrorMessage(null);
                     }}
@@ -406,7 +396,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      playWaterDropSound();
                       setNewType('ip');
                       setErrorMessage(null);
                     }}
@@ -721,7 +710,6 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  playWaterDropSound();
                   setLocalConfig({ ...localConfig, autoFocus: !localConfig.autoFocus });
                 }}
                 className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${localConfig.autoFocus ? 'bg-[var(--accent-pond)]' : 'bg-[var(--btn-secondary-border)]'
@@ -743,7 +731,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 <Cpu className="w-3.5 h-3.5" />
                 On-Device VPU Neural Engine
               </div>
-              The YOLOv8-DuckTracker model runs entirely on the Myriad X / Keem Bay VPU inside the OAK camera, outputting bounding box coordinates directly at zero CPU overhead.
+              The YOLOv8-TubeTracker model runs entirely on the Myriad X / Keem Bay VPU inside the OAK camera, outputting bounding box coordinates directly at zero CPU overhead.
             </div>
 
             <div className="space-y-1.5 text-xs">

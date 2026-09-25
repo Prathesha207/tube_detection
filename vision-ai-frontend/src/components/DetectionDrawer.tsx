@@ -1,47 +1,47 @@
-
-
-import React from 'react';
-import { AnomalyStatus, DuckEntity, DetectionMetrics, LogEntry } from '../types';
+import React, { useMemo } from 'react';
+import { AnomalyStatus, TubeEntity, DetectionMetrics, LogEntry } from '../types';
 import {
-  AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  ShieldCheck,
-  Activity,
-  Layers,
-  ArrowUp,
-  ArrowDown,
-  Hand,
+  Terminal,
 } from 'lucide-react';
 import { Badge, IconButton } from './ui';
-import { playWaterDropSound } from '../utils/audio';
-import { DetectionGallery } from './AnomalyGallery';
 import { useInferenceStore } from '../store/inferenceStore';
+import { CameraImageAdjustmentsCard } from './CameraImageAdjustmentsCard';
+import { CameraConfig } from '../types';
 
 interface DetectionDrawerProps {
   isOpen: boolean;
   onToggle: () => void;
   anomalyStatus: AnomalyStatus;
-  ducks: DuckEntity[];
+  tubes: TubeEntity[];
   metrics: DetectionMetrics;
-  selectedDuckId: string | null;
-  onSelectDuck: (id: string | null) => void;
+  selectedTubeId: string | null;
+  onSelectTube: (id: string | null) => void;
   isStandby?: boolean;
   logs?: LogEntry[];
   isCameraSource?: boolean;
+  isRunning?: boolean;
+  isCameraConnected?: boolean;
+  cameraConfig?: CameraConfig;
+  onUpdateCameraConfig?: (newConfig: Partial<CameraConfig>) => void;
 }
 
 export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   isOpen,
   onToggle,
   anomalyStatus,
-  ducks,
+  tubes,
   metrics,
-  selectedDuckId,
-  onSelectDuck,
+  selectedTubeId,
+  onSelectTube,
   isStandby = false,
-  logs = [],
+  logs: _logs = [],
   isCameraSource = false,
+  isRunning = false,
+  isCameraConnected = false,
+  cameraConfig,
+  onUpdateCameraConfig,
 }) => {
   const mlStats = useInferenceStore((state) => state.stats);
 
@@ -54,27 +54,67 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
     return `${hrs.toString().padStart(2, '0')}:${(mins % 60).toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // If we have actual ML stats, use those! Otherwise fallback to mock metrics.
-  const displayFps = mlStats.status !== 'idle' ? mlStats.fps : metrics.fps;
-  const displayFrames = mlStats.status !== 'idle' ? mlStats.frames_processed : metrics.framesProcessed;
+  const displayFps = mlStats.status !== 'idle' && mlStats.fps > 0 ? mlStats.fps : metrics.fps;
+  const displayFrames = mlStats.status !== 'idle' && mlStats.frames_processed > 0 ? mlStats.frames_processed : metrics.framesProcessed;
   const displayProgress = mlStats.status !== 'idle' ? mlStats.progress : 100;
+  const latencyMs = mlStats.latency_ms ?? metrics.inferenceTimeMs;
 
-  // Calculate uptime strictly from frames / fps, defaulting to 30fps if unknown
   const fpsForTime = displayFps > 0 ? displayFps : 30;
   const computedUptime = displayFrames / fpsForTime;
 
-  const speciesList = Array.from(new Set(ducks.map((d) => d.species))).join(', ') || '--';
-  const isEmptyState = ducks.length === 0;
-  const anomalyDucks = ducks.filter((d) => d.isAnomaly && !d.provisional);
-  const hasDetections = ducks.length > 0;
-  const isHand = anomalyStatus.message === 'HAND DETECTED';
+  const isEmptyState = tubes.length === 0 && !anomalyStatus.headsCount && !anomalyStatus.tailsCount;
   const isWarming = anomalyStatus.message === 'WARMING';
+
+  // Construct frame numbers and verdict
+  const frameNumber = mlStats.frame || mlStats.frames_processed || metrics.framesProcessed || 0;
+  const bigger = mlStats.bigger_tube;
+  const smaller = mlStats.smaller_tube;
+
+  const isCompleted =
+    mlStats.status === 'completed' ||
+    anomalyStatus.message === 'COMPLETED' ||
+    (mlStats.total_frames > 0 && mlStats.frames_processed >= mlStats.total_frames) ||
+    displayProgress >= 100;
+
+  const telemetryStatusText = useMemo(() => {
+    if (isRunning) {
+      return isCameraSource ? 'Camera Inference' : 'Video Inference';
+    }
+    if (isCompleted) {
+      return 'Completed';
+    }
+    if (mlStats.status === 'stopped' || anomalyStatus.message === 'STOPPED') {
+      return 'Stopped';
+    }
+    if (mlStats.status === 'paused' || anomalyStatus.message === 'PAUSED') {
+      return 'Paused';
+    }
+    if (isStandby) {
+      return 'Standby';
+    }
+    return anomalyStatus.message || 'Completed';
+  }, [isRunning, isCameraSource, isCompleted, mlStats.status, isStandby, anomalyStatus.message]);
+
+  const verdictText = useMemo(() => {
+    if (bigger && smaller) {
+      const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
+      const sw = smaller.width_px ? `${Number(smaller.width_px).toFixed(1)}px` : (smaller.width_mm ? `${Number(smaller.width_mm).toFixed(1)}mm` : '');
+      return `BIGGER tube: ${bw} | SMALLER tube: ${sw}`;
+    }
+    if (bigger) {
+      const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
+      return `BIGGER tube: ${bw}`;
+    }
+    if (anomalyStatus.headsCount !== anomalyStatus.tailsCount) {
+      return `${Math.abs(anomalyStatus.headsCount - anomalyStatus.tailsCount)} Unmatched Tube End(s)`;
+    }
+    return anomalyStatus.subMessage || 'All tube ends paired & balanced';
+  }, [bigger, smaller, anomalyStatus]);
 
   if (!isOpen) {
     return (
       <button
         onClick={() => {
-          playWaterDropSound();
           onToggle();
         }}
         title="Open Detection Details"
@@ -82,65 +122,49 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
       >
         <ChevronLeft className="w-4 h-4 text-[var(--accent-pond)] group-hover:-translate-x-0.5 transition-transform" />
         <span className="[writing-mode:vertical-lr] tracking-wider uppercase text-[10px] text-[var(--text-secondary)]">
-          {isEmptyState ? 'Standby' : isHand ? 'Hand Present' : isWarming ? 'Warming Up' : anomalyStatus.isAnomaly ? 'Anomaly Alert' : 'Detection Details'}
+          {isEmptyState ? 'Standby' : 'Inference Details'}
         </span>
       </button>
     );
   }
 
-  // Theme-responsive classes for Card 1 (Overview)
-  const cardBgClass = 'bg-[var(--bg-card)] border-[var(--border-color)]';
-
-  const headerColorClass = isEmptyState
-    ? 'text-[var(--text-secondary)]'
-    : isHand
-      ? 'text-amber-500 dark:text-amber-400 font-bold'
-      : isWarming
-        ? 'text-amber-500 dark:text-amber-400 font-bold'
-        : anomalyStatus.isAnomaly
-          ? 'text-[var(--status-anomaly-text)]'
-          : 'text-emerald-600 dark:text-emerald-400 font-bold';
-
-  const headerIconClass = isEmptyState
-    ? 'text-[var(--accent-pond)]'
-    : isHand
-      ? 'text-amber-500 dark:text-amber-400'
-      : isWarming
-        ? 'text-amber-500 dark:text-amber-400'
-        : anomalyStatus.isAnomaly
-          ? 'text-[var(--status-anomaly-text)]'
-          : 'text-emerald-600 dark:text-emerald-400';
-
   return (
-    <aside className="w-full lg:w-[21rem] xl:w-[23rem] 2xl:w-[25rem] h-auto lg:h-full flex-shrink-0 flex flex-col md:flex-row lg:flex-col gap-3 min-h-0 overflow-y-auto invisible-scrollbar items-stretch">
-
-      {/* 1. INFERENCE & METRICS OVERVIEW CARD */}
+    <aside
+      className="w-full lg:w-[22rem] xl:w-[24rem] 2xl:w-[26rem] h-auto lg:h-full flex-shrink-0 flex flex-col gap-3 min-h-0 overflow-y-auto invisible-scrollbar items-stretch"
+    >
+      {/* SINGLE UNIFIED INFERENCE CARD */}
       <div
-        className={`p-3.5 rounded-2xl border shadow-xs flex flex-col w-full md:w-1/2 lg:w-full min-h-[220px] lg:min-h-[230px] shrink-0 justify-between overflow-hidden ${cardBgClass}`}
+        className="p-3.5 rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] shadow-md flex flex-col w-full shrink-0 justify-between overflow-hidden transition-all duration-200"
       >
-
-        {/* Card Header */}
+        {/* 1. CARD HEADER: Terminal icon, Title, Status badge & Close button (subtitle removed) */}
         <div className="flex items-center justify-between pb-2 border-b border-[var(--border-color)] shrink-0">
           <div className="flex items-center gap-2">
-            {isEmptyState ? (
-              <Activity className={`w-4 h-4 ${headerIconClass}`} />
-            ) : isHand ? (
-              <Hand className={`w-4 h-4 ${headerIconClass}`} />
-            ) : anomalyStatus.isAnomaly ? (
-              <AlertTriangle className={`w-4 h-4 ${headerIconClass}`} />
-            ) : (
-              <ShieldCheck className={`w-4 h-4 ${headerIconClass}`} />
-            )}
-            <span className={`font-semibold text-xs tracking-wider uppercase ${headerColorClass}`}>
-              {isEmptyState ? 'Inference Details' : isHand ? 'Hand Present' : isWarming ? 'Warming Up' : anomalyStatus.isAnomaly ? 'Anomaly Detection' : 'Normal'}
+            <Terminal className="w-4 h-4 text-[var(--accent-pond)]" />
+            <span className="font-semibold text-xs tracking-wider uppercase text-[var(--text-primary)]">
+              Inference Details
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            {!isEmptyState && (
-              <Badge variant={isHand ? 'warning' : isWarming ? 'warning' : anomalyStatus.isAnomaly ? 'anomaly' : 'normal'}>
-                {isHand ? 'Hand Present' : isWarming ? 'Warming' : anomalyStatus.isAnomaly ? 'Anomaly' : 'Normal'}
-              </Badge>
-            )}
+
+          <div className="flex items-center gap-1.5">
+            <Badge
+              variant={
+                isWarming
+                  ? 'warning'
+                  : isRunning || isCompleted
+                    ? 'active'
+                    : 'neutral'
+              }
+              size="sm"
+              dot
+            >
+              <span>{isRunning ? 'PROCESSING' : (isCompleted ? 'COMPLETED' : (isStandby ? 'STANDBY' : anomalyStatus.message))}</span>
+              {displayFps > 0 && isRunning && (
+                <span className="ml-1 opacity-90 font-mono text-[10px]">
+                  &bull; {displayFps.toFixed(1)} fps{latencyMs ? ` (${latencyMs}ms)` : ''}
+                </span>
+              )}
+            </Badge>
+
             <IconButton
               size="sm"
               variant="ghost"
@@ -148,216 +172,205 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
               title="Close Drawer"
               icon={<ChevronRight className="w-4 h-4 text-[var(--accent-pond)]" />}
               onClick={() => {
-                playWaterDropSound();
                 onToggle();
               }}
             />
           </div>
         </div>
 
-        {/* Card 1 Body */}
-        <div className="pt-2 flex-1 flex flex-col justify-between overflow-hidden">
+        {/* 2. CARD BODY */}
+        <div className="pt-2 flex-1 flex flex-col justify-between overflow-hidden gap-2">
           {isEmptyState ? (
-            <div className="flex-1 flex flex-col items-center justify-center py-4 px-2 text-center text-[var(--text-secondary)]">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--accent-pond-subtle)] border border-[var(--border-color)] flex items-center justify-center mb-3 shadow-xs">
-                <Activity className="w-6 h-6 text-[var(--accent-pond)] animate-pulse" />
+            <div className="flex-1 flex flex-col justify-between py-2">
+              <div className="flex-1 flex flex-col items-center justify-center py-6 px-2 text-center text-[var(--text-secondary)]">
+                <Terminal className="w-8 h-8 text-[var(--accent-pond)] mb-2 animate-pulse" />
+                <p className="text-sm font-bold text-[var(--text-primary)]">
+                  {isStandby
+                    ? (isCameraSource ? 'Camera Ready' : 'Video Ready')
+                    : 'Awaiting Tube Video Stream'}
+                </p>
+                <p className="text-xs mt-1 max-w-[240px] leading-relaxed text-[var(--text-secondary)]">
+                  {anomalyStatus.subMessage || 'Upload a tube video to begin real-time ML inference.'}
+                </p>
               </div>
-              <p className="text-sm font-bold text-[var(--text-primary)]">
-                {anomalyStatus.message === 'NO CAMERA'
-                  ? 'Camera Offline'
-                  : isStandby
-                    ? 'Stream Inactive'
-                    : 'Stream Active'}
-              </p>
-              <p className="text-xs mt-1 max-w-[230px] leading-relaxed text-[var(--text-secondary)]">
-                {anomalyStatus.subMessage || (isStandby
-                  ? 'Connect an OAK camera or switch to video mode to begin live YOLOv8 anomaly evaluation.'
-                  : 'Waiting for YOLOv8 to detect objects...')}
-              </p>
 
-              <div className="mt-3 px-3.5 py-1.5 rounded-xl bg-[var(--accent-pond-subtle)] border border-[var(--border-color)] text-xs font-mono text-[var(--accent-pond)] flex items-center gap-2 shadow-2xs">
-                <span className="w-2 h-2 rounded-full bg-[var(--accent-pond)]" />
-                <span>Expected: <strong className="text-[var(--text-primary)] font-bold">{anomalyStatus.expectedCount}</strong> &middot; Detected: <strong className="text-[var(--text-primary)] font-bold">0</strong></span>
+              {/* BOTTOM TELEMETRY (EMPTY STATE) */}
+              <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-secondary)] px-1 pt-1 border-t border-[var(--border-color)]">
+                <span>Script: head_tail_classification</span>
+                <span className={isRunning ? "text-emerald-500 font-bold" : isCompleted ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "text-[var(--text-secondary)] font-medium"}>
+                  &bull; {telemetryStatusText}
+                </span>
+                <span>0 Detections</span>
               </div>
             </div>
           ) : (
-            <div className="flex-1 flex flex-col justify-between overflow-hidden">
-              {/* Large Numbers Area */}
-              <div className="py-1 shrink-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] leading-none">
-                    {anomalyStatus.detectedCount}
-                  </span>
-                  <span className="text-xs sm:text-sm font-medium text-[var(--text-secondary)]">
-                    detected &middot; expected
-                  </span>
-                  <span className="text-lg sm:text-xl font-bold text-[var(--text-secondary)]">
-                    {anomalyStatus.expectedCount}
-                  </span>
-                </div>
-
-                {isHand ? (
-                  <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
-                    <Hand className="w-3.5 h-3.5 shrink-0 text-amber-500" />
-                    <span>Evaluation paused &middot; Hand in target area</span>
-                  </div>
-                ) : anomalyStatus.difference !== 0 ? (
-                  <div className={`mt-1 flex items-center gap-1.5 text-xs font-semibold ${anomalyStatus.isAnomaly ? 'text-[var(--status-anomaly-text)]' : 'text-[var(--status-normal-text)]'
-                    }`}>
-                    {anomalyStatus.difference > 0 ? (
-                      <ArrowUp className="w-3.5 h-3.5 shrink-0" />
-                    ) : (
-                      <ArrowDown className="w-3.5 h-3.5 shrink-0" />
-                    )}
-                    <span>
-                      {Math.abs(anomalyStatus.difference)} {anomalyStatus.difference > 0 ? 'above' : 'below'} expected count
+            <div className="flex flex-col gap-2">
+              {/* VIDEO PROGRESS BLOCK (Integrated in the same card) */}
+              <div className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-card-subtle)] flex flex-col gap-1.5">
+                {isCameraSource ? (
+                  <div className="flex justify-between items-center text-xs text-[var(--text-secondary)]">
+                    <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-bold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Live Feed
                     </span>
-                  </div>
-                ) : isWarming ? (
-                  <div className="mt-1 text-xs font-semibold text-amber-500 dark:text-amber-400 flex items-center gap-1.5 animate-pulse">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                    <span>Warming up — acquiring target lock...</span>
+                    <span className="font-mono">{displayFrames.toLocaleString()} frames</span>
+                    <span className="font-mono">{formatTime(computedUptime)}</span>
                   </div>
                 ) : (
-                  <div className="mt-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>Perfect match with expected count</span>
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center text-xs text-[var(--text-secondary)]">
+                      <span className="font-medium text-[var(--text-primary)]">Processing Progress</span>
+                      <span className="font-mono font-bold text-[var(--accent-pond)]">{Math.round(displayProgress)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-[var(--btn-secondary-border)] rounded-full overflow-hidden relative">
+                      <div
+                        className="h-full rounded-full bg-[var(--accent-pond)] transition-all duration-300 ease-out"
+                        style={{ width: `${Math.max(0, Math.min(100, displayProgress))}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center font-mono text-[10px] text-[var(--text-secondary)] pt-0.5">
+                      <span>{displayFrames.toLocaleString()} frames</span>
+                      <span>{formatTime(computedUptime)}</span>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* Warning Banner */}
-              {anomalyStatus.foreignSpecies.length > 0 && (
-                <div className="my-1.5 p-1.5 rounded-xl flex items-start gap-2 bg-[var(--status-warn-bg)] border border-[var(--status-warn-border)] text-[var(--status-warn-text)] text-[11px] font-medium shrink-0">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <span className="leading-tight">
-                    {anomalyStatus.foreignCount ? `${anomalyStatus.foreignCount} ` : ''}Non-duck ({anomalyStatus.foreignSpecies.join(', ')}) detected
+              {/* TOP FRAME BANNER */}
+              <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[var(--bg-card-subtle)] text-[var(--text-primary)] font-mono text-xs border border-[var(--border-color)] shadow-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-[var(--accent-pond)] font-bold">
+                    Frame {frameNumber}:
+                  </span>
+                  <span className="text-sky-600 dark:text-sky-400 font-bold">
+                    HEADS={anomalyStatus.headsCount}
+                  </span>
+                  <span className="text-indigo-600 dark:text-indigo-400 font-bold">
+                    TAILS={anomalyStatus.tailsCount}
                   </span>
                 </div>
-              )}
-
-              {/* Stream Metrics Block */}
-              <div className="mt-1.5 shrink-0">
-                <div className="flex justify-between items-center mb-1 px-0.5">
-                  <div className="text-[11px]">
-                    <span className="text-[var(--text-secondary)]">Species </span>
-                    <span className="font-bold text-[var(--text-primary)]">{speciesList}</span>
-                  </div>
-                  <div className="text-[11px]">
-                    <span className="text-[var(--text-secondary)]">Confidence </span>
-                    <span className="font-bold text-[var(--accent-pond)]">{`${(metrics.avgConfidence * 100).toFixed(1)}%`}</span>
-                  </div>
-                </div>
-
-                <div className="p-2 rounded-xl border border-[var(--border-color)] bg-[var(--bg-card-subtle)] flex flex-col gap-1.5">
-                  <div className="flex justify-between items-center">
-
-                    <Badge variant="active" size="sm" dot className="mr-1 hidden xl:inline-flex">
-                      {isCameraSource ? 'LIVE CAMERA' : 'VIDEO INFERENCE'}
-                    </Badge>
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        variant={mlStats.anchor_locked ? 'active' : 'warning'}
-                        size="sm"
-                      >
-                        {mlStats.anchor_locked ? 'Lock: YES' : 'Lock: WARMING'}
-                      </Badge>
-
-                      <div className="font-mono text-xs">
-                        <span className="font-bold text-[var(--text-primary)]">{displayFps.toFixed(1)}</span>
-                        <span className="text-[var(--text-secondary)] ml-1">fps</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Progress: Real Progress Bar for Video, Live Status for Infinite Camera */}
-                  {isCameraSource ? (
-                    <div className="flex justify-between items-center text-[10px] text-[var(--text-secondary)] pt-0.5">
-                      <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-bold">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        Live Continuous Feed
-                      </span>
-                      <span className="font-mono">{displayFrames.toLocaleString()} frames</span>
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      <div className="flex justify-between items-center text-[10px] text-[var(--text-secondary)]">
-                        <span>Processing Progress</span>
-                        <span className="font-mono font-bold text-[var(--accent-pond)]">{Math.round(displayProgress)}%</span>
-                      </div>
-                      <div className="h-1.5 w-full bg-[var(--btn-secondary-border)] rounded-full overflow-hidden relative">
-                        <div
-                          className="h-full rounded-full bg-[var(--accent-pond)] transition-all duration-300 ease-out"
-                          style={{ width: `${Math.max(0, Math.min(100, displayProgress))}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between items-center font-mono text-[10px] text-[var(--text-secondary)]">
-                        <span>{displayFrames.toLocaleString()} frames</span>
-                        <span>{formatTime(computedUptime)}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2. DETECTION GALLERY CARD (Row aligned on tablet, fixed height, strictly no inner scroll) */}
-      <div
-        className="p-3.5 rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] shadow-xs flex flex-col w-full md:w-1/2 lg:w-full md:h-[370px] lg:h-auto min-h-[320px] flex-1 overflow-hidden justify-between"
-      >
-        <div className="flex items-center justify-between mb-2 pb-2 border-b border-[var(--border-color)] shrink-0 px-0.5">
-          <div className="flex items-center gap-1.5">
-            <Layers className="w-4 h-4 text-[var(--accent-pond)]" />
-            <span className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
-              Detection Gallery
-            </span>
-          </div>
-          {hasDetections && (
-            <div className="flex items-center gap-1.5">
-              {anomalyDucks.length > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-[var(--status-anomaly-bg)] text-[var(--status-anomaly-text)] border border-[var(--status-anomaly-border)]">
-                  {anomalyDucks.length} Alert{anomalyDucks.length !== 1 ? 's' : ''}
+                <span className="text-[10px] text-[var(--text-secondary)] font-normal">
+                  {formatTime(computedUptime)}
                 </span>
-              )}
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${anomalyStatus.isAnomaly && (anomalyStatus.difference !== 0 || anomalyStatus.type === 'OVER_COUNT' || anomalyStatus.type === 'UNDER_COUNT')
-                ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
-                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                }`}>
-                {ducks.length} Total
-              </span>
-            </div>
-          )}
-        </div>
-
-        <div className="w-full flex-1 min-h-0 flex flex-col overflow-hidden">
-          {hasDetections ? (
-            <DetectionGallery
-              ducks={ducks}
-              selectedDuckId={selectedDuckId}
-              onSelectDuck={onSelectDuck}
-              anomalyStatus={anomalyStatus}
-              expectedCount={anomalyStatus.expectedCount}
-            />
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center py-4 px-4 text-center text-[var(--text-secondary)] bg-[var(--bg-card-subtle)] rounded-xl border border-[var(--border-color)]">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--status-normal-bg)] border border-[var(--status-normal-border)] flex items-center justify-center mb-3 shadow-xs">
-                <ShieldCheck className="w-6 h-6 text-[var(--status-normal-text)]" />
               </div>
-              <p className="text-sm font-bold text-[var(--text-primary)]">
-                {isEmptyState ? 'Awaiting Feed Stream' : 'No Objects Detected'}
-              </p>
-              <p className="text-xs mt-1 text-[var(--text-secondary)] max-w-[220px] leading-relaxed">
-                {isEmptyState
-                  ? 'Detected objects will appear here ordered by ID.'
-                  : 'Start the live stream to evaluate detections.'}
-              </p>
+
+              {/* DETECTIONS LIST */}
+              <div className="space-y-1.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] p-2">
+                <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider px-1 flex justify-between">
+                  <span>Detections (Index &bull; Class &bull; Width)</span>
+                  <span>Tag &bull; Tube</span>
+                </div>
+
+                <div className="flex flex-col gap-1.5 max-h-[260px] overflow-y-auto invisible-scrollbar">
+                  {tubes.map((d, idx) => {
+                    const isHead = d.role === 'HEAD';
+                    const isSelected = selectedTubeId != null && String(d.id) === String(selectedTubeId);
+                    const widthVal = Number(d.width_px ?? d.width_mm ?? 0);
+                    const isCheck = d.status && d.status !== 'OK';
+
+                    return (
+                      <div
+                        key={`det-${d.id ?? idx}`}
+                        onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
+                        role="button"
+                        tabIndex={0}
+                        className={`flex items-center justify-between p-2 rounded-lg font-mono text-xs border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-xs transition-all cursor-pointer ${
+                          isSelected ? 'ring-2 ring-[var(--accent-pond)] shadow-sm' : 'hover:border-[var(--accent-pond)]'
+                        }`}
+                      >
+                        {/* Index -> Class */}
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-[var(--text-secondary)] min-w-[20px]">
+                            #{d.id ?? idx}
+                          </span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                            isHead ? 'bg-sky-500 text-white' : 'bg-indigo-500 text-white'
+                          }`}>
+                            {d.role || 'END'}
+                          </span>
+                        </div>
+
+                        {/* Width & Value -> Size Tag -> Next Tube (tube#1) or CHECK */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[11px] text-[var(--text-secondary)]">
+                            width=
+                          </span>
+                          <span className="font-black text-sm text-[var(--text-primary)] min-w-[50px] text-right">
+                            {widthVal > 0 ? `${widthVal.toFixed(1)}px` : '--'}
+                          </span>
+
+                          {/* Size Tags: SAME Green, SMALLER Yellow, BIGGER Red */}
+                          {d.size === 'SAME' && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600 text-white shadow-2xs">
+                              SAME
+                            </span>
+                          )}
+                          {d.size === 'SMALLER' && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-black bg-yellow-400 text-slate-950 shadow-2xs">
+                              SMALLER
+                            </span>
+                          )}
+                          {d.size === 'BIGGER' && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white shadow-2xs">
+                              BIGGER
+                            </span>
+                          )}
+
+                          {/* Tube Tag or Check Flag */}
+                          {isCheck ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-medium max-w-[120px] truncate" title={d.status}>
+                              {d.status}
+                            </span>
+                          ) : d.pair_id != null ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9.5px] bg-slate-200 dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 font-semibold">
+                              tube#{d.pair_id}
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[9.5px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-medium">
+                              unpaired
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* VERDICT BANNER (In Yellow/Amber) */}
+              {verdictText && (
+                <div className="px-2.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between border-2 border-amber-400 dark:border-amber-500 bg-amber-400/15 dark:bg-amber-950/40 text-amber-950 dark:text-amber-100 shadow-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-amber-600 dark:text-amber-400 text-sm">&minus;&gt;</span>
+                    <span className="text-amber-950 dark:text-amber-100 font-bold tracking-tight">
+                      {verdictText}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* BOTTOM TELEMETRY */}
+              <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-secondary)] px-1 pt-0.5">
+                <span>Script: head_tail_classification</span>
+                <span className={isRunning ? "text-emerald-500 font-bold" : isCompleted ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "text-[var(--text-secondary)] font-medium"}>
+                  &bull; {telemetryStatusText}
+                </span>
+                <span>{tubes.length} Detections</span>
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* 2. CAMERA IMAGE ADJUSTMENTS CARD (Shown in Sidebar when Camera is connected) */}
+      {isCameraSource && isCameraConnected && (
+        <CameraImageAdjustmentsCard
+          cameraId={cameraConfig?.id}
+          config={cameraConfig}
+          onUpdateConfig={onUpdateCameraConfig}
+          isLive={true}
+        />
+      )}
     </aside>
   );
 };

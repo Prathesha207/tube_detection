@@ -1,11 +1,9 @@
 import { useState, useEffect } from 'react';
-import { playWaterDropSound } from '../utils/audio';
 
 export const useFullscreen = (containerRef: React.RefObject<HTMLDivElement | null>) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const toggleFullscreen = () => {
-    playWaterDropSound();
     const elem = containerRef.current;
     if (!elem) return;
 
@@ -28,7 +26,7 @@ export const useFullscreen = (containerRef: React.RefObject<HTMLDivElement | nul
       }
     } else {
       if (document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {});
+        document.exitFullscreen().catch(() => { });
       } else if ((document as unknown as { webkitExitFullscreen?: () => void }).webkitExitFullscreen) {
         (document as unknown as { webkitExitFullscreen: () => void }).webkitExitFullscreen();
       } else if ((document as unknown as { mozCancelFullScreen?: () => void }).mozCancelFullScreen) {

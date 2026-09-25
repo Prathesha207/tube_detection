@@ -91,9 +91,16 @@ export const cameraService = {
     return res.data;
   },
 
-  async updateLiveControls(id: string | number, data: any) {
-    const res = await api.patch(`/camera/live-controls/${id}`, data);
-    return res.data;
+  async updateLiveControls(id: string | number | undefined, data: any) {
+    try {
+      const res = await api.post("/oak/controls", data);
+      return res.data;
+    } catch {
+      if (id) {
+        const res = await api.patch(`/camera/live-controls/${id}`, data);
+        return res.data;
+      }
+    }
   },
 
    async updateInferenceMode(mode: "testing" | "production") {

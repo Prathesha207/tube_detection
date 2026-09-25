@@ -1,9 +1,8 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import type { DuckEntity, StreamSourceType, AnomalyStatus } from '../types';
+import type { TubeEntity, StreamSourceType, AnomalyStatus, LabelMode } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
 import { useRecording } from './hooks/useRecording';
-import { playWaterDropSound } from '../utils/audio';
 import { cameraService } from './service/cameraService';
 
 import { Loader2 } from 'lucide-react';
@@ -21,11 +20,10 @@ import { LoadingOverlay } from './canvas/LoadingOverlay';
 import { useFullscreen } from '../hooks/useFullscreen';
 import { useContainerFit } from '../hooks/useContainerFit';
 import { useVideoUpload } from '../hooks/useVideoUpload';
-import { useRippleEffect } from '../hooks/useRippleEffect';
 
 interface DetectionCanvasProps {
-  ducks: DuckEntity[];
-  setDucks?: React.Dispatch<React.SetStateAction<DuckEntity[]>>;
+  tubes: TubeEntity[];
+  setTubes?: React.Dispatch<React.SetStateAction<TubeEntity[]>>;
   anomalyStatus: AnomalyStatus;
   feedMode: 'raw' | 'inference';
   onFeedModeChange: (mode: 'raw' | 'inference') => void;
@@ -42,13 +40,12 @@ interface DetectionCanvasProps {
   customVideoUrl?: string;
   videoSessionId?: string | null;
   customVideoName?: string;
-  selectedDuckId: string | null;
-  onSelectDuck: (id: string | null) => void;
+  selectedTubeId: string | null;
+  onSelectTube: (id: string | null) => void;
   onCustomVideoUploaded?: (videoUrl: string, fileName: string, sessionId?: string, isCameraRecording?: boolean) => void | Promise<void>;
   onClearCustomVideo?: () => void;
   cameraStartingState?: 'idle' | 'waking_camera' | 'waiting_frame' | 'ready';
   onCameraDeviceChange?: (active: boolean) => void;
-  expectedDucks?: number;
   videoDimensions?: { width: number; height: number } | null;
   isCameraConnected?: boolean;
   initialUploadFile?: File;
@@ -69,8 +66,8 @@ interface DetectionCanvasProps {
 }
 
 export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
-  ducks,
-  setDucks,
+  tubes,
+  setTubes,
   anomalyStatus,
   feedMode,
   onFeedModeChange,
@@ -87,13 +84,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   customVideoUrl,
   videoSessionId,
   customVideoName,
-  selectedDuckId,
-  onSelectDuck,
+  selectedTubeId,
+  onSelectTube,
   onCustomVideoUploaded,
   onClearCustomVideo,
   cameraStartingState = 'ready',
   onCameraDeviceChange,
-  expectedDucks = 18,
   videoDimensions,
   isCameraConnected = false,
   initialUploadFile,
@@ -119,7 +115,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showHUD, setShowHUD] = useState(true);
-  const [showAllBoxes, setShowAllBoxes] = useState<boolean>(false);
+  const [labelMode, setLabelMode] = useState<LabelMode>('compact');
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
   const [isFirstFrameLoaded, setIsFirstFrameLoaded] = useState<boolean>(false);
   const [streamCacheBuster, setStreamCacheBuster] = useState<number>(Date.now());
@@ -149,28 +145,27 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   }, [isRunning, isCameraSource, isStreaming]);
 
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
-  const hasInferenceResult = (effectiveFramesProcessed > 0 || ducks.length > 0) && ducks.length > 0;
+  const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;
 
   const isOverlayShowing =
     Boolean(isStarting) ||
     Boolean(isCameraSource && !hasCameraRecording && isCameraConnected && cameraStartingState !== 'ready') ||
     Boolean((isVideoSource || hasCameraRecording) && (hasActiveVideo || hasCameraRecording) && isRunning && !isFirstFrameLoaded);
 
-  const isHandPresent =
-    backendStats?.status === 'HAND' ||
-    backendStats?.hand_detected === true ||
-    anomalyStatus?.message?.includes('HAND') ||
-    ducks.some((d) => d.species === 'Hand' || d.handDetected === true || d.statusEvent === 'hand_present');
 
-  // anomalyStatus is the reconciled current-frame verdict used by every
-  // status surface. Do not reintroduce a stale raw backend status here.
-  const isSceneAnomaly = anomalyStatus?.isAnomaly === true;
 
   // Hooks
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef);
   const { fittedRect } = useContainerFit(containerRef, canvasRef, videoAspect, videoDimensions, isCameraSource);
-  const { uploadProgress, isSelectingVideo, handleFileInputChange, handleSelectVideoAndStart } = useVideoUpload(fileInputRef, expectedDucks, onCustomVideoUploaded, recordedFile, clearRecording, initialUploadFile);
-  const { handleCanvasClick } = useRippleEffect(canvasRef, ducks, selectedDuckId, onSelectDuck, showAllBoxes, isSceneAnomaly);
+  const { uploadProgress, isSelectingVideo, handleFileInputChange, handleSelectVideoAndStart, handleDragOver, handleDragLeave, handleDrop, isDragOver } = useVideoUpload(fileInputRef, onCustomVideoUploaded, recordedFile, clearRecording, initialUploadFile);
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget && (e.target as HTMLElement).closest('[role="button"]')) {
+      return;
+    }
+    if (selectedTubeId) {
+      onSelectTube(null);
+    }
+  };
 
   useEffect(() => {
     if (onRegisterTriggerUpload) {
@@ -181,7 +176,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   // Cache buster for stream URL
   useEffect(() => {
     setStreamCacheBuster(Date.now());
-    if (isRunning) setShowAllBoxes(false);
   }, [isRunning, videoSessionId, cameraRecordSessionId]);
 
   useEffect(() => {
@@ -278,15 +272,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
   }, [isRunning]);
 
-  // Once backend starts processing frames or ducks arrive, mark first frame loaded immediately
+  // Once backend starts processing frames or tubes arrive, mark first frame loaded immediately
   useEffect(() => {
-    if ((backendStats?.frames_processed && backendStats.frames_processed > 0) || ducks.length > 0) {
+    if ((backendStats?.frames_processed && backendStats.frames_processed > 0) || tubes.length > 0) {
       setIsFirstFrameLoaded(true);
     }
     if (backendStats?.video_width && backendStats?.video_height) {
       setVideoAspect(backendStats.video_width / backendStats.video_height);
     }
-  }, [backendStats?.frames_processed, backendStats?.video_width, backendStats?.video_height, ducks.length]);
+  }, [backendStats?.frames_processed, backendStats?.video_width, backendStats?.video_height, tubes.length]);
 
   // Video autoplay behavior for local preview
   useEffect(() => {
@@ -303,13 +297,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     <div
       ref={containerRef}
       id="detection-hero-viewport"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={(e) => handleDrop(e, isVideoSource)}
       className={`relative w-full flex-1 h-full min-h-[350px] lg:min-h-0 overflow-hidden border select-none group transition-colors duration-200 ${
         isFullscreen ? 'rounded-none border-none' : 'rounded-3xl'
-      } ${
-        isHandPresent && !isOverlayShowing
-          ? 'border-amber-500'
-          : 'border-[var(--border-color)] shadow-sm'
-      }`}
+      } ${isDragOver ? 'ring-4 ring-cyan-500/80 border-cyan-400' : 'border-[var(--border-color)]'} shadow-sm`}
       style={{
         backgroundColor: (isWaitingForVideo || (!isCameraConnected && isCameraSource)) ? 'var(--bg-card)' : '#000000',
         ...(isFullscreen ? { width: '100%', height: '100%', minHeight: '100vh', maxHeight: '100vh' } : {})
@@ -431,15 +424,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
             {/* AI Bounding Boxes: Shown in INFERENCE mode or always for video upload / camera recording */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && ducks.length > 0 && (
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && tubes.length > 0 && (
               <BoundingBoxOverlay
-                ducks={ducks}
-                selectedDuckId={selectedDuckId}
-                onSelectDuck={onSelectDuck}
-                showAllBoxes={showAllBoxes}
-                isHandPresent={isHandPresent}
-                isSceneAnomaly={isSceneAnomaly}
-                isCountMismatch={anomalyStatus.difference !== 0}
+                tubes={tubes}
+                selectedTubeId={selectedTubeId}
+                onSelectTube={onSelectTube}
+                labelMode={labelMode}
               />
             )}
           </div>
@@ -464,15 +454,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           hasActiveVideo={hasActiveVideo}
           feedMode={feedMode}
           onFeedModeChange={onFeedModeChange}
-          showAllBoxes={showAllBoxes}
-          onToggleShowAllBoxes={() => { playWaterDropSound(); setShowAllBoxes(!showAllBoxes); }}
           isRecording={isRecording}
           isSaving={isSaving}
           recordingDuration={recordingDuration}
           onToggleRecording={async () => {
             if (hasCameraRecording) return; // block recording while reviewing a clip
             if (isRecording) {
-              playWaterDropSound();
               if (isRunning && isCameraSource) {
                 // Ensure live inference claim is stopped before the recording is finalized
                 await onStopInference?.();
@@ -483,7 +470,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 onCustomVideoUploaded?.(fullStreamUrl, res.filename, res.session_id, true);
               }
             } else {
-              playWaterDropSound();
               // If stream is not running yet, start the stream first automatically
               if (!isStreaming && onStartStream) {
                 await onStartStream();
@@ -495,7 +481,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           isFullscreen={isFullscreen}
           onToggleFullscreen={toggleFullscreen}
           showHUD={showHUD}
-          onToggleHUD={() => { playWaterDropSound(); setShowHUD(!showHUD); }}
+          onToggleHUD={() => setShowHUD(!showHUD)}
           backendStatus={backendStats?.status}
           isCameraSource={isCameraSource}
           isVideoSource={isVideoSource}
@@ -504,6 +490,9 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           isStreaming={isStreaming}
           isFirstFrameLoaded={isFirstFrameLoaded}
           framesProcessed={effectiveFramesProcessed}
+          onClearCustomVideo={onClearCustomVideo}
+          labelMode={labelMode}
+          onLabelModeChange={setLabelMode}
         />
       )}
 
@@ -512,8 +501,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           anomalyStatus={anomalyStatus}
           fps={fps}
           backendStatus={backendStats?.status}
-          ducks={ducks}
-          expectedDucks={expectedDucks}
+          tubes={tubes}
         />
       )}
     </div>

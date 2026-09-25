@@ -123,88 +123,46 @@ from contextlib import asynccontextmanager
 _backend_ready = False
 
 def _preload_model_background():
-    """Runs in a daemon thread at startup: loads DuckAnalyzer (and warms up the
+    """Runs in a daemon thread at startup: loads TubeAnalyzer (and warms up the
     GPU if CUDA is available) so inference is instant when the user clicks Start.
     Sets _backend_ready=True when done so /health flips to 'ready'."""
     global _backend_ready
     try:
-        import yaml
         from app.utils.resource_path import resource_path
 
-        # Resolve config path (works both frozen PyInstaller and dev mode)
-        cfg_path = resource_path("app/ml/config/config.yaml")
-        if not os.path.exists(cfg_path):
-            cfg_path = os.path.join(os.path.dirname(__file__), "ml", "config", "config.yaml")
-
         try:
-            from duck_analyzer import DuckAnalyzer
-        except ImportError:
-            try:
-                from app.ml.debug.extracted.duck_analyzer.analyzer import DuckAnalyzer
-            except ImportError:
-                DuckAnalyzer = None
+            from app.ml.tube.inference.tube_analyzer import TubeAnalyzer
+        except ImportError as e:
+            logger.error(f"[STARTUP] Could not import TubeAnalyzer: {e}")
+            TubeAnalyzer = None
 
-        if DuckAnalyzer is not None and os.path.exists(cfg_path):
-            logger.info("[STARTUP] Preloading ML model into memory (GPU if available)...")
-            try:
-                with open(cfg_path, "r") as f:
-                    cfg = yaml.safe_load(f) or {}
-                expected = int(cfg.get("expected_duck_count") or 18)
-            except Exception:
-                cfg = {}
-                expected = 18
-            cfg["expected_duck_count"] = expected
+        ml_tube_dir = os.path.join(os.path.dirname(__file__), "ml", "tube")
+        model_candidates = [
+            resource_path("app/ml/tube/model/best.pt"),
+            os.path.join(ml_tube_dir, "model", "best.pt"),
+            resource_path("app/ml/model/best.pt"),
+            os.path.join(os.path.dirname(__file__), "ml", "model", "best.pt"),
+        ]
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "tube", "model", "best.pt"))
+            model_candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
 
-            # Resolve model_path portably to absolute path
-            ml_dir = os.path.join(os.path.dirname(__file__), "ml")
-            model_candidates = [
-                resource_path("app/ml/model/best.pt"),
-                os.path.join(ml_dir, "model", "best.pt"),
-                os.path.join(ml_dir, "debug", "best.pt"),
-                os.path.join(ml_dir, "models", "best.pt"),
-            ]
-            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-                model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
-                model_candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "models", "best.pt"))
+        resolved_model = next((c for c in model_candidates if c and os.path.exists(c)), None)
 
-            resolved_model = next((c for c in model_candidates if c and os.path.exists(c)), None)
-            if resolved_model:
-                cfg["model_path"] = resolved_model
-
-            # Resolve roi_path portably
-            roi_raw = cfg.get("roi_path", "model/hand_roi.json")
-            roi_candidates = [
-                resource_path("app/ml/model/hand_roi.json"),
-                os.path.join(ml_dir, "model", "hand_roi.json"),
-                os.path.join(ml_dir, "hand_roi.json"),
-            ]
-            if roi_raw and os.path.isabs(roi_raw) and os.path.exists(roi_raw):
-                cfg["roi_path"] = roi_raw
-            else:
-                resolved_roi = next((r for r in roi_candidates if r and os.path.exists(r)), None)
-                if resolved_roi:
-                    cfg["roi_path"] = resolved_roi
+        if TubeAnalyzer is not None and resolved_model:
+            logger.info(f"[STARTUP] Preloading TubeAnalyzer model from {resolved_model} into memory (GPU if available)...")
 
             # Determine device
             try:
-                from app.ml.video_inference_service import is_cuda_operational
-                device_val = 0 if is_cuda_operational() else "cpu"
+                from app.ml.tube.inference.video_inference_service import is_cuda_operational
+                device_val = "0" if is_cuda_operational() else "cpu"
             except Exception:
                 device_val = "cpu"
-            cfg["device"] = device_val
-            cfg["save_local"] = False
 
-            # Write temporary config with absolute paths for DuckAnalyzer
-            import tempfile
-            preload_cfg_path = os.path.join(tempfile.gettempdir(), "vision_preload_config.yaml")
-            with open(preload_cfg_path, "w") as f:
-                yaml.dump(cfg, f)
-
-            # Instantiating DuckAnalyzer loads YOLO weights + optionally CUDA
-            _analyzer = DuckAnalyzer(preload_cfg_path, expected_duck_count=expected)
+            # Instantiating TubeAnalyzer loads YOLO weights + optionally CUDA
+            _analyzer = TubeAnalyzer(model_path=resolved_model, device=device_val)
 
             # Warm up: run one dummy inference so CUDA kernels are compiled.
-            # process_frame(frame) takes only the frame, no extra kwargs.
             try:
                 import numpy as np
                 dummy = np.zeros((640, 640, 3), dtype=np.uint8)
@@ -215,20 +173,19 @@ def _preload_model_background():
 
             # Store it as the shared analyzer so VideoInferenceService reuses it
             try:
-                from app.ml.video_inference_service import _set_shared_analyzer
+                from app.ml.tube.inference.video_inference_service import _set_shared_analyzer
                 _set_shared_analyzer(_analyzer)
             except Exception:
-                pass  # Not critical — service will create its own instance on first use
+                pass
 
-            # Also inject into camera_inference_service so live camera sessions
-            # don't reload the model either.
+            # Also inject into camera_inference_service so live camera sessions don't reload either
             try:
-                from app.ml.camera_inference_service import _set_camera_analyzer
+                from app.ml.tube.inference.camera_inference_service import _set_camera_analyzer
                 _set_camera_analyzer(_analyzer)
             except Exception:
-                pass  # Non-critical fallback
+                pass
         else:
-            logger.info("[STARTUP] DuckAnalyzer not available or config missing — skipping preload.")
+            logger.info("[STARTUP] TubeAnalyzer or model best.pt not found — skipping preload.")
     except Exception as e:
         logger.error(f"[STARTUP] Model preload failed: {e}", exc_info=True)
     finally:

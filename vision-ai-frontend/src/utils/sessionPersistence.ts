@@ -13,16 +13,24 @@ export interface PersistedSessionState {
   videoSessionId: string | null;
   customVideoUrl: string | undefined;
   customVideoName: string | undefined;
-  expectedDucks?: number;
-  selectedDuckId?: string | null;
+  selectedTubeId?: string | null;
   videoDimensions?: { width: number; height: number } | null;
 }
 
 export function saveSessionState(state: Partial<PersistedSessionState>) {
   try {
     const existing = loadSessionState() ?? ({} as PersistedSessionState);
-    const merged = { ...existing, ...state };
-    sessionStorage.setItem(KEY, JSON.stringify(merged));
+    const merged: any = { ...existing, ...state };
+    for (const k of Object.keys(merged)) {
+      if (merged[k] === undefined || merged[k] === null || merged[k] === '') {
+        delete merged[k];
+      }
+    }
+    if (Object.keys(merged).length === 0) {
+      sessionStorage.removeItem(KEY);
+    } else {
+      sessionStorage.setItem(KEY, JSON.stringify(merged));
+    }
   } catch {
     // sessionStorage quota exceeded or other error
   }

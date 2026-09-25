@@ -10,11 +10,10 @@ import { CameraSettingsModal } from './components/CameraSettingsModal';
 import { HelpModal } from './components/HelpModal';
 import { Modal, Toast, Button } from './components/ui';
 import { useInferenceStore } from './store/inferenceStore';
-import { playWaterDropSound, setSoundEnabled, isSoundEnabled } from './utils/audio';
 import { AlertTriangle } from 'lucide-react';
 import { getApiBaseUrl } from './lib/api';
 import { cameraService } from './components/service/cameraService';
-import { resetBBoxCache, mapDetectionsToDucks } from './utils/mlDataMapper';
+import { resetBBoxCache, mapDetectionsToTubes } from './utils/mlDataMapper';
 import { DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT } from './utils/constants';
 import { loadSessionState, saveSessionState, clearSessionState } from './utils/sessionPersistence';
 
@@ -57,18 +56,10 @@ export default function App() {
   };
 
   const [feedMode, setFeedMode] = useState<'raw' | 'inference'>('inference');
-  const [soundActive, setSoundActive] = useState<boolean>(() => isSoundEnabled());
   const [drawerOpen, setDrawerOpen] = useState<boolean>(true);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [helpOpen, setHelpOpen] = useState<boolean>(false);
-  const [selectedDuckId, setSelectedDuckId] = useState<string | null>(null);
-
-  const handleToggleSound = () => {
-    const next = !soundActive;
-    setSoundActive(next);
-    setSoundEnabled(next);
-    if (next) playWaterDropSound();
-  };
+  const [selectedTubeId, setSelectedTubeId] = useState<string | null>(null);
 
   // ─── 4. Source Mode Coordination ───────────────────────────────────
   // Seed sourceType from session so refresh preserves the active source
@@ -83,7 +74,7 @@ export default function App() {
 
   // ─── Shared Pipeline State ─────────────────────────────────────────
   const initialSession = useMemo(() => loadSessionState(), []);
-  // Seed isRunning and all metrics from session so Ctrl+R keeps stats and ducks visible
+  // Seed isRunning and all metrics from session so Ctrl+R keeps stats and tubes visible
   const [isRunning, setIsRunning] = useState<boolean>(() => {
     return (initialSession as any)?.isRunning ?? false;
   });
@@ -100,10 +91,9 @@ export default function App() {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return 0;
     return (initialSession as any)?.uptimeSeconds ?? 0;
   });
-  const [expectedDucks, setExpectedDucks] = useState<number>(() => initialSession?.expectedDucks ?? 18);
-  const [ducks, setDucks] = useState<import('./types').DuckEntity[]>(() => {
+  const [tubes, setTubes] = useState<import('./types').TubeEntity[]>(() => {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return [];
-    return (initialSession as any)?.ducks ?? [];
+    return (initialSession as any)?.tubes ?? [];
   });
   const [lastCameraFrame, setLastCameraFrame] = useState<string | undefined>(() => (initialSession as any)?.lastCameraFrame);
   const [lastVideoFrame, setLastVideoFrame] = useState<string | undefined>(() => (initialSession as any)?.lastVideoFrame);
@@ -119,16 +109,14 @@ export default function App() {
   }, [initialSession]);
 
   // Maintain fresh refs for session state snapshots
-  const ducksRef = useRef(ducks);
-  ducksRef.current = ducks;
+  const tubesRef = useRef(tubes);
+  tubesRef.current = tubes;
   const framesProcessedRef = useRef(framesProcessed);
   framesProcessedRef.current = framesProcessed;
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
   const uptimeSecondsRef = useRef(uptimeSeconds);
   uptimeSecondsRef.current = uptimeSeconds;
-  const expectedDucksRef = useRef(expectedDucks);
-  expectedDucksRef.current = expectedDucks;
   const sourceTypeRef = useRef(sourceType);
   sourceTypeRef.current = sourceType;
 
@@ -136,18 +124,17 @@ export default function App() {
   useEffect(() => {
     saveSessionState({
       sourceType,
-      expectedDucks,
     });
-  }, [sourceType, expectedDucks]);
+  }, [sourceType]);
 
   // Snapshot cache to preserve complete run state across source toggling
   interface SourceStateSnapshot {
-    ducks: import('./types').DuckEntity[];
+    tubes: import('./types').TubeEntity[];
     stats: import('./store/inferenceStore').InferenceStats;
     framesProcessed: number;
     fps: number;
     uptimeSeconds: number;
-    selectedDuckId: string | null;
+    selectedTubeId: string | null;
     videoDimensions: { width: number; height: number } | null;
     lastCameraFrame?: string;
     lastVideoFrame?: string;
@@ -170,11 +157,10 @@ export default function App() {
   const video = useVideoPipeline({
     showToast,
     addLog,
-    expectedDucks,
     sourceType,
     isRunning,
     setIsRunning,
-    setDucks,
+    setTubes,
     setFramesProcessed,
     setFps,
     setCameraStartingState: camera.setCameraStartingState,
@@ -186,19 +172,13 @@ export default function App() {
 
   // ─── 8. Camera Pipeline (startCameraPipeline / stopCameraPipeline) ─
   const startCameraPipeline = async (): Promise<boolean> => {
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     camera.setCameraStartingState('waking_camera');
     addLog('Step 1/3: Starting OAK Camera device (POST /oak/start)...', 'info');
 
     try {
-      await fetch(`${getApiBaseUrl()}/oak/inference/update_expected/live`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count: expectedDucks })
-      }).catch(err => console.error("Failed to sync expected ducks before start", err));
-
       const startRes = await cameraService.start();
       if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
 
@@ -217,7 +197,7 @@ export default function App() {
       camera.setCameraStartingState('ready');
       setIsRunning(true);
       showToast('success', 'Camera inference started successfully');
-      addLog('Step 3/3: First live frame received (1080p). Starting inference • YOLOv8 active.', 'success');
+      addLog('Step 3/3: First live frame received (1080p). Starting inference • YOLO active.', 'success');
       return true;
     } catch (error) {
       console.error('Failed to start camera pipeline:', error);
@@ -232,7 +212,7 @@ export default function App() {
   const stopCameraPipeline = async () => {
     camera.setCameraStartingState('ready');
     setIsRunning(false);
-    setDucks([]);
+    setTubes([]);
     try {
       await cameraService.stopStream();
       camera.setIsStreaming(false);
@@ -246,11 +226,10 @@ export default function App() {
     sourceType,
     videoSessionId: video.videoSessionId,
     cameraRecordSessionId: video.cameraRecordSessionId,
-    expectedDucks,
     showToast,
     addLog,
     startCameraPipeline,
-    setDucks,
+    setTubes,
     setVideoDimensions: video.setVideoDimensions,
     cameraService,
     setCameraIsStreaming: camera.setIsStreaming,
@@ -272,7 +251,7 @@ export default function App() {
   // this handles the post-refresh window where isRunning is seeded true but camera/video
   // flags haven't fully settled yet.
   const hasActiveStream = isRunning || (isVideoSource && hasActiveVideo) || (isCameraSource && camera.isCameraDeviceActive && camera.cameraStartingState === 'ready');
-  const isStandby = !hasActiveStream && !isRunning && ducks.length === 0;
+  const isStandby = !hasActiveStream && !isRunning && tubes.length === 0;
 
   // ─── Auto-resume after page refresh ───────────────────────────────
   // On mount: isRunning, videoSessionId, and sourceType are already seeded
@@ -325,24 +304,22 @@ export default function App() {
 
           const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
           const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-          const incomingDucks = mapDetectionsToDucks(data, vw, vh, expectedDucks);
-          if (data.status !== 'HAND' && !data.hand_detected && incomingDucks.length > 0) {
-            setDucks(incomingDucks);
-          }
+          const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+          setTubes(incomingTubes);
 
           const backendIsRunning = data.status === 'processing' || data.status === 'warming' || data.status === 'queued';
-          
+
           if (backendIsRunning) {
             if (!savedIsRunning) {
-               setIsRunning(true);
+              setIsRunning(true);
             }
             addLog('🔄 Page refreshed — reconnecting to active video inference session...', 'info');
           } else {
             if (savedIsRunning) {
-               setIsRunning(false);
-               addLog('Video inference was already stopped on the backend.', 'info');
-            } else if (incomingDucks.length > 0 || (data.frames_processed || 0) > 0) {
-               addLog('🔄 Page refreshed — restored inference stats and detections.', 'info');
+              setIsRunning(false);
+              addLog('Video inference was already stopped on the backend.', 'info');
+            } else if (incomingTubes.length > 0 || (data.frames_processed || 0) > 0) {
+              addLog('🔄 Page refreshed — restored inference stats and detections.', 'info');
             }
           }
         })
@@ -365,8 +342,7 @@ export default function App() {
     framesProcessed,
     backendStats,
     addLog,
-    ducks,
-    expectedDucks,
+    tubes,
   });
 
   // ─── 10. Mode Switching ────────────────────────────────────────────
@@ -378,12 +354,12 @@ export default function App() {
 
     // 1. Snapshot current source state before switching away
     sourceStateCache.current[currentKey] = {
-      ducks,
+      tubes,
       stats: useInferenceStore.getState().stats,
       framesProcessed,
       fps,
       uptimeSeconds,
-      selectedDuckId,
+      selectedTubeId,
       videoDimensions: video.videoDimensions,
       lastCameraFrame: isCurrentCamera ? lastCameraFrame : undefined,
       lastVideoFrame: !isCurrentCamera ? lastVideoFrame : undefined,
@@ -401,17 +377,17 @@ export default function App() {
     // 3. Switch source
     setSourceType(targetType);
     setPendingSourceSwitch(null);
-    setSelectedDuckId(null);
+    setSelectedTubeId(null);
 
     // 4. Force a clean slate for the target source (fixes bug where old galleries persist)
     sourceStateCache.current[targetKey] = null;
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     setFramesProcessed(0);
     setFps(0);
     setUptimeSeconds(0);
-    setSelectedDuckId(null);
+    setSelectedTubeId(null);
     if (isTargetCamera) {
       setLastCameraFrame(undefined);
     } else {
@@ -449,32 +425,37 @@ export default function App() {
 
   const handleConfirmSwitchMode = () => {
     if (!pendingSourceSwitch) return;
-    playWaterDropSound();
     executeSwitchMode(pendingSourceSwitch);
   };
 
   // ─── 11. Metrics ──────────────────────────────────────────────────
   const metrics = useMemo(() => {
-    const totalConf = anomalyFinal.activeDucks.reduce((acc, d) => acc + d.confidence, 0);
-    const avgConfidence = anomalyFinal.activeDucks.length > 0 ? totalConf / anomalyFinal.activeDucks.length : 0;
+    const totalConf = anomalyFinal.activeTubes.reduce((acc, d) => acc + d.confidence, 0);
+    const avgConfidence = anomalyFinal.activeTubes.length > 0 ? totalConf / anomalyFinal.activeTubes.length : 0;
+    const roleCounts: Record<string, number> = { HEAD: 0, TAIL: 0 };
     const speciesCounts: Record<string, number> = {};
-    anomalyFinal.activeDucks.forEach((d) => { speciesCounts[d.species] = (speciesCounts[d.species] || 0) + 1; });
+    anomalyFinal.activeTubes.forEach((d) => {
+      const role = d.role || 'HEAD';
+      roleCounts[role] = (roleCounts[role] || 0) + 1;
+      const key = d.species || d.class || role;
+      speciesCounts[key] = (speciesCounts[key] || 0) + 1;
+    });
     return {
       fps: inference.fps,
       inferenceTimeMs: inference.fps > 0 ? 1000 / inference.fps : 0,
       framesProcessed: inference.framesProcessed,
       uptimeSeconds: inference.uptimeSeconds,
       avgConfidence,
+      roleCounts,
       speciesCounts,
     };
-  }, [anomalyFinal.activeDucks, inference.fps, inference.framesProcessed, inference.uptimeSeconds]);
+  }, [anomalyFinal.activeTubes, inference.fps, inference.framesProcessed, inference.uptimeSeconds]);
 
   const isRecording = useInferenceStore((state) => state.isRecording);
 
   // ─── 12. Misc Handlers ────────────────────────────────────────────
   const handleRestart = () => {
-    playWaterDropSound();
-    setSelectedDuckId(null);
+    setSelectedTubeId(null);
     addLog('Pipeline reset triggered. Reconnecting to camera stream...', 'info');
     inference.setFramesProcessed(0);
     inference.setUptimeSeconds(0);
@@ -482,7 +463,6 @@ export default function App() {
   };
 
   const handleTakeSnapshot = () => {
-    playWaterDropSound();
     addLog(`Snapshot captured at ${new Date().toLocaleTimeString()} (Frame #${inference.framesProcessed})`, 'success');
     const heroEl = document.getElementById('detection-hero-viewport');
     if (heroEl) {
@@ -494,17 +474,29 @@ export default function App() {
   const uploadTriggerRef = React.useRef<(() => void) | null>(null);
 
   const handleClearCustomVideo = () => {
+    const sid = video.videoSessionId;
     sourceStateCache.current.video = null;
     setLastVideoFrame(undefined);
+    setIsRunning(false);
+    setTubes([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
+    inference.setFramesProcessed(0);
+    inference.setFps(0);
+    inference.setUptimeSeconds(0);
     video.handleClearVideo();
+    clearSessionState();
+    if (sid) {
+      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
+      fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
+    }
     showToast('info', 'Video cleared. Select or upload a new video.');
   };
 
   const handleResetCamera = async () => {
-    playWaterDropSound();
-    setSelectedDuckId(null);
+    setSelectedTubeId(null);
     setIsRunning(false);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     inference.setFramesProcessed(0);
@@ -524,10 +516,9 @@ export default function App() {
   };
 
   const handleStopStream = async () => {
-    playWaterDropSound();
     setIsRunning(false);
-    setSelectedDuckId(null);
-    setDucks([]);
+    setSelectedTubeId(null);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     inference.setFramesProcessed(0);
@@ -557,10 +548,10 @@ export default function App() {
   };
 
   const handleResetVideo = async () => {
-    playWaterDropSound();
-    setSelectedDuckId(null);
+    const sid = video.videoSessionId;
+    setSelectedTubeId(null);
     setIsRunning(false);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     inference.setFramesProcessed(0);
@@ -568,11 +559,10 @@ export default function App() {
     inference.setUptimeSeconds(0);
     sourceStateCache.current.video = null;
     setLastVideoFrame(undefined);
-    // Stop and clear backend session if one is active
-    if (video.videoSessionId) {
-      try {
-        await fetch(`${getApiBaseUrl()}/video/clear/${video.videoSessionId}`, { method: 'POST' });
-      } catch { }
+    // Stop and clear backend session asynchronously without blocking UI
+    if (sid) {
+      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
+      fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
     }
     // Clear the video pipeline state so the upload card shows again
     video.setCustomVideoUrl(undefined);
@@ -604,7 +594,6 @@ export default function App() {
     if ((sourceType === 'oak-camera' || sourceType === 'webcam') && !video.cameraRecordSessionId) {
       if (!isRunning && !camera.isStreaming) {
         // Stream not started yet: start both stream and inference together!
-        playWaterDropSound();
         await startCameraPipeline();
         return;
       }
@@ -613,13 +602,24 @@ export default function App() {
   };
   const handleStopInference = async () => {
     camera.setCameraStartingState('ready');
-    setSelectedDuckId(null);
-    // Clear last frames so the canvas goes blank
+    setSelectedTubeId(null);
+    setIsRunning(false);
+
+    // Clear last frames so the canvas goes blank immediately
     setLastCameraFrame(undefined);
     setLastVideoFrame(undefined);
+
     // Clear source state cache so no stale data lingers
     sourceStateCache.current.video = null;
     sourceStateCache.current.camera = null;
+
+    // Reset metrics & stats instantly
+    setFramesProcessed(0);
+    setFps(0);
+    setUptimeSeconds(0);
+    setTubes([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
 
     // Stop camera streaming if it's a live camera source
     if (isCameraSource && camera.isStreaming) {
@@ -627,16 +627,10 @@ export default function App() {
       try { await cameraService.stopStream(); } catch { }
     }
 
-    // Let the inference loop handle stopping backend + clearing stats/ducks
-    await inference.handleStopInference();
+    const sid = video.videoSessionId;
 
     // Clear the video pipeline so the upload card shows again (video mode)
     if (isVideoSource) {
-      if (video.videoSessionId) {
-        try {
-          await fetch(`${getApiBaseUrl()}/video/clear/${video.videoSessionId}`, { method: 'POST' });
-        } catch { }
-      }
       video.setCustomVideoUrl(undefined);
       video.setLocalPreviewUrl(undefined);
       video.setVideoSessionId(null);
@@ -650,6 +644,19 @@ export default function App() {
 
     // Clear persisted session so refresh shows a clean state
     clearSessionState();
+
+    // Fire backend stop/clear without blocking UI responsiveness
+    if (sid) {
+      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
+      fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
+    }
+    if (video.cameraRecordSessionId && video.cameraRecordSessionId !== sid) {
+      fetch(`${getApiBaseUrl()}/video/stop/${video.cameraRecordSessionId}`, { method: 'POST' }).catch(() => { });
+      fetch(`${getApiBaseUrl()}/video/clear/${video.cameraRecordSessionId}`, { method: 'POST' }).catch(() => { });
+    }
+
+    // Let the inference loop handle stopping backend + clearing stats/tubes
+    void inference.handleStopInference();
   };
   const handleResumeInference = async () => {
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
@@ -657,7 +664,6 @@ export default function App() {
         uploadTriggerRef.current?.();
         return;
       }
-      playWaterDropSound();
       void video.startVideoInference();
       return;
     }
@@ -665,7 +671,6 @@ export default function App() {
       if (!camera.isStreaming) {
         // User clicked Start Inference directly without clicking Start Stream first:
         // Automatically start both stream and inference!
-        playWaterDropSound();
         await startCameraPipeline();
         return;
       }
@@ -713,7 +718,6 @@ export default function App() {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       saveSessionState({
         sourceType: sourceTypeRef.current,
-        expectedDucks: expectedDucksRef.current,
       });
       if (isRunningRef.current) {
         e.preventDefault();
@@ -785,8 +789,6 @@ export default function App() {
         fps={fps}
         anomalyDetected={anomalyFinal.anomalyStatus.isAnomaly}
         onExitToLanding={() => { clearSessionState(); setSystemInitialized(false); }}
-        soundActive={soundActive}
-        onToggleSound={handleToggleSound}
       />
 
       <div className="relative w-full max-w-[1720px] 2xl:max-w-[1920px] mx-auto px-3 sm:px-5 lg:px-6 pt-2 sm:pt-3 pb-2 sm:pb-3 flex flex-col flex-1 min-h-0 gap-2.5 sm:gap-3">
@@ -803,23 +805,6 @@ export default function App() {
           isStreaming={camera.isStreaming}
           onStartStream={camera.startCameraStream}
           onStopStream={handleStopStream}
-          expectedDucks={expectedDucks}
-          onExpectedDucksChange={(count) => {
-            setExpectedDucks(count);
-            addLog(`Expected duck count set to: ${count}`, 'info');
-            if (video.videoSessionId) {
-              fetch(`${getApiBaseUrl()}/video/update_expected/${video.videoSessionId}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ count })
-              }).catch(err => console.error("Failed to update expected ducks", err));
-            }
-            if (sourceType === 'oak-camera' || sourceType === 'webcam') {
-              fetch(`${getApiBaseUrl()}/oak/inference/update_expected/live`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ count })
-              }).catch(err => console.error("Failed to update expected ducks for live camera", err));
-            }
-          }}
           onOpenSettings={() => setSettingsOpen(true)}
           customVideoName={video.customVideoName}
           onCustomVideoUploaded={video.handleVideoUploaded}
@@ -835,7 +820,7 @@ export default function App() {
         <div className="w-full flex flex-col lg:flex-row items-stretch flex-1 min-h-0 gap-4">
           <main className="flex-1 w-full min-w-0 min-h-0 flex flex-col">
             <DetectionCanvas
-              ducks={anomalyFinal.activeDucks}
+              tubes={anomalyFinal.activeTubes}
               anomalyStatus={anomalyFinal.anomalyStatus}
               feedMode={feedMode}
               onFeedModeChange={setFeedMode}
@@ -850,12 +835,11 @@ export default function App() {
               sourceType={sourceType}
               customVideoUrl={video.customVideoUrl}
               videoSessionId={video.videoSessionId}
-              selectedDuckId={selectedDuckId}
-              onSelectDuck={setSelectedDuckId}
+              selectedTubeId={selectedTubeId}
+              onSelectTube={setSelectedTubeId}
               onCustomVideoUploaded={video.handleVideoUploaded}
               cameraStartingState={camera.cameraStartingState}
               onCameraDeviceChange={camera.setIsCameraDeviceActive}
-              expectedDucks={expectedDucks}
               videoDimensions={video.videoDimensions}
               isCameraConnected={camera.effectiveCameraConfig.connected}
               initialUploadFile={video.initialUploadFile}
@@ -880,13 +864,19 @@ export default function App() {
             isOpen={drawerOpen}
             onToggle={() => setDrawerOpen(!drawerOpen)}
             anomalyStatus={anomalyFinal.anomalyStatus}
-            ducks={anomalyFinal.activeDucks}
+            tubes={anomalyFinal.activeTubes}
             metrics={metrics}
-            selectedDuckId={selectedDuckId}
-            onSelectDuck={setSelectedDuckId}
+            selectedTubeId={selectedTubeId}
+            onSelectTube={setSelectedTubeId}
             isStandby={isStandby}
             logs={logs}
             isCameraSource={isCameraSource}
+            isRunning={isRunning}
+            isCameraConnected={camera.effectiveCameraConfig.connected}
+            cameraConfig={camera.effectiveCameraConfig}
+            onUpdateCameraConfig={(patch) => {
+              camera.setCameraConfig((prev) => ({ ...prev, ...patch }));
+            }}
           />
         </div>
       </div>
@@ -897,10 +887,10 @@ export default function App() {
         onClose={() => setPendingSourceSwitch(null)}
         title="Active Inference Running"
         description="Safeguard: Cannot switch mode while active"
-        icon={<AlertTriangle className="w-5 h-5 text-[var(--accent-duck)]" />}
+        icon={<AlertTriangle className="w-5 h-5 text-[var(--accent-tube)]" />}
         footer={
           <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 w-full">
-            <Button variant="secondary" onClick={() => { playWaterDropSound(); setPendingSourceSwitch(null); }}>Cancel</Button>
+            <Button variant="secondary" onClick={() => setPendingSourceSwitch(null)}>Cancel</Button>
             <Button variant="primary" onClick={handleConfirmSwitchMode}>
               Stop &amp; Switch to {pendingSourceSwitch === 'oak-camera' ? 'Camera' : 'Video'}
             </Button>

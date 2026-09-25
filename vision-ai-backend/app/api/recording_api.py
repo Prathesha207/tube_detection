@@ -9,7 +9,7 @@ from app.dependencies import get_db
 from app.schemas.recording_schema import StartRecordingRequest, StopRecordingRequest
 from app.services import camera_service
 from app.services.oak_camera_service import oak_camera_service
-from app.ml.video_inference_service import video_inference_service, ml_inference_service
+from app.ml.tube.inference.video_inference_service import video_inference_service, ml_inference_service
 from app.services.realtime_log_service import realtime_log_service
 
 logger = logging.getLogger("recording-api")
@@ -70,7 +70,6 @@ def stop_recording(data: StopRecordingRequest):
 
         # Register into ML inference service so frontend can review/run immediately
         ml_session_id = ml_inference_service.create_session(
-            expected_ducks=18,
             original_filename=filename,
         )
 

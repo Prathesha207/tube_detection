@@ -92,10 +92,8 @@ ALWAYS_HIDDEN = [
     "PIL",
     "cv2",
     "numpy",
-    "duck_analyzer",
     # ── ByteTrack / tracker dependency ────────────────────
     "lap",                     # ultralytics bytetrack solver
-    "scipy",                   # hungarian fallback in duck_analyzer._hungarian()
     "scipy.optimize",
     "scipy.spatial",
     "scipy.ndimage",
@@ -160,7 +158,7 @@ def write_spec(
     COLLECT_PACKAGES = [
         "app", "fastapi", "starlette", "uvicorn", "sqlalchemy", "cv2",
         "torch", "torchvision", "ultralytics", "segmentation_models_pytorch",
-        "depthai", "av", "duck_analyzer", "mediapipe", "matplotlib",
+        "depthai", "av", "mediapipe", "matplotlib",
         "scipy", "lap", "imageio_ffmpeg",
     ]
 

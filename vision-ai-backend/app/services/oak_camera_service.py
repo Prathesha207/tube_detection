@@ -585,7 +585,7 @@ class OakCameraService:
                     logger.info(f"[CONVERT] First frame received — shape={bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
                     _first_frame_logged = True
 
-                if self.control_mode == "manual":
+                if self.control_mode == "manual" or self.current_brightness != 0 or self.current_contrast != 0:
                     bgr = self._apply_adjustments(bgr)
 
                 self._latest_bgr = bgr  # GIL-safe single reference assignment
@@ -718,34 +718,66 @@ class OakCameraService:
         focus: int | None = None,
         brightness: int | None = None,
         contrast: int | None = None,
+        auto_focus: bool | None = None,
     ) -> None:
-        if self._control_queue is None:
-            logger.warning("[CONTROL] Queue not available")
-            return
-
-        ctrl = dai.CameraControl()
-
-        if exposure is not None and gain is not None:
-            ctrl.setManualExposure(int(exposure), int(gain))
-            logger.info(f"[CONTROL] Exposure={exposure}, Gain={gain}")
-
-        if focus is not None:
-            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-            ctrl.setManualFocus(int(focus))
-            logger.info(f"[CONTROL] Focus={focus}")
-
         if brightness is not None:
             self.current_brightness = int(brightness)
-            ctrl.setBrightness(self.current_brightness)
             logger.info(f"[CONTROL] Brightness={brightness}")
 
         if contrast is not None:
             self.current_contrast = int(contrast)
-            ctrl.setContrast(self.current_contrast)
             logger.info(f"[CONTROL] Contrast={contrast}")
 
-        self._control_queue.send(ctrl)
-        logger.info("[CONTROL] Sent to device")
+        if self._control_queue is None:
+            logger.warning("[CONTROL] DepthAI device queue not available — software adjustments active")
+            return
+
+        ctrl = dai.CameraControl()
+
+        if exposure is not None:
+            exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
+            gain_val = int(gain if gain is not None else 400)
+            try:
+                ctrl.setManualExposure(exp_us, gain_val)
+                logger.info(f"[CONTROL] Exposure={exp_us}us, Gain={gain_val}")
+            except Exception as e:
+                logger.warning(f"[CONTROL] setManualExposure failed: {e}")
+
+        if auto_focus is not None:
+            try:
+                if auto_focus:
+                    ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+                    logger.info("[CONTROL] AutoFocus=CONTINUOUS_VIDEO")
+                else:
+                    ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                    logger.info("[CONTROL] AutoFocus=OFF")
+            except Exception as e:
+                logger.warning(f"[CONTROL] setAutoFocusMode failed: {e}")
+        elif focus is not None:
+            try:
+                ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                ctrl.setManualFocus(int(focus))
+                logger.info(f"[CONTROL] Focus={focus}")
+            except Exception as e:
+                logger.warning(f"[CONTROL] setManualFocus failed: {e}")
+
+        if brightness is not None:
+            try:
+                ctrl.setBrightness(self.current_brightness)
+            except Exception:
+                pass
+
+        if contrast is not None:
+            try:
+                ctrl.setContrast(self.current_contrast)
+            except Exception:
+                pass
+
+        try:
+            self._control_queue.send(ctrl)
+            logger.info("[CONTROL] Sent to device")
+        except Exception as e:
+            logger.warning(f"[CONTROL] Device send failed: {e}")
 
     # ==================== Inference ====================
 
@@ -754,7 +786,7 @@ class OakCameraService:
     #     Also auto-manages processed video recording based on result['record'] flag.
     #     No frame skipping — inference itself is slow enough that _latest_bgr is always fresh.
     #     """
-    #     from app.ml.camera_inference_service import run_inference
+    #     from app.ml.tube.inference.camera_inference_service import run_inference
     #     from app.services.inference_recording_service import InferenceRecorder, draw_overlay
     #     from app.services import inference_config_service
     #     from app.core.database import SessionLocal
@@ -861,12 +893,12 @@ class OakCameraService:
     #         logger.info(f"[INFERENCE] Thread ended — session: {session_id}")
 
     # ─────────────────────────────────────────────────────────────────────────────
-    # Duck Analyzer Worker
-    # This worker runs continuous DuckAnalyzer inference.
+    # Tube Analyzer Worker
+    # This worker runs continuous TubeAnalyzer inference.
     # ─────────────────────────────────────────────────────────────────────────────
 
     def _inference_worker(self, session_id: str) -> None:
-        from app.ml.camera_inference_service import run_inference
+        from app.ml.tube.inference.camera_inference_service import run_inference
         from app.services.inference_recording_service import InferenceRecorder, draw_overlay
         import base64
 
@@ -913,7 +945,7 @@ class OakCameraService:
                             _got_eof = True
                             break
                         elif item is _VIDEO_BOUNDARY:
-                            from app.ml.camera_inference_service import reset_session_for_next_video
+                            from app.ml.tube.inference.camera_inference_service import reset_session_for_next_video
                             reset_session_for_next_video(session_id)
                             logger.info("[INFERENCE] Video boundary — session reset, cycle counter carried forward")
                             _got_boundary = True
@@ -1026,7 +1058,7 @@ class OakCameraService:
                         self._inference_loop,
                     )
 
-                # ── Feed frames to duck recorder ─────────────────────────────
+                # ── Feed frames to video recorder ─────────────────────────────
                 record_flag = result.get("record", False)
                 should_record = record_flag
 
@@ -1041,13 +1073,13 @@ class OakCameraService:
                         recording_format=rec_fmt,
                     )
                     recording_active = True
-                    logger.info(f"[INFERENCE] Duck recording started (format={rec_fmt})")
+                    logger.info(f"[INFERENCE] Tube recording started (format={rec_fmt})")
                 elif not should_record and recording_active:
                     if recorder:
                         recorder.stop()
                     recorder = None
                     recording_active = False
-                    logger.info("[INFERENCE] Duck recording stopped")
+                    logger.info("[INFERENCE] Tube recording stopped")
 
                 if recording_active and recorder:
                     recorder.write(frame, result)
@@ -1387,7 +1419,7 @@ class OakCameraService:
         }
 
     def stop_inference(self) -> dict:
-        from app.ml.camera_inference_service import clear_session
+        from app.ml.tube.inference.camera_inference_service import clear_session
 
         logger.info("[INFERENCE] Stopping...")
         self._inference_stop.set()
@@ -1403,7 +1435,7 @@ class OakCameraService:
         # (and defeats start_inference()'s "already_running" guard) while the
         # worker thread can still be mid-call inside analyzer.process_frame()
         # on the GPU. The very next /video/start can then pass
-        # try_enter_inference("video") and load a second DuckAnalyzer onto
+        # try_enter_inference("video") and load a second TubeAnalyzer onto
         # the same GPU while the camera thread is still using it -- two
         # threads hitting the same CUDA context concurrently, which is
         # exactly the kind of thing that can wedge the whole process badly

@@ -10,7 +10,6 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react';
-import { playWaterDropSound } from '../utils/audio';
 import { getApiBaseUrl } from '../lib/api';
 
 interface LandingScreenProps {
@@ -102,7 +101,6 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
 
   const handleStart = () => {
     if (healthStatus !== 'ready') return;
-    playWaterDropSound();
     onInitialize();
   };
 
@@ -134,19 +132,19 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
 
         {/* Product Tag */}
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--bg-card)] border border-[var(--border-color)] text-[var(--accent-pond)] text-xs font-bold tracking-wide shadow-2xs mb-4">
-          <Sparkles className="w-3.5 h-3.5 text-[var(--accent-duck)]" />
+          <Sparkles className="w-3.5 h-3.5 text-[var(--accent-tube)]" />
           <span>VisionMonitor &bull; v4.2 PRO</span>
         </div>
 
         {/* Title */}
         <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-[var(--text-primary)] leading-tight mb-3">
-          Duck Detection &amp; <br />
+          Tube Detection &amp; <br />
           <span className="text-[var(--accent-pond)]">Anomaly Monitoring</span>
         </h1>
 
         {/* Description */}
         <p className="text-sm sm:text-base text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed mb-6 font-normal">
-          Real-time YOLOv8 computer vision tracking, automated duck population counting, and instant anomaly alerts.
+          Real-time YOLOv8 computer vision tracking, automated tube population counting, and instant anomaly alerts.
         </p>
 
         {/* Feature Pills */}

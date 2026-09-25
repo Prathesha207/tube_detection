@@ -42,6 +42,7 @@ python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
+python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
 
 if [[ "${USE_CUDA:-0}" == "1" || ( "${USE_CUDA:-auto}" == "auto" && -n "$(command -v nvidia-smi 2>/dev/null || true)" ) ]]; then
   echo "NVIDIA GPU detected/requested; installing CUDA-enabled PyTorch..."
@@ -59,14 +60,6 @@ if [[ "${USE_CUDA:-0}" == "1" || ( "${USE_CUDA:-auto}" == "auto" && -n "$(comman
   fi
 else
   echo "Building with CPU-compatible PyTorch. Set USE_CUDA=1 to force CUDA."
-fi
-
-DUCK_ANALYZER_WHEEL="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1)"
-[[ -n "$DUCK_ANALYZER_WHEEL" ]] || { echo "The bundled duck_analyzer wheel is missing."; exit 1; }
-python -m pip install "$DUCK_ANALYZER_WHEEL"
-
-if [[ -f "$BACKEND_DIR/app/ml/requirements.txt" ]]; then
-  python -m pip install -r "$BACKEND_DIR/app/ml/requirements.txt"
 fi
 
 cd "$BACKEND_DIR"
@@ -92,7 +85,6 @@ pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
   --collect-all segmentation_models_pytorch \
   --collect-all depthai \
   --collect-all av \
-  --collect-all duck_analyzer \
   --collect-all mediapipe
 
 # Strip non-runtime development files directly in dist/backend

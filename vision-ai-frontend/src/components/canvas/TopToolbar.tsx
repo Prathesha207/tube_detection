@@ -1,7 +1,6 @@
 import React from 'react';
-import { Hand, ShieldAlert, CheckCircle2, Layers, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2 } from 'lucide-react';
-import type { AnomalyStatus } from '../../types';
-import { playWaterDropSound } from '../../utils/audio';
+import { CheckCircle2, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2, Trash2, Tag, Hash } from 'lucide-react';
+import type { AnomalyStatus, LabelMode } from '../../types';
 
 const formatRecordingTime = (totalSeconds: number) => {
   const mins = Math.floor(totalSeconds / 60);
@@ -14,8 +13,6 @@ interface TopToolbarProps {
   hasActiveVideo: boolean;
   feedMode: 'raw' | 'inference';
   onFeedModeChange: (mode: 'raw' | 'inference') => void;
-  showAllBoxes: boolean;
-  onToggleShowAllBoxes: () => void;
   isRecording: boolean;
   isSaving?: boolean;
   recordingDuration?: number;
@@ -32,15 +29,17 @@ interface TopToolbarProps {
   isStreaming: boolean;
   isFirstFrameLoaded: boolean;
   framesProcessed?: number;
+  onClearCustomVideo?: () => void;
+  labelMode?: LabelMode;
+  onLabelModeChange?: (mode: LabelMode) => void;
 }
+
 
 export const TopToolbar: React.FC<TopToolbarProps> = ({
   isRunning,
   hasActiveVideo,
   feedMode,
   onFeedModeChange,
-  showAllBoxes,
-  onToggleShowAllBoxes,
   isRecording,
   isSaving = false,
   recordingDuration = 0,
@@ -55,11 +54,14 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   anomalyStatus,
   isStreaming,
   framesProcessed = 0,
+  onClearCustomVideo,
+  labelMode,
+  onLabelModeChange,
 }) => {
   const isMediaActive = isRunning || hasActiveVideo || (isCameraSource && isStreaming);
   if (!isMediaActive) return null;
 
-  const hasInferenceResult = framesProcessed > 0 || (anomalyStatus.detectedCount ?? 0) > 0;
+  const hasInferenceResult = framesProcessed > 0 || (anomalyStatus.headsCount ?? 0) > 0 || (anomalyStatus.tailsCount ?? 0) > 0;
   const showInferenceStatus = isRunning || hasInferenceResult;
 
   return (
@@ -73,25 +75,15 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                 <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 shadow-[0_0_6px_rgba(245,158,11,0.6)]" />
                 <span>WARMING</span>
               </div>
-            ) : anomalyStatus.message === 'HAND DETECTED' ? (
-              <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
-                <Hand className="w-3.5 h-3.5 shrink-0" />
-                <span>HAND</span>
-              </div>
-            ) : anomalyStatus.isAnomaly ? (
-              <div className="flex items-center gap-1.5 text-[var(--status-anomaly-text)] font-bold text-xs sm:text-sm animate-pulse">
-                <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                <span>ANOMALY</span>
-              </div>
-            ) : anomalyStatus.message === 'STANDBY' || anomalyStatus.message === 'READY' || anomalyStatus.message === 'NO CAMERA' ? (
-              <div className="flex items-center gap-1.5 text-[var(--text-secondary)] font-bold text-xs sm:text-sm">
-                <span className="w-2 h-2 rounded-full bg-[var(--accent-pond)] shrink-0" />
-                <span>{anomalyStatus.message}</span>
+            ) : isRunning ? (
+              <div className="flex items-center gap-1.5 text-emerald-500 dark:text-emerald-400 font-bold text-xs sm:text-sm">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
+                <span>PROCESSING</span>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 text-emerald-500 dark:text-emerald-400 font-bold text-xs sm:text-sm">
-                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500 dark:text-emerald-400" />
-                <span>NORMAL</span>
+              <div className="flex items-center gap-1.5 text-[var(--text-secondary)] font-bold text-xs sm:text-sm">
+                <span className="w-2 h-2 rounded-full bg-[var(--accent-pond)] shrink-0" />
+                <span>{anomalyStatus.message || 'STOPPED'}</span>
               </div>
             )}
           </div>
@@ -105,6 +97,53 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         ) : null}
       </div>
 
+      {/* Top-Center: Label Mode View Switcher (Quadrant | Pins | Boxes) using App Theme */}
+      {(showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
+        <div className="pointer-events-auto absolute left-1/2 -translate-x-1/2 top-2 sm:top-3 flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs select-none z-30">
+          <button
+            type="button"
+            onClick={() => onLabelModeChange('compact')}
+            title="Quadrant Labels: labels point into North, South, East, West with zero overlap"
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
+              (labelMode ?? 'compact') === 'compact'
+                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+            }`}
+          >
+            <Tag className="w-3 h-3" />
+            <span>Quadrant</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onLabelModeChange('pins')}
+            title="Pins Mode: tiny numbered circle pins (#1, #2) with zero obstruction"
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
+              labelMode === 'pins'
+                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+            }`}
+          >
+            <Hash className="w-3 h-3" />
+            <span>Pins</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onLabelModeChange('hidden')}
+            title="Boxes Mode: pure bounding boxes with crosshairs and 0 text"
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
+              labelMode === 'hidden'
+                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+            }`}
+          >
+            <EyeOff className="w-3 h-3" />
+            <span>Boxes</span>
+          </button>
+        </div>
+      )}
+
       {/* Top-Right Corner: Action Controls */}
       <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink min-w-0">
         {showInferenceStatus && (
@@ -114,61 +153,30 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
               <div className="flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0">
                 <button
                   onClick={() => {
-                    playWaterDropSound();
                     onFeedModeChange('raw');
                   }}
-                  className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${
-                    feedMode === 'raw'
-                      ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                      : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-                  }`}
+                  className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'raw'
+                    ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                    : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+                    }`}
                 >
                   RAW
                 </button>
                 <button
                   onClick={() => {
-                    playWaterDropSound();
                     onFeedModeChange('inference');
                   }}
-                  className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${
-                    feedMode === 'inference'
-                      ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                      : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-                  }`}
+                  className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'inference'
+                    ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                    : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+                    }`}
                 >
                   INFERENCE
                 </button>
               </div>
             )}
 
-            {/* Bounding Box Mode Toggle: Anomalies Only vs All Boxes */}
-            {(feedMode === 'inference' || !isCameraSource) && (
-              <button
-                onClick={() => {
-                  playWaterDropSound();
-                  onToggleShowAllBoxes();
-                }}
-                aria-label={showAllBoxes ? "Showing all bounding boxes. Click for anomalies only." : "Showing anomaly bounding boxes only. Click for all boxes."}
-                title={showAllBoxes ? "Bounding Boxes: SHOWING ALL (Click for Anomalies Only)" : "Bounding Boxes: ANOMALIES ONLY (Click for All Boxes)"}
-                className={`h-7 sm:h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-xl backdrop-blur-md border shadow-xs transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  !showAllBoxes
-                    ? 'bg-red-600 border-red-600 text-white hover:bg-red-700 shadow-sm shadow-red-500/25'
-                    : 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-                }`}
-              >
-                {!showAllBoxes ? (
-                  <>
-                    <ShieldAlert className="w-4 h-4 text-white shrink-0" />
-                    <span className="text-xs font-bold text-white">Anomalies Only</span>
-                  </>
-                ) : (
-                  <>
-                    <Layers className="w-4 h-4 text-[var(--text-primary)] shrink-0" />
-                    <span className="text-xs font-bold text-[var(--text-primary)]">All Boxes</span>
-                  </>
-                )}
-              </button>
-            )}
+
           </>
         )}
 
@@ -178,7 +186,6 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             disabled={hasCameraRecording || isSaving}
             onClick={() => {
               if (hasCameraRecording || isSaving) return;
-              playWaterDropSound();
               onToggleRecording();
             }}
             title={
@@ -192,15 +199,14 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                       ? 'Click to record live camera stream'
                       : 'Start camera stream and begin recording'
             }
-            className={`group h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 sm:gap-2 rounded-xl backdrop-blur-md border text-[10px] sm:text-xs font-bold transition-all shrink-0 shadow-xs active:scale-95 ${
-              hasCameraRecording
-                ? 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-muted)] opacity-40 cursor-not-allowed'
-                : isSaving
-                  ? 'bg-rose-700/90 text-white border-rose-400/80 shadow-md cursor-wait'
-                  : isRecording
-                    ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-600/40 animate-pulse ring-2 ring-rose-500/30 cursor-pointer'
-                    : 'bg-rose-50 hover:bg-rose-100 border-rose-300 text-rose-700 dark:bg-rose-950/60 dark:hover:bg-rose-900/80 dark:border-rose-500/50 dark:text-rose-200 dark:hover:text-white hover:shadow-rose-600/25 cursor-pointer'
-            }`}
+            className={`group h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 sm:gap-2 rounded-xl backdrop-blur-md border text-[10px] sm:text-xs font-bold transition-all shrink-0 shadow-xs active:scale-95 ${hasCameraRecording
+              ? 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-muted)] opacity-40 cursor-not-allowed'
+              : isSaving
+                ? 'bg-rose-700/90 text-white border-rose-400/80 shadow-md cursor-wait'
+                : isRecording
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-600/40 animate-pulse ring-2 ring-rose-500/30 cursor-pointer'
+                  : 'bg-rose-50 hover:bg-rose-100 border-rose-300 text-rose-700 dark:bg-rose-950/60 dark:hover:bg-rose-900/80 dark:border-rose-500/50 dark:text-rose-200 dark:hover:text-white hover:shadow-rose-600/25 cursor-pointer'
+              }`}
           >
             {isSaving ? (
               <>
@@ -269,6 +275,18 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             <EyeOff className="w-4 h-4 text-[var(--text-muted)] dark:text-white/70" />
           )}
         </button>
+
+        {/* Clear Video button when video is loaded and stopped */}
+        {!isCameraSource && hasActiveVideo && !isRunning && onClearCustomVideo && (
+          <button
+            onClick={onClearCustomVideo}
+            title="Clear loaded video and upload a new one"
+            className="h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 rounded-xl bg-[var(--btn-secondary-bg)] hover:bg-rose-500/15 border border-[var(--border-color)] hover:border-rose-500/40 text-[var(--text-primary)] hover:text-rose-600 dark:hover:text-rose-400 font-bold text-[10px] sm:text-xs shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+            <span className="hidden sm:inline">Clear Video</span>
+          </button>
+        )}
       </div>
     </div>
   );

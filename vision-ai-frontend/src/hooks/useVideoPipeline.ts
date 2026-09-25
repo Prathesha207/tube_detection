@@ -3,16 +3,15 @@ import type { StreamSourceType, LogEntry } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
 import { resetBBoxCache } from '../utils/mlDataMapper';
-import { loadSessionState, saveSessionState } from '../utils/sessionPersistence';
+import { loadSessionState, saveSessionState, clearSessionState } from '../utils/sessionPersistence';
 
 export function useVideoPipeline({
   showToast,
   addLog,
-  expectedDucks,
   sourceType,
   isRunning,
   setIsRunning,
-  setDucks,
+  setTubes,
   setFramesProcessed,
   setFps,
   setCameraStartingState,
@@ -21,11 +20,10 @@ export function useVideoPipeline({
 }: {
   showToast: (type: 'error' | 'success' | 'info', message: string) => void;
   addLog: (message: string, level?: LogEntry['level']) => void;
-  expectedDucks: number;
   sourceType: StreamSourceType;
   isRunning: boolean;
   setIsRunning: (running: boolean) => void;
-  setDucks: (ducks: any[]) => void;
+  setTubes: (tubes: any[]) => void;
   setFramesProcessed: (count: number) => void;
   setFps: (fps: number) => void;
   setCameraStartingState: (state: any) => void;
@@ -54,7 +52,7 @@ export function useVideoPipeline({
     setCameraRecordUrl(undefined);
     setCameraRecordName(undefined);
     setIsRunning(false);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     addLog('Camera recording cleared • Returned to live camera feed.', 'info');
@@ -86,7 +84,7 @@ export function useVideoPipeline({
       setCameraRecordUrl(undefined);
       setCameraRecordName(undefined);
       setCameraStartingState('ready');
-      setDucks([]);
+      setTubes([]);
       setFramesProcessed(0);
       setFps(0);
       useInferenceStore.getState().resetStats();
@@ -124,7 +122,7 @@ export function useVideoPipeline({
     setCameraStartingState('ready');
 
     // Clean slate: clear prior detections, frame counts, and stats for the new video
-    setDucks([]);
+    setTubes([]);
     setFramesProcessed(0);
     setFps(0);
     useInferenceStore.getState().resetStats();
@@ -149,9 +147,10 @@ export function useVideoPipeline({
     setLocalPreviewUrl(undefined);
     setVideoSessionId(null);
     setCustomVideoName(undefined);
+    clearSessionState();
     setSourceType('uploaded-video');
     setIsRunning(false);
-    setDucks([]);
+    setTubes([]);
     setFramesProcessed(0);
     setFps(0);
     useInferenceStore.getState().resetStats();
@@ -160,7 +159,7 @@ export function useVideoPipeline({
   };
 
   const startVideoInference = async (customSessionId?: string) => { 
-    setDucks([]); 
+    setTubes([]); 
     useInferenceStore.getState().resetStats(); 
     resetBBoxCache();
     let sid = customSessionId || videoSessionId;
@@ -178,19 +177,11 @@ export function useVideoPipeline({
     }
     setFramesProcessed(0);
     setFps(0);
-    setDucks([]);
+    setTubes([]);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     setIsStarting(true);
     try {
-      // Sync the expected count to the backend RIGHT BEFORE starting inference!
-      // This guarantees the backend always warms up with the number currently shown on screen.
-      await fetch(`${getApiBaseUrl()}/video/update_expected/${sid}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count: expectedDucks })
-      }).catch(err => console.error("Failed to sync expected ducks before start", err));
-
       const response = await fetch(`${getApiBaseUrl()}/video/start/${sid}`, { method: 'POST' });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));

@@ -10,17 +10,14 @@ if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
   bash "$BACKEND_DIR/setup_linux.sh"
 fi
 
-# Fast pre-flight check (<0.05s): installs requirements and wheel silently if anything is missing
+# Fast pre-flight check (<0.05s): installs backend requirements if anything is missing
 if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, yaml, lap" 2>/dev/null; then
   echo "Configuring backend environment (one-time silent setup)..."
   "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
 fi
 
-if ! "$BACKEND_DIR/.venv/bin/python" -c "import duck_analyzer" 2>/dev/null; then
-  WHL_FILE="$(find "$BACKEND_DIR/app/ml" -name 'duck_analyzer-*.whl' -print | sort -r | head -n 1 || true)"
-  if [[ -n "$WHL_FILE" && -f "$WHL_FILE" ]]; then
-    "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet "$WHL_FILE" 2>/dev/null || true
-  fi
+if ! "$BACKEND_DIR/.venv/bin/python" -c "import ultralytics, cv2, numpy, torch, torchvision" 2>/dev/null; then
+  "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
 fi
 
 if [[ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]]; then

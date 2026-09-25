@@ -103,18 +103,40 @@ def draw_overlay(
             
         bbox = d.get("bbox") or d.get("box")
         if bbox and len(bbox) == 4:
-            x1, y1, x2, y2 = map(int, bbox)
+            b0, b1, b2, b3 = map(int, bbox)
+            if d.get("role") is not None or d.get("width_px") is not None or d.get("pair_id") is not None:
+                # Tube ML bbox: [x, y, width, height]
+                x1, y1, x2, y2 = b0, b1, b0 + b2, b1 + b3
+            else:
+                x1, y1, x2, y2 = b0, b1, b2, b3
             
-            # Change color if anomaly
-            is_anomaly = d.get("isAnomaly", False) or d.get("species") not in ["Duck", "duck"]
-            color = (0, 0, 255) if is_anomaly else (0, 255, 0)
+            role = d.get("role") or d.get("class") or "TUBE"
+            is_head = role == "HEAD"
+            status_val = d.get("status", "OK")
+            is_anomaly = status_val != "OK" or d.get("pair_id") is None
+            
+            # Color: Cyan for HEAD, Indigo for TAIL, Red for Alert
+            if is_anomaly:
+                color = (50, 50, 255)
+            elif is_head:
+                color = (255, 200, 0)
+            else:
+                color = (255, 100, 100)
             
             cv2.rectangle(overlay_frame, (x1, y1), (x2, y2), color, 2)
             
-            label = d.get("species", "Duck")
-            conf = d.get("confidence", d.get("conf", 0.0))
-            text = f"{label} {int(conf * 100)}%"
-            cv2.putText(overlay_frame, text, (x1, max(y1 - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            text_parts = [f"#{d.get('id', '')} {role}"]
+            if d.get("width_mm") is not None:
+                text_parts.append(f"{d['width_mm']:.1f}mm")
+            elif d.get("width_px") is not None:
+                text_parts.append(f"{d['width_px']:.0f}px")
+            if d.get("size"):
+                text_parts.append(f"[{d['size']}]")
+            if d.get("pair_id") is not None:
+                text_parts.append(f"tube#{d['pair_id']}")
+                
+            text = " ".join(text_parts)
+            cv2.putText(overlay_frame, text, (x1, max(y1 - 5, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
     # ── Status badge ────────────────────────────────────────
     STATUS_STYLES = {

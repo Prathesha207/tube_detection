@@ -922,7 +922,7 @@ def _predict_batch(model, imgs, conf, gray):
 
 
 def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_iou=0.4,
-                     dedupe_center_frac=0.6, batch_tiles=True):
+                     dedupe_center_frac=0.6, batch_tiles=True, with_conf=False):
     """Masks for the whole photo, or - with tile>0 - from overlapping tiles.
 
     Tiling matters when the ends are small: a 640 px tile of a 1920 px photo
@@ -940,9 +940,15 @@ def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_io
          two boxes are still clearly centred on the same object). Without
          this second check, an object sitting near a tile seam is easily
          double-counted, inflating HEADS/TAILS counts on real video.
-    In both cases the higher-confidence detection is kept."""
+    In both cases the higher-confidence detection is kept.
+
+    with_conf=True returns (class_id, mask, confidence) triples instead of
+    (class_id, mask) pairs - the model's own confidence for that detection,
+    kept all the way to the JSON output so a real CONF cutoff can be picked
+    from actual numbers instead of guessed."""
     if not tile:
-        return [(c, m) for c, m, _ in _predict(model, bgr, conf, gray)]
+        raw = _predict(model, bgr, conf, gray)
+        return [(c, m, cf) for c, m, cf in raw] if with_conf else [(c, m) for c, m, _ in raw]
     H, W = bgr.shape[:2]
     step = max(int(tile * (1 - overlap)), 32)
     xs = sorted({*range(0, max(W - tile, 0) + 1, step), max(W - tile, 0)})
@@ -982,24 +988,41 @@ def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_io
         if any(is_dup(kc, km, kcentre, kdiag) for kc, km, _, kcentre, kdiag in kept):
             continue
         kept.append((c, m, cf, centre, diag))
+    if with_conf:
+        return [(c, m, cf) for c, m, cf, _, _ in kept]
     return [(c, m) for c, m, _, _, _ in kept]
 
 
 # ---------------------------------------------------------------- geometry
-def attach(end_mask, tubings, gap=3):
+def attach(end_mask, tubings, gap=3, max_gap=None):
     """Index of the tubing mask that touches this end (largest contact).
-    `gap` px of separation between the two polygons is tolerated."""
-    k = 2 * int(max(gap, 0)) + 1
-    grown = cv2.dilate(end_mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
-    best, best_n = None, 0
-    for i, t in enumerate(tubings):
-        n = int((grown & t).sum())
-        if n > best_n:
-            best, best_n = i, n
-    if best is None:
-        return None, None
-    ys, xs = np.nonzero(grown & tubings[best])
-    return best, np.array([xs.mean(), ys.mean()], np.float32)
+    `gap` px of separation between the two polygons is tolerated.
+
+    Segmentation masks are jagged frame to frame - the SAME real end that
+    attaches fine one frame can end up a few px short of its tubing mask the
+    next, purely from mask-boundary noise. Giving up at the first miss turns
+    a real, working end into a flickering NO_TUBING_MASK. So if nothing
+    touches within `gap`, the search retries once with a wider gap (capped
+    at `max_gap`, default 4x gap or gap+8, whichever is larger) before
+    truly giving up - close misses get rescued, but a detection that is
+    genuinely nowhere near any tubing still correctly returns None."""
+    if max_gap is None:
+        max_gap = max(gap * 4, gap + 8)
+    g = max(gap, 0)
+    while True:
+        k = 2 * int(g) + 1
+        grown = cv2.dilate(end_mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+        best, best_n = None, 0
+        for i, t in enumerate(tubings):
+            n = int((grown & t).sum())
+            if n > best_n:
+                best, best_n = i, n
+        if best is not None:
+            ys, xs = np.nonzero(grown & tubings[best])
+            return best, np.array([xs.mean(), ys.mean()], np.float32)
+        if g >= max_gap:
+            return None, None
+        g = min(g * 2, max_gap)
 
 
 def local_axis(tube_mask, contact, radius):
@@ -1038,17 +1061,25 @@ def tip_point(end_mask, contact, u):
 def analyse(bgr, instances, mm_per_px=None, max_disagree=0.2, gap=3, class_map=None):
     """class_map = (names, role, tubing_id) from build_class_map(); defaults to the
     hand-label fallback. Pass model.names via build_class_map() when using --model,
-    so class ids are matched by their real name, not by an assumed position."""
+    so class ids are matched by their real name, not by an assumed position.
+
+    `instances` accepts either (class_id, mask) pairs (the default from
+    masks_from_model) or (class_id, mask, confidence) triples (from
+    masks_from_model(..., with_conf=True)) - confidence, when present, is
+    carried onto each end as e["confidence"] so a real threshold can be
+    picked from actual numbers instead of guessed."""
     names, role, tubing_id = class_map or (NAMES, ROLE, TUBING)
+    norm = [(it[0], it[1], (it[2] if len(it) > 2 else None)) for it in instances]
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    tubings = [m for c, m in instances if c == tubing_id]
+    tubings = [m for c, m, _ in norm if c == tubing_id]
     ends = []
-    for cls, m in instances:
+    for cls, m, det_conf in norm:
         if cls == tubing_id or cls not in role:
             continue   # tubing itself, or a class that is neither head- nor tail-like
         x, y, bw, bh = cv2.boundingRect(m.astype(np.uint8))
         e = {"class": names.get(cls, str(cls)), "role": role[cls], "status": "OK",
-             "bbox": [int(x), int(y), int(bw), int(bh)]}   # [x, y, width, height] in pixels
+             "bbox": [int(x), int(y), int(bw), int(bh)],   # [x, y, width, height] in pixels
+             "confidence": round(float(det_conf), 3) if det_conf is not None else None}
         ti, contact = attach(m, tubings, gap)
         if ti is None:
             e["status"] = "NO_TUBING_MASK"
@@ -1123,15 +1154,22 @@ def pair_ends(ends, max_width_diff=0.15):
                 best, best_diff = b, diff
         return best
 
-    used_tails = set()
+    used_tails, used_heads = set(), set()
     pair_id = 0
     for h in sorted(heads, key=lambda e: e["width_px"]):
-        available = [t for t in tails if id(t) not in used_tails]
-        t = closest(h, available)
-        if t is not None and closest(t, heads) is h:      # mutual best match only
+        available_tails = [t for t in tails if id(t) not in used_tails]
+        t = closest(h, available_tails)
+        if t is None:
+            continue
+        # Mutual best match only - but a head that already has a pair must not
+        # be allowed to "win" a tail away from the head that's actually still
+        # looking for one, or a valid remaining pair gets silently rejected.
+        available_heads = [x for x in heads if id(x) not in used_heads]
+        if closest(t, available_heads) is h:
             pair_id += 1
             h["pair_id"] = t["pair_id"] = pair_id
             used_tails.add(id(t))
+            used_heads.add(id(h))
 
 
 def compare(ends, min_ratio=1.15):
@@ -1159,7 +1197,8 @@ def draw(bgr, instances, ends, tubing_id=None):
     vis = cv2.cvtColor(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
     overlay = vis.copy()
     colours = {tubing_id: (0, 180, 0)}
-    for c, m in instances:
+    for item in instances:
+        c, m = item[0], item[1]      # accepts (c, m) or (c, m, confidence) alike
         col = colours.setdefault(c, PALETTE[len(colours) % len(PALETTE)])
         overlay[m] = col
     vis = cv2.addWeighted(overlay, 0.35, vis, 0.65, 0)

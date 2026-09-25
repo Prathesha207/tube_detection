@@ -69,6 +69,14 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       return;
     }
 
+    // Instantly notify parent so live preview filters update with 0ms delay
+    onUpdateConfig?.({
+      brightness,
+      contrast,
+      exposure,
+      autoFocus,
+    });
+
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
@@ -76,14 +84,14 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setSyncStatus('adjusting');
     debounceTimerRef.current = setTimeout(() => {
       applyLiveControls(brightness, contrast, exposure, autoFocus);
-    }, 70);
+    }, 40);
 
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [brightness, contrast, exposure, autoFocus, applyLiveControls]);
+  }, [brightness, contrast, exposure, autoFocus, applyLiveControls, onUpdateConfig]);
 
   // Automatic one-click optimal calibration
   const handleAutoAdjust = () => {

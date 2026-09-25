@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import type { TubeEntity, StreamSourceType, AnomalyStatus, LabelMode } from '../types';
+import type { TubeEntity, StreamSourceType, AnomalyStatus, LabelMode, CameraConfig } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
 import { useRecording } from './hooks/useRecording';
@@ -63,6 +63,7 @@ interface DetectionCanvasProps {
   onClearCameraRecord?: () => void;
   cameraTargetFps?: number;
   recordingFormat?: 'AVI' | 'MP4' | 'FFV1';
+  cameraConfig?: CameraConfig;
 }
 
 export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
@@ -73,6 +74,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   onFeedModeChange,
   isRunning,
   isStarting,
+  cameraConfig,
   onToggleRunning,
   onStopInference,
   onResumeInference,
@@ -380,6 +382,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 }
                 className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-contain ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
                   }`}
+                style={{
+                  filter: isCameraSource && !hasCameraRecording && cameraConfig
+                    ? `brightness(${Math.max(0.2, 1 + ((cameraConfig.brightness ?? 0) / 100))}) contrast(${Math.max(0.2, (cameraConfig.contrast ?? 50) / 50)})`
+                    : undefined
+                }}
                 alt=""
                 onLoad={(e) => {
                   const tgt = e.target as HTMLImageElement;

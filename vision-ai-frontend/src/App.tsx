@@ -857,6 +857,7 @@ export default function App() {
               onClearCameraRecord={handleClearCameraRecord}
               cameraTargetFps={camera.effectiveCameraConfig.targetFps || 30}
               recordingFormat={camera.effectiveCameraConfig.recordingFormat || 'MP4'}
+              cameraConfig={camera.effectiveCameraConfig}
             />
           </main>
 

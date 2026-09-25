@@ -738,6 +738,7 @@ class OakCameraService:
             exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
             gain_val = int(gain if gain is not None else 400)
             try:
+                ctrl.setAutoExposureLock(False)
                 ctrl.setManualExposure(exp_us, gain_val)
                 logger.info(f"[CONTROL] Exposure={exp_us}us, Gain={gain_val}")
             except Exception as e:
@@ -747,7 +748,11 @@ class OakCameraService:
             try:
                 if auto_focus:
                     ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-                    logger.info("[CONTROL] AutoFocus=CONTINUOUS_VIDEO")
+                    try:
+                        ctrl.setAutoFocusTrigger()
+                    except Exception:
+                        pass
+                    logger.info("[CONTROL] AutoFocus=CONTINUOUS_VIDEO (trigger sent)")
                 else:
                     ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
                     logger.info("[CONTROL] AutoFocus=OFF")

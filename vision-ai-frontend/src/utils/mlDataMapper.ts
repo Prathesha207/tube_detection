@@ -42,19 +42,24 @@ export const mapDetectionsToTubes = (
       }
     }
 
-    const role = d.role || (d.id % 2 === 0 ? 'HEAD' : 'TAIL');
+    const role = d.role || 'UNKNOWN';
     const status = d.status || 'OK';
-    const isAnomaly = false;
-    const displayId = d.id !== null && d.id !== undefined ? String(d.id) : `tube-${idx + 1}`;
+    const isAnomaly = status !== 'OK';
+    const rawId = d.id !== null && d.id !== undefined ? d.id : idx + 1;
+    const uniqueId = `${role}-${rawId}`;
+    const displayId = String(rawId);
+    const isCoasting = Boolean(d.is_coasting || (d.missed_frames && d.missed_frames > 0) || status === 'COASTED');
 
     incomingTubes.push({
-      id: displayId,
+      id: uniqueId,
+      displayId: displayId,
       role: role,
       label: role === 'HEAD' ? 'Head End' : role === 'TAIL' ? 'Tail End' : (d.class || 'Tube End'),
       species: role === 'HEAD' ? 'Head' : role === 'TAIL' ? 'Tail' : (d.class || 'Tube'),
       class: d.class || role,
       status: status,
       isAnomaly: isAnomaly,
+      is_coasting: isCoasting,
       confidence: typeof d.confidence === 'number' ? d.confidence : 1.0,
       x: px,
       y: py,

@@ -5,10 +5,11 @@ export type StreamSourceType = 'sample-pond' | 'oak-camera' | 'uploaded-video' |
 export type TubeRole = 'HEAD' | 'TAIL' | string;
 export type TubeSize = 'BIGGER' | 'SMALLER' | 'SAME' | null;
 
-// Raw detection from TubeAnalyzer backend (see to_json_end() in run_video_frames.py /
-// build_frame_result() — this is the exact shape both camera and video inference emit).
+// Raw detection from TubeAnalyzer backend (from process_frame() or build_export_json() —
+// this is the exact shape both camera and video inference emit).
 export interface TubeDetection {
   id: number;
+  displayId?: string | number;
   role: TubeRole;
   class: string;
   status: string; // e.g. "OK"
@@ -19,6 +20,8 @@ export interface TubeDetection {
   pair_id?: number | null; // ends sharing a pair_id = the same tube
   opaque?: boolean | null;
   colour?: { saturation: number; hue: number | null; coloured: boolean } | null;
+  is_coasting?: boolean;
+  missed_frames?: number;
 }
 
 export interface TubeFrameResult {
@@ -55,12 +58,14 @@ export interface MLFrameOutput {
 // tube-counting payload.
 export interface TubeEntity {
   id: string;
+  displayId?: string | number;
   role: TubeRole; // 'HEAD' | 'TAIL'
   class?: string; // Classification category from model
   label?: string; // Human-friendly display label (e.g. 'Head End', 'Tail End')
   species?: string; // Optional alias for backward compatibility
   status?: string;
   isAnomaly: boolean; // derived client-side (e.g. status !== 'OK'), not sent by the backend
+  is_coasting?: boolean;
   confidence: number; // derived client-side; backend detections carry no confidence score
   x: number; // percentage 0 - 100
   y: number; // percentage 0 - 100

@@ -10,4 +10,6 @@ output/
 !vision-ai-backend/app/ml/whl/*.whl
 manual_inference_output/
 vision-ai-frontend/release-backend/
+*.db
+measured/
 

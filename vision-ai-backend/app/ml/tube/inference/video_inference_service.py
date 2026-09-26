@@ -4,6 +4,7 @@ video_inference_service.py
 Handles batch / offline video file inference for Tube tracing.
 """
 
+import json
 import tempfile
 import asyncio
 import os
@@ -22,12 +23,10 @@ from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import TubeAnalyzer
 
-logger = setup_logger("tube-video-inference")
+from pathlib import Path
 
-_DEFAULT_MODEL_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-    "model", "best.pt"
-)
+_TUBE_DIR = Path(__file__).resolve().parent.parent
+_DEFAULT_MODEL_PATH = str(_TUBE_DIR / "model" / "best.pt")
 
 import threading
 
@@ -44,16 +43,10 @@ class VideoInferenceService:
             return shared
 
         path = _DEFAULT_MODEL_PATH
-        local_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model", "best.pt")
-        if not os.path.exists(path):
-            if os.path.exists(local_path):
-                path = local_path
-            else:
-                raise FileNotFoundError(f"Model not found at {path} or {local_path}")
         
         logger.info("Initializing TubeAnalyzer for video session...")
         is_cuda = bool(torch and torch.cuda.is_available())
-        analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu")
+        analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=True)
         self._shared_analyzer = analyzer
         return analyzer
 
@@ -92,6 +85,8 @@ class VideoInferenceService:
             raise RuntimeError("Live camera inference is currently active -- please stop it before starting a video upload")
 
         self.cleanup_stale_sessions()
+        if session_id and session_id in self.sessions:
+            return session_id
         self.stop_all_sessions()
         
         session_id = session_id or str(uuid.uuid4())
@@ -145,6 +140,7 @@ class VideoInferenceService:
         queue = session["queue"]
         try:
             while not session["stop_event"].is_set():
+                frame_bytes = None
                 try:
                     frame_bytes = await asyncio.wait_for(queue.get(), timeout=1.5)
                 except asyncio.TimeoutError:
@@ -159,12 +155,13 @@ class VideoInferenceService:
         finally:
             logger.debug(f"Stream generator finished for session {session_id}")
 
-    async def stop_session(self, session_id: str, timeout: float = 0.5):
+    async def stop_session(self, session_id: str, timeout: float = 1.0):
         session = self.sessions.get(session_id)
         if session:
             session["stop_event"].set()
             session["status"] = "stopped"
             session["stats"]["status"] = "stopped"
+            session["last_frame_bytes"] = None
             try:
                 if session["queue"].full():
                     session["queue"].get_nowait()
@@ -174,17 +171,6 @@ class VideoInferenceService:
             start_wait = time.time()
             while session.get("is_task_active", False) and (time.time() - start_wait < timeout):
                 await asyncio.sleep(0.01)
-            # If task is still active after timeout, cancel it so it never hangs
-            task = session.get("task")
-            if task and not task.done() and session.get("is_task_active", False):
-                task.cancel()
-            session_dir = session.get("session_dir")
-            if session_dir and session.get("last_frame_bytes"):
-                try:
-                    with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
-                        lf_out.write(session["last_frame_bytes"])
-                except Exception:
-                    pass
 
     def clear_session_files(self, session_id: str):
         session = self.sessions.get(session_id)
@@ -330,7 +316,7 @@ class VideoInferenceService:
 
                 while not session["stop_event"].is_set() and self._is_current_run(session_id, run_seq):
                     ret, frame = cap.read()
-                    if not self._is_current_run(session_id, run_seq) or session["stop_event"].is_set():
+                    if not self._is_current_run(session_id, run_seq):
                         break
 
                     if not ret or frame is None:
@@ -338,13 +324,24 @@ class VideoInferenceService:
                         session["status"] = "completed"
                         session["stats"]["status"] = "completed"
                         session["stats"]["progress"] = 100.0
-                        session_dir = session.get("session_dir")
-                        if session_dir and session.get("last_frame_bytes"):
+                        if session.get("last_frame_bytes") and session.get("session_dir"):
                             try:
-                                with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
-                                    lf_out.write(session["last_frame_bytes"])
-                            except Exception as write_err:
-                                logger.warning(f"Could not persist final last_frame.jpg: {write_err}")
+                                with open(os.path.join(session["session_dir"], "last_frame.jpg"), "wb") as f:
+                                    f.write(session["last_frame_bytes"])
+                            except Exception:
+                                pass
+                        if session.get("session_dir") and session.get("stats"):
+                            try:
+                                def _default_serializer(obj):
+                                    if hasattr(obj, "item"):
+                                        return obj.item()
+                                    if hasattr(obj, "tolist"):
+                                        return obj.tolist()
+                                    return str(obj)
+                                with open(os.path.join(session["session_dir"], "results.json"), "w") as rf:
+                                    json.dump(session["stats"], rf, indent=2, default=_default_serializer)
+                            except Exception as json_err:
+                                logger.warning(f"Could not save results.json: {json_err}")
                         break
                     
                     frame_idx += 1
@@ -356,7 +353,7 @@ class VideoInferenceService:
 
                     if stride > 1 and (frame_idx % stride != 0) and last_annotated_frame is not None:
                         result = last_result
-                        annotated_frame = frame
+                        annotated_frame = last_annotated_frame
                     else:
                         def _infer_frame(analyzer_inst, frame_in):
                             if torch is not None:
@@ -376,7 +373,7 @@ class VideoInferenceService:
                         except Exception as frame_err:
                             logger.warning(f"Session {session_id}: frame {frame_idx} inference failed: {frame_err}")
                             result = last_result
-                            annotated_frame = frame.copy()
+                            annotated_frame = last_annotated_frame if last_annotated_frame is not None else frame.copy()
                             infer_fps = 0.0
 
                     session["stats"]["frames_processed"] = frame_idx
@@ -392,9 +389,17 @@ class VideoInferenceService:
                         out_writer.write(annotated_frame)
 
                     try:
-                        _, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        _, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                         frame_bytes = buffer.tobytes()
                         session["last_frame_bytes"] = frame_bytes
+
+                        if (frame_idx % 15 == 0 or frame_idx == 1) and session.get("session_dir"):
+                            try:
+                                with open(os.path.join(session["session_dir"], "last_frame.jpg"), "wb") as f:
+                                    f.write(frame_bytes)
+                            except Exception:
+                                pass
+
                         try:
                             if session["queue"].full():
                                 session["queue"].get_nowait()
@@ -419,13 +424,6 @@ class VideoInferenceService:
                     out_writer.release()
                 if claimed_inference_lock:
                     app_state.exit_inference("video")
-                session_dir = session.get("session_dir")
-                if session_dir and session.get("last_frame_bytes"):
-                    try:
-                        with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as lf_out:
-                            lf_out.write(session["last_frame_bytes"])
-                    except Exception:
-                        pass
                 session["is_task_active"] = False
                 try:
                     session["queue"].put_nowait(None)

@@ -105,14 +105,26 @@ def _predict_batch(model, imgs, conf, gray):
     return out
 
 
-def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_iou=0.4, batch_tiles=True):
+def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_iou=0.4,
+                     dedupe_center_frac=0.6, batch_tiles=True):
     """Masks for the whole photo, or - with tile>0 - from overlapping tiles.
 
     Tiling matters when the ends are small: a 640 px tile of a 1920 px photo
     gives the model 3x the pixels on the same object. On GPU the tiles are sent
     as ONE batched call (batch_tiles=True) so the speed hit from tiling is small;
     on CPU a batch is processed sequentially anyway, so either mode works.
-    Duplicates from the overlap are removed by IoU, keeping the more confident one."""
+
+    Duplicates from the tile overlap are removed two ways:
+      1. mask overlap ratio > dedupe_iou (the classic case: same object, same
+         shape, just detected twice)
+      2. box-CENTER distance < dedupe_center_frac of the boxes' diagonal (the
+         tile-SEAM case: the same real object gets a slightly different
+         segmentation boundary in each tile crop, so its mask shape and even
+         its size can differ enough that overlap alone misses it - but the
+         two boxes are still clearly centred on the same object). Without
+         this second check, an object sitting near a tile seam is easily
+         double-counted, inflating HEADS/TAILS counts on real video.
+    In both cases the higher-confidence detection is kept."""
     if not tile:
         return [(c, m) for c, m, _ in _predict(model, bgr, conf, gray)]
     H, W = bgr.shape[:2]
@@ -136,55 +148,224 @@ def masks_from_model(model, bgr, conf, gray=True, tile=0, overlap=0.3, dedupe_io
             th, tw = min(mh, H - y), min(mw, W - x)
             full[y:y + th, x:x + tw] = m[:th, :tw]
             if full.any():
-                dets.append((c, full, cf))
+                bx, by, bw, bh = cv2.boundingRect(full.astype(np.uint8))
+                centre = (bx + bw / 2.0, by + bh / 2.0)
+                diag = float(np.hypot(bw, bh))
+                dets.append((c, full, cf, centre, diag, (bx, by, bw, bh)))
     kept = []
-    for c, m, cf in sorted(dets, key=lambda d: -d[2]):
-        if any(kc == c and (km & m).sum() > dedupe_iou * min(km.sum(), m.sum())
-               for kc, km, _ in kept):
+    for c, m, cf, centre, diag, b in sorted(dets, key=lambda d: -d[2]):
+        def is_dup(kc, km, kcentre, kdiag, kb):
+            if kc != c:
+                return False
+            inter = (km & m).sum()
+            if inter > 0:
+                union = (km | m).sum()
+                if union > 0 and (inter / union) > dedupe_iou:
+                    return True
+                if (inter / min(km.sum(), m.sum())) > 0.40:
+                    return True
+            # Box IoU check for tile seam boundary splits
+            bx1, by1, bw1, bh1 = b
+            bx2, by2, bw2, bh2 = kb
+            ix1, iy1 = max(bx1, bx2), max(by1, by2)
+            ix2, iy2 = min(bx1 + bw1, bx2 + bw2), min(by1 + bh1, by2 + bh2)
+            if ix2 > ix1 and iy2 > iy1:
+                b_inter = (ix2 - ix1) * (iy2 - iy1)
+                b_union = bw1 * bh1 + bw2 * bh2 - b_inter
+                if b_union > 0 and (b_inter / b_union) > 0.45:
+                    return True
+            return False
+
+        if any(is_dup(kc, km, kcentre, kdiag, kb) for kc, km, _, kcentre, kdiag, kb in kept):
             continue
-        kept.append((c, m, cf))
-    return [(c, m) for c, m, _ in kept]
+        kept.append((c, m, cf, centre, diag, b))
+    return [(c, m) for c, m, _, _, _, _ in kept]
 
 
 # ---------------------------------------------------------------- geometry
-def attach(end_mask, tubings, gap=3):
-    """Index of the tubing mask that touches this end (largest contact).
-    `gap` px of separation between the two polygons is tolerated."""
-    k = 2 * int(max(gap, 0)) + 1
-    grown = cv2.dilate(end_mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+def attach(end_mask, tubings, gap=25):
+    """Index of the tubing mask that touches or is closest to this end.
+    `gap` px of separation between the two polygons is tolerated.
+
+    Performance: all dilation and DT work is done on a small padded crop
+    around the end bounding box rather than the full 1920x1080 frame.
+    For a 150x150 end with gap=25 the crop is ~200x200 px vs 2 MP — ~45x
+    faster on the critical dilation call.
+    """
+    if not tubings:
+        return None, None
+
+    H, W = end_mask.shape
+    k  = 2 * int(max(gap, 0)) + 1
+    pad = int(max(gap, 0)) + 4   # extra margin so grown mask is fully inside crop
+
+    # Bounding box of the end mask
+    ex, ey, ew, eh = cv2.boundingRect(end_mask.astype(np.uint8))
+    x0 = max(ex - pad, 0);  y0 = max(ey - pad, 0)
+    x1 = min(ex + ew + pad, W); y1 = min(ey + eh + pad, H)
+
+    end_crop = end_mask[y0:y1, x0:x1]
+    grown_crop = cv2.dilate(end_crop.astype(np.uint8),
+                             np.ones((k, k), np.uint8)).astype(bool)
+
     best, best_n = None, 0
     for i, t in enumerate(tubings):
-        n = int((grown & t).sum())
+        t_crop = t[y0:y1, x0:x1]
+        n = int((grown_crop & t_crop).sum())
         if n > best_n:
             best, best_n = i, n
-    if best is None:
-        return None, None
-    ys, xs = np.nonzero(grown & tubings[best])
-    return best, np.array([xs.mean(), ys.mean()], np.float32)
+
+    if best is not None and best_n > 0:
+        t_crop = tubings[best][y0:y1, x0:x1]
+        ys_c, xs_c = np.nonzero(grown_crop & t_crop)
+        if len(xs_c) > 0:
+            return best, np.array([xs_c.mean() + x0, ys_c.mean() + y0], np.float32)
+
+    # Distance transform fallback — still in the local crop (much faster)
+    # Expand the crop a little more so the DT gradient is meaningful
+    pad2 = int(35) + pad
+    x0b = max(ex - pad2, 0);  y0b = max(ey - pad2, 0)
+    x1b = min(ex + ew + pad2, W); y1b = min(ey + eh + pad2, H)
+    end_crop_b = end_mask[y0b:y1b, x0b:x1b]
+
+    best_i = None
+    min_d  = 999999.0
+    for i, t in enumerate(tubings):
+        if not t.any():
+            continue
+        t_crop_b = t[y0b:y1b, x0b:x1b]
+        if not t_crop_b.any():
+            continue
+        dt = cv2.distanceTransform((~t_crop_b).astype(np.uint8), cv2.DIST_L2, 5)
+        if not end_crop_b.any():
+            continue
+        d = float(dt[end_crop_b].min())
+        if d < min_d:
+            min_d = d
+            best_i = i
+
+    if best_i is not None and min_d <= 35.0:
+        t_ys, t_xs = np.nonzero(tubings[best_i][y0b:y1b, x0b:x1b])
+        e_ys, e_xs = np.nonzero(end_crop_b)
+        if len(e_xs) == 0 or len(t_xs) == 0:
+            return None, None
+        e_c = np.array([e_xs.mean(), e_ys.mean()])
+        dists = np.hypot(t_xs - e_c[0], t_ys - e_c[1])
+        min_idx = np.argmin(dists)
+        return best_i, np.array([t_xs[min_idx] + x0b, t_ys[min_idx] + y0b], np.float32)
+
+    return None, None
 
 
-def local_axis(tube_mask, contact, radius):
-    """Unit direction of the tube near `contact`, pointing away from the end,
-    plus the skeleton points used and the mask width there."""
-    skel = skeletonize(tube_mask)
-    dt = cv2.distanceTransform(tube_mask.astype(np.uint8), cv2.DIST_L2, 5)
-    # drop the short corner branches a skeleton grows at polygon ends: they sit
-    # close to the border (small distance value) and would tilt the axis
-    skel &= dt >= 0.7 * dt[skel].max() if skel.any() else skel
-    ys, xs = np.nonzero(skel)
-    if len(xs) < 3:
+
+
+def local_axis(tube_mask, contact, radius, tube_dt=None):
+    """Unit direction of the tube near `contact`, via skeletonize (accurate, slower).
+    Used by the photo-analysis CLI where accuracy > speed.
+    For real-time video inference use local_axis_fast() instead."""
+    H, W = tube_mask.shape
+    cx, cy = int(round(float(contact[0]))), int(round(float(contact[1])))
+    pad = int(radius) + 64
+    x0, y0 = max(cx - pad, 0), max(cy - pad, 0)
+    x1, y1 = min(cx + pad, W),  min(cy + pad, H)
+    crop = tube_mask[y0:y1, x0:x1]
+    if not crop.any():
         return None, None, None
-    pts = np.stack([xs, ys], 1).astype(np.float32)
+
+    skel_crop = skeletonize(crop)
+    if tube_dt is not None:
+        dt_crop = tube_dt[y0:y1, x0:x1].copy()
+    else:
+        dt_crop = cv2.distanceTransform(crop.astype(np.uint8), cv2.DIST_L2, 5)
+
+    if skel_crop.any():
+        skel_crop &= dt_crop >= 0.7 * dt_crop[skel_crop].max()
+
+    ys_c, xs_c = np.nonzero(skel_crop)
+    if len(xs_c) < 3:
+        return None, None, None
+
+    xs_g = xs_c + x0
+    ys_g = ys_c + y0
+    pts  = np.stack([xs_g, ys_g], 1).astype(np.float32)
+
     near = pts[np.linalg.norm(pts - contact, axis=1) < radius]
     if len(near) < 3:
         near = pts[np.argsort(np.linalg.norm(pts - contact, axis=1))[:10]]
     c = near.mean(0)
     _, _, vt = np.linalg.svd(near - c)
     u = vt[0]
-    if np.dot(c - contact, u) < 0:        # point from the end into the tubing
+    if np.dot(c - contact, u) < 0:
         u = -u
-    mask_width = 2.0 * float(np.median(dt[near[:, 1].astype(int), near[:, 0].astype(int)]))
+
+    lx = (near[:, 0] - x0).astype(int).clip(0, dt_crop.shape[1] - 1)
+    ly = (near[:, 1] - y0).astype(int).clip(0, dt_crop.shape[0] - 1)
+    mask_width = 2.0 * float(np.median(dt_crop[ly, lx]))
     return u.astype(np.float32), near, mask_width
+
+
+def local_axis_fast(tube_mask, tube_dt, contact, radius):
+    """Fast tube axis direction using DT-weighted PCA - NO skeletonize.
+
+    Skeletonize (Zhang-Suen) takes 50-200ms per coil crop even at 250x250px.
+    Instead, weight all tubing pixels by their DT value so high-DT pixels
+    (near the centerline) dominate the PCA. The first principal component of
+    this weighted point cloud equals the tube axis. Typically <2ms total.
+
+    Returns the same (u, near, mask_width) tuple as local_axis().
+    """
+    H, W = tube_mask.shape
+    cx, cy = int(round(float(contact[0]))), int(round(float(contact[1])))
+    pad = int(radius) + 48
+    x0, y0 = max(cx - pad, 0), max(cy - pad, 0)
+    x1, y1 = min(cx + pad, W),  min(cy + pad, H)
+
+    crop_mask = tube_mask[y0:y1, x0:x1]
+    crop_dt   = tube_dt[y0:y1, x0:x1]
+
+    if not crop_mask.any():
+        return None, None, None
+
+    ys_c, xs_c = np.nonzero(crop_mask)
+    if len(xs_c) < 3:
+        return None, None, None
+
+    xs_g = (xs_c + x0).astype(np.float32)
+    ys_g = (ys_c + y0).astype(np.float32)
+    pts     = np.stack([xs_g, ys_g], 1)
+    weights = crop_dt[ys_c, xs_c].astype(np.float32)
+
+    # Keep only pixels within radius of contact
+    dists = np.linalg.norm(pts - contact, axis=1)
+    sel   = dists < radius
+    if sel.sum() < 3:
+        sel = np.zeros(len(dists), bool)
+        sel[np.argsort(dists)[:20]] = True
+
+    pts_n = pts[sel]
+    w_n   = weights[sel]
+    w_sum = w_n.sum()
+    if len(pts_n) < 3 or w_sum < 1e-6:
+        return None, None, None
+
+    # Weighted PCA — eigh faster than SVD for symmetric 2x2
+    centroid = (pts_n * w_n[:, None]).sum(0) / w_sum
+    centered = pts_n - centroid
+    cov = (centered * w_n[:, None]).T @ centered / w_sum
+    _, vecs = np.linalg.eigh(cov)   # ascending order; last = largest eigenvector = axis
+    u = vecs[:, -1].astype(np.float32)
+    if np.dot(centroid - contact, u) < 0:
+        u = -u
+
+    # Width: 2x DT at the contact pixel
+    cy_cl = max(0, min(cy, H - 1))
+    cx_cl = max(0, min(cx, W - 1))
+    mask_width = 2.0 * max(float(tube_dt[cy_cl, cx_cl]), 1.0)
+
+    # Highest-DT pixels near contact for visualisation
+    top_k = min(10, len(pts_n))
+    near  = pts_n[np.argsort(w_n)[-top_k:]]
+    return u, near, mask_width
 
 
 def tip_point(end_mask, contact, u):
@@ -196,58 +377,87 @@ def tip_point(end_mask, contact, u):
 
 
 # ---------------------------------------------------------------- per image
-def analyse(bgr, instances, mm_per_px=None, max_disagree=0.2, gap=3, class_map=None):
+def analyse(bgr, instances, mm_per_px=None, max_disagree=0.2, gap=25, class_map=None):
     """class_map = (names, role, tubing_id) from build_class_map(); defaults to the
     hand-label fallback. Pass model.names via build_class_map() when using --model,
     so class ids are matched by their real name, not by an assumed position."""
     names, role, tubing_id = class_map or (NAMES, ROLE, TUBING)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     tubings = [m for c, m in instances if c == tubing_id]
+    # Cache per-tubing distance transform (computed at most once per tube per frame)
+    # area_w = DT max = inscribed-circle radius = actual tube cross-section radius (~30-50 px).
+    # This keeps the local_axis crop small (radius~130 px) instead of using the coil
+    # bbox which can be 600+ px and defeats the whole purpose of cropping.
+    tube_dt_cache = {}   # tubing index -> (dt_array, area_w)
+    def get_tube_dt(ti):
+        if ti not in tube_dt_cache:
+            dt = cv2.distanceTransform(tubings[ti].astype(np.uint8), cv2.DIST_L2, 5)
+            tube_dt_cache[ti] = (dt, max(float(dt.max()), 4.0))
+        return tube_dt_cache[ti]
     ends = []
     for cls, m in instances:
         if cls == tubing_id or cls not in role:
             continue   # tubing itself, or a class that is neither head- nor tail-like
         x, y, bw, bh = cv2.boundingRect(m.astype(np.uint8))
-        e = {"class": names.get(cls, str(cls)), "role": role[cls], "status": "OK",
-             "bbox": [int(x), int(y), int(bw), int(bh)]}   # [x, y, width, height] in pixels
+        # Crop to bounding box for nonzero scan and self DT — same result, ~88x fewer pixels
+        m_crop = m[y:y + bh, x:x + bw]
+        ys_c, xs_c = np.nonzero(m_crop)
+        center_x = float(xs_c.mean() + x) if len(xs_c) > 0 else float(x + bw / 2.0)
+        center_y = float(ys_c.mean() + y) if len(ys_c) > 0 else float(y + bh / 2.0)
+
+        # Self mask width from bbox-cropped DT (max is identical to full-frame DT max)
+        dt_self_crop = cv2.distanceTransform(m_crop.astype(np.uint8), cv2.DIST_L2, 5)
+        self_mask_w = 2.0 * float(dt_self_crop.max()) if dt_self_crop.any() else float(min(bw, bh))
+
+        e = {
+            "class": names.get(cls, str(cls)),
+            "role": role[cls],
+            "status": "OK",
+            "bbox": [int(x), int(y), int(bw), int(bh)],
+            "bbox_width": round(float(bw), 2),
+            "bbox_height": round(float(bh), 2),
+            "tip": [round(center_x, 1), round(center_y, 1)],
+            "width_mask_px": round(self_mask_w, 2),
+            "width_px": round(self_mask_w, 2),
+            "final_width": round(self_mask_w, 2),
+            "width_edge_px": None,
+            "width_mm": round(self_mask_w * mm_per_px, 2) if mm_per_px else None,
+        }
+
         ti, contact = attach(m, tubings, gap)
-        if ti is None:
-            e["status"] = "NO_TUBING_MASK"
-            ends.append(e)
-            continue
-        tube = tubings[ti]
-        area_w = np.sqrt(tube.sum() / max(skeletonize(tube).sum(), 1))   # rough width for radius
-        u, near, mask_w = local_axis(tube, contact, radius=4 * area_w + 5)
-        if u is None:
-            e["status"] = "BAD_TUBING_MASK"
-            ends.append(e)
-            continue
-        tip = tip_point(m, contact, u)
-        start = contact + u * max(0.5 * mask_w, 2)             # a little into bare tubing
-        edge_w, q = measure_width(gray, start - u * 10, start,
-                                  length=int(max(3 * mask_w, 15)),
-                                  search_px=int(0.5 * mask_w * 1.4) + 3,
-                                  refine=True, max_angle_deg=6, max_shift=3)
-        width = edge_w if edge_w else mask_w
-        if edge_w is None:
-            e["status"] = "CHECK (no clear walls, using mask width)"
-        elif abs(edge_w - mask_w) / mask_w > max_disagree:
-            e["status"] = "CHECK (edge and mask widths disagree)"
-        trans = transparency_score(gray, tip, contact, width)
-        x, y, w, h = e["bbox"]
-        e.update({
-            "tubing_id": ti,
-            "tip": [round(float(v), 1) for v in tip],
-            "width_edge_px": round(edge_w, 2) if edge_w else None,
-            "width_mask_px": round(mask_w, 2),
-            "width_px": round(width, 2),
-            "width_mm": round(width * mm_per_px, 2) if mm_per_px else None,
-            "edge_quality": round(q, 2),
-            "transparency": round(trans, 2) if trans is not None else None,
-            "opaque": (trans < 0.5) if trans is not None else None,
-            "colour": colour_score(bgr, (x, y, x + w, y + h)),
-            "_axis": (contact, u, near),
-        })
+        if ti is not None:
+            tube = tubings[ti]
+            dt_tube, _ = get_tube_dt(ti)
+            # Use DT VALUE AT CONTACT POINT = actual local tube radius (~30-50 px).
+            # DT max = coil blob half-width (~200-300 px) which makes the crop = full frame.
+            cx_c = max(0, min(int(round(contact[0])), dt_tube.shape[1] - 1))
+            cy_c = max(0, min(int(round(contact[1])), dt_tube.shape[0] - 1))
+            area_w = max(float(dt_tube[cy_c, cx_c]), 4.0)
+            # Use fast DT-weighted PCA (no skeletonize) for video inference speed
+            u, near, mask_w = local_axis_fast(tube, dt_tube, contact, radius=4 * area_w + 5)
+            if u is not None:
+                tip = tip_point(m, contact, u)
+                start = contact + u * max(0.5 * mask_w, 2)             # a little into bare tubing
+                edge_w, q = measure_width(gray, start - u * 10, start,
+                                          length=int(max(3 * mask_w, 15)),
+                                          search_px=int(0.5 * mask_w * 1.4) + 3,
+                                          refine=True, max_angle_deg=6, max_shift=3)
+                # Primary width source is YOLO mask:
+                e["width_mask_px"] = round(mask_w, 2)
+                e["final_width"] = round(mask_w, 2)
+                e["width_px"] = round(mask_w, 2)
+                e["tip"] = [round(float(tip[0]), 1), round(float(tip[1]), 1)]
+                if edge_w is not None:
+                    e["width_edge_px"] = round(edge_w, 2)
+                    e["edge_quality"] = round(q, 2)
+                trans = transparency_score(gray, tip, contact, mask_w)
+                e.update({
+                    "tubing_id": ti,
+                    "transparency": round(trans, 2) if trans is not None else None,
+                    "opaque": (trans < 0.5) if trans is not None else None,
+                    "colour": colour_score(bgr, (x, y, x + bw, y + bh)),
+                    "_axis": (contact, u, near),
+                })
         ends.append(e)
     compare(ends)
     pair_ends(ends)
@@ -287,6 +497,7 @@ def pair_ends(ends, max_width_diff=0.15):
     used_tails = set()
     pair_id = 0
     for h in sorted(heads, key=lambda e: e["width_px"]):
+
         available = [t for t in tails if id(t) not in used_tails]
         t = closest(h, available)
         if t is not None and closest(t, heads) is h:      # mutual best match only

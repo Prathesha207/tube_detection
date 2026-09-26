@@ -8,6 +8,7 @@ import os
 import time
 import logging
 import threading
+from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
 try:
@@ -24,11 +25,9 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 _SESSION_IDLE_TIMEOUT_SEC = 300
 
-# Path to the actual trained model
-_DEFAULT_MODEL_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-    "model", "best.pt"
-)
+# Path to the actual trained model resolved dynamically
+_TUBE_DIR = Path(__file__).resolve().parent.parent
+_DEFAULT_MODEL_PATH = str(_TUBE_DIR / "model" / "best.pt")
 
 def _get_or_create_session(session_id: str, model_path: Optional[str] = None) -> Dict[str, Any]:
     existing = _sessions.get(session_id)
@@ -48,16 +47,8 @@ def _get_or_create_session(session_id: str, model_path: Optional[str] = None) ->
         try:
             logger.info(f"Creating fresh TubeAnalyzer for camera session {session_id}.")
             path = model_path or _DEFAULT_MODEL_PATH
-            if not os.path.exists(path):
-                # Fallback to local model dir if possible
-                local_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model", "best.pt")
-                if os.path.exists(local_path):
-                    path = local_path
-                else:
-                    raise FileNotFoundError(f"Model not found at {path} or {local_path}")
-                
             is_cuda = bool(torch and torch.cuda.is_available())
-            analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu")
+            analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=True)
         except Exception as e:
             logger.error(f"Failed to create camera analyzer: {e}", exc_info=True)
             app_state.exit_inference("camera")

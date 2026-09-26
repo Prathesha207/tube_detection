@@ -66,37 +66,6 @@ def _save_session_meta(
     except Exception as e:
         logger.warning(f"Could not update sessions_registry.json for {session_id}: {e}")
 
-def _delete_session_meta(session_id: str):
-    if not session_id:
-        return
-    try:
-        reg_file = _get_registry_path()
-        if os.path.exists(reg_file):
-            try:
-                with open(reg_file, "r") as rf:
-                    registry = json.load(rf)
-            except Exception:
-                registry = {}
-            if session_id in registry:
-                registry.pop(session_id, None)
-                with open(reg_file, "w") as rf:
-                    json.dump(registry, rf, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not remove {session_id} from sessions_registry.json: {e}")
-
-    try:
-        from app.core.app_paths import get_ml_output_dir
-        base_output_dir = str(get_ml_output_dir())
-    except Exception:
-        base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
-    session_dir = os.path.join(base_output_dir, session_id)
-    meta_path = os.path.join(session_dir, "session_meta.json")
-    if os.path.exists(meta_path):
-        try:
-            os.remove(meta_path)
-        except Exception:
-            pass
-
 @router.post("/upload")
 async def upload_video(
     file: Optional[UploadFile] = File(None),
@@ -281,10 +250,19 @@ async def upload_video(
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
             if frame0_bytes:
-                session["first_frame_bytes"] = frame0_bytes
+                if frame0 is not None:
+                    try:
+                        analyzer = ml_inference_service._get_or_create_analyzer()
+                        res0, vis0 = analyzer.process_frame(frame0.copy(), 0)
+                        _, buf0 = cv2.imencode(".jpg", vis0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        frame0_bytes = buf0.tobytes()
+                        for k, v in res0.items():
+                            session["stats"][k] = v
+                    except Exception as e:
+                        logger.warning(f"Could not pre-annotate frame 0 on upload: {e}")
                 session["last_frame_bytes"] = frame0_bytes
                 try:
-                    with open(os.path.join(session_dir, "first_frame.jpg"), "wb") as f:
+                    with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as f:
                         f.write(frame0_bytes)
                 except Exception:
                     pass
@@ -339,9 +317,7 @@ async def _ensure_session_exists(session_id: str):
 
     session = ml_inference_service.sessions.get(session_id)
     if session:
-        v_path = session.get("inference_video_path")
-        if v_path and os.path.exists(v_path):
-            return session
+        return session
 
     try:
         from app.core.app_paths import get_ml_output_dir, get_desktop_dir
@@ -474,17 +450,10 @@ async def _ensure_session_exists(session_id: str):
             session["stats"]["original_filename"] = orig_fn
 
             last_frame_path = os.path.join(session_dir, "last_frame.jpg")
-            first_frame_path = os.path.join(session_dir, "first_frame.jpg")
-            if os.path.exists(last_frame_path) and os.path.getsize(last_frame_path) > 0:
+            if os.path.exists(last_frame_path):
                 try:
                     with open(last_frame_path, "rb") as lf:
                         session["last_frame_bytes"] = lf.read()
-                except Exception:
-                    pass
-            elif os.path.exists(first_frame_path) and os.path.getsize(first_frame_path) > 0:
-                try:
-                    with open(first_frame_path, "rb") as ff:
-                        session["last_frame_bytes"] = ff.read()
                 except Exception:
                     pass
             logger.info(f"Restored session {session_id} from disk: {video_file}")
@@ -581,10 +550,15 @@ async def get_status(session_id: str):
 @router.post("/stop/{session_id}")
 async def stop_video(session_id: str):
     try:
-        session = ml_inference_service.sessions.get(session_id)
-        if session:
-            await ml_inference_service.stop_session(session_id, timeout=1.0)
-        return {"message": "Stop signal sent.", "session_id": session_id}
+        await _ensure_session_exists(session_id)
+        status = ml_inference_service.get_status(session_id)
+        if not status:
+            return JSONResponse(status_code=404, content={"message": "Session not found."})
+        
+        # BUGFIX: bound the wait so a wedged task can't hang this request
+        # (see stop_session() docstring in video_inference_service.py).
+        await ml_inference_service.stop_session(session_id, timeout=3.0)
+        return {"message": "Stop signal sent."}
     except HTTPException:
         raise
     except Exception as e:
@@ -595,12 +569,11 @@ async def stop_video(session_id: str):
 @router.post("/clear/{session_id}")
 async def clear_video_session(session_id: str):
     try:
-        session = ml_inference_service.sessions.get(session_id)
+        session = await _ensure_session_exists(session_id)
         if session:
-            await ml_inference_service.stop_session(session_id, timeout=1.0)
+            await ml_inference_service.stop_session(session_id, timeout=3.0)
             ml_inference_service.clear_session_files(session_id)
             ml_inference_service.sessions.pop(session_id, None)
-        _delete_session_meta(session_id)
         return {"status": "cleared", "session_id": session_id}
     except HTTPException:
         raise
@@ -612,9 +585,11 @@ async def clear_video_session(session_id: str):
 @router.post("/reset/{session_id}")
 async def reset_video_session(session_id: str):
     try:
-        session = ml_inference_service.sessions.get(session_id)
+        session = await _ensure_session_exists(session_id)
         if session:
-            await ml_inference_service.stop_session(session_id, timeout=1.0)
+            # 1. Stop the task fully and await it (bounded -- see stop_session docstring)
+            await ml_inference_service.stop_session(session_id, timeout=3.0)
+            # 2. Release resources natively
             if "analyzer" in session and session["analyzer"] is not None:
                 try:
                     if hasattr(session["analyzer"], "model") and session["analyzer"].model is not None:
@@ -622,9 +597,10 @@ async def reset_video_session(session_id: str):
                 except:
                     pass
                 session["analyzer"] = None
+            # 3. Clear temp files
             ml_inference_service.clear_session_files(session_id)
+            # 4. Remove session from memory
             ml_inference_service.sessions.pop(session_id, None)
-        _delete_session_meta(session_id)
         return {"status": "reset", "session_id": session_id}
     except HTTPException:
         raise
@@ -637,31 +613,24 @@ async def reset_video_session(session_id: str):
 async def get_last_frame(session_id: str):
     try:
         session = await _ensure_session_exists(session_id)
-        session_dir = None
-        try:
-            from app.core.app_paths import get_ml_output_dir
-            base_output_dir = str(get_ml_output_dir())
+        frame_bytes = session.get("last_frame_bytes") if session else None
+        
+        if not frame_bytes:
+            try:
+                from app.core.app_paths import get_ml_output_dir
+                base_output_dir = str(get_ml_output_dir())
+            except Exception:
+                base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
             session_dir = os.path.join(base_output_dir, session_id)
-        except Exception:
-            session_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output", session_id)
-
-        # 1. Check last_frame.jpg on disk first
-        if session_dir:
+            
+            # 1. Check last_frame.jpg
             last_frame_file = os.path.join(session_dir, "last_frame.jpg")
             if os.path.exists(last_frame_file) and os.path.getsize(last_frame_file) > 0:
                 try:
                     with open(last_frame_file, "rb") as f:
-                        disk_bytes = f.read()
-                        if disk_bytes:
-                            frame_bytes = disk_bytes
-                            if session:
-                                session["last_frame_bytes"] = disk_bytes
+                        frame_bytes = f.read()
                 except Exception:
                     pass
-
-        # 2. Check in-memory last_frame_bytes if not found on disk
-        if not frame_bytes and session and session.get("last_frame_bytes"):
-            frame_bytes = session["last_frame_bytes"]
 
             # 2. Check anomaly_frames
             if not frame_bytes:
@@ -734,15 +703,6 @@ async def get_last_frame(session_id: str):
                     except Exception as e:
                         logger.warning(f"Failed to extract frame from {video_path}: {e}")
 
-        if not frame_bytes and session_dir:
-            first_frame_file = os.path.join(session_dir, "first_frame.jpg")
-            if os.path.exists(first_frame_file) and os.path.getsize(first_frame_file) > 0:
-                try:
-                    with open(first_frame_file, "rb") as f:
-                        frame_bytes = f.read()
-                except Exception:
-                    pass
-
         if not frame_bytes:
             return JSONResponse(status_code=404, content={"message": "No frame available."})
         return Response(
@@ -801,10 +761,22 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                 cap = cv2.VideoCapture(video_path)
                 ret, frame0 = cap.read()
                 if ret and frame0 is not None:
-                    _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    try:
+                        analyzer = ml_inference_service._get_or_create_analyzer()
+                        res0, vis0 = analyzer.process_frame(frame0.copy(), 0)
+                        _, buf = cv2.imencode(".jpg", vis0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        for k, v in res0.items():
+                            session["stats"][k] = v
+                    except Exception:
+                        _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     session["last_frame_bytes"] = buf.tobytes()
                     session["stats"]["video_width"] = int(frame0.shape[1])
                     session["stats"]["video_height"] = int(frame0.shape[0])
+                    try:
+                        with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as f:
+                            f.write(buf.tobytes())
+                    except Exception:
+                        pass
                 cap.release()
             except Exception as e:
                 logger.warning(f"Could not pre-extract first frame from {video_path}: {e}")

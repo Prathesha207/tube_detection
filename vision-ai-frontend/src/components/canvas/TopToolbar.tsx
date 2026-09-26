@@ -8,6 +8,7 @@ const formatRecordingTime = (totalSeconds: number) => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+
 interface TopToolbarProps {
   isRunning: boolean;
   hasActiveVideo: boolean;
@@ -32,6 +33,11 @@ interface TopToolbarProps {
   onClearCustomVideo?: () => void;
   labelMode?: LabelMode;
   onLabelModeChange?: (mode: LabelMode) => void;
+  zoom?: number;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onResetZoom?: () => void;
+  onSetZoom?: (zoom: number) => void;
 }
 
 
@@ -57,6 +63,11 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onClearCustomVideo,
   labelMode,
   onLabelModeChange,
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom,
+  onSetZoom,
 }) => {
   const isMediaActive = isRunning || hasActiveVideo || (isCameraSource && isStreaming);
   if (!isMediaActive) return null;
@@ -145,7 +156,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       )}
 
       {/* Top-Right Corner: Action Controls */}
-      <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink min-w-0">
+      <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink-0">
         {showInferenceStatus && (
           <>
             {/* Feed toggle pill: RAW vs INFERENCE - Only shown for OAK camera */}

@@ -16,29 +16,39 @@ interface BadgePlacement {
   zIndex: number;
 }
 
-function createPlacement(side: 'left' | 'right' | 'top' | 'bottom', role: string): BadgePlacement {
+function createPlacement(
+  side: 'left' | 'right' | 'top' | 'bottom',
+  role: string,
+  offsetPx: number = 0,
+  stemLengthPx: number = 18
+): BadgePlacement {
   const isHead = role === 'HEAD';
-  const stemColor = isHead ? 'rgba(6, 182, 212, 0.85)' : 'rgba(245, 158, 11, 0.85)';
+  const stemColor = isHead ? 'rgba(6, 182, 212, 1)' : 'rgba(245, 158, 11, 1)';
+  const glow = isHead ? '0 0 4px rgba(6, 182, 212, 0.7)' : '0 0 4px rgba(245, 158, 11, 0.7)';
+
+  // Strictly clamp stem length between 14px and 22px to prevent huge stems or hiding behind toolbar
+  const safeStem = Math.min(22, Math.max(14, stemLengthPx));
 
   if (side === 'left') {
     return {
       side: 'left',
       containerStyle: {
         position: 'absolute',
-        right: 'calc(100% + 12px)',
+        right: `calc(100% + ${safeStem}px)`,
         top: '50%',
-        transform: 'translateY(-50%)',
+        transform: `translateY(calc(-50% + ${offsetPx}px))`,
       },
       stemStyle: {
         position: 'absolute',
-        right: '-12px',
+        right: `-${safeStem}px`,
         top: '50%',
-        transform: 'translateY(-50%)',
-        width: '12px',
+        transform: `translateY(calc(-50% - ${offsetPx}px))`,
+        width: `${safeStem}px`,
         height: '2px',
         backgroundColor: stemColor,
+        boxShadow: glow,
       },
-      zIndex: 35,
+      zIndex: 40,
     };
   }
 
@@ -47,20 +57,21 @@ function createPlacement(side: 'left' | 'right' | 'top' | 'bottom', role: string
       side: 'right',
       containerStyle: {
         position: 'absolute',
-        left: 'calc(100% + 12px)',
+        left: `calc(100% + ${safeStem}px)`,
         top: '50%',
-        transform: 'translateY(-50%)',
+        transform: `translateY(calc(-50% + ${offsetPx}px))`,
       },
       stemStyle: {
         position: 'absolute',
-        left: '-12px',
+        left: `-${safeStem}px`,
         top: '50%',
-        transform: 'translateY(-50%)',
-        width: '12px',
+        transform: `translateY(calc(-50% - ${offsetPx}px))`,
+        width: `${safeStem}px`,
         height: '2px',
         backgroundColor: stemColor,
+        boxShadow: glow,
       },
-      zIndex: 35,
+      zIndex: 40,
     };
   }
 
@@ -69,18 +80,21 @@ function createPlacement(side: 'left' | 'right' | 'top' | 'bottom', role: string
       side: 'top',
       containerStyle: {
         position: 'absolute',
-        bottom: 'calc(100% + 10px)',
-        left: '0',
+        bottom: `calc(100% + ${safeStem}px)`,
+        left: '50%',
+        transform: `translateX(calc(-50% + ${offsetPx}px))`,
       },
       stemStyle: {
         position: 'absolute',
-        bottom: '-10px',
-        left: '12px',
+        bottom: `-${safeStem}px`,
+        left: '50%',
+        transform: `translateX(calc(-50% - ${offsetPx}px))`,
         width: '2px',
-        height: '10px',
+        height: `${safeStem}px`,
         backgroundColor: stemColor,
+        boxShadow: glow,
       },
-      zIndex: 35,
+      zIndex: 40,
     };
   }
 
@@ -89,18 +103,21 @@ function createPlacement(side: 'left' | 'right' | 'top' | 'bottom', role: string
     side: 'bottom',
     containerStyle: {
       position: 'absolute',
-      top: 'calc(100% + 10px)',
-      left: '0',
+      top: `calc(100% + ${safeStem}px)`,
+      left: '50%',
+      transform: `translateX(calc(-50% + ${offsetPx}px))`,
     },
     stemStyle: {
       position: 'absolute',
-      top: '-10px',
-      left: '12px',
+      top: `-${safeStem}px`,
+      left: '50%',
+      transform: `translateX(calc(-50% - ${offsetPx}px))`,
       width: '2px',
-      height: '10px',
+      height: `${safeStem}px`,
       backgroundColor: stemColor,
+      boxShadow: glow,
     },
-    zIndex: 35,
+    zIndex: 40,
   };
 }
 
@@ -125,51 +142,89 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
     });
   }, [tubes]);
 
-  // Quadrant Anti-Collision Algorithm:
-  // Each of the 4 tube ends is assigned its own distinct compass quadrant into open space:
-  // - Top Tail: NORTH (above box into open space above)
-  // - Right Tail: EAST (to the right of box into open space on right)
-  // - Left Head (blue connector): WEST (to the left of box into open space on left)
-  // - Right Head (white connector): SOUTH (below box into open space below)
-  // Because the 4 directions (North, East, South, West) point 90° away from each other,
-  // it is physically impossible for any two labels to collide or overlap!
+  // Radial Outward Quadrant Callout Algorithm:
+  // 1. Calculates the mean cluster center (avgCx, avgCy).
+  // 2. Each tube projects directly OUTWARD into its nearest open quadrant (North, South, East, West).
+  // 3. Tubes on the left NEVER shoot across to the right; tubes on the right NEVER shoot across to the left!
+  // 4. Stems are strictly compact (16px - 20px) so labels NEVER shoot across the screen or hide behind toolbars!
+  // 5. If two tubes share a sector, they are staggered with horizontal/vertical offsets so labels never collide.
   const placementMap = useMemo(() => {
     const result: Record<string, BadgePlacement> = {};
+    if (validTubes.length === 0) return result;
 
-    const heads = validTubes.filter((t) => t.role === 'HEAD').sort((a, b) => a.x - b.x);
-    const tails = validTubes.filter((t) => t.role === 'TAIL').sort((a, b) => a.y - b.y);
+    // 1. Calculate cluster center
+    const centers = validTubes.map((t) => ({
+      tube: t,
+      cx: t.x + t.width / 2,
+      cy: t.y + t.height / 2,
+    }));
 
-    // 1. HEAD Connectors:
-    // Left connector points WEST (left into empty space)
-    if (heads.length > 0) {
-      result[heads[0].id] = createPlacement('left', 'HEAD');
-    }
-    // Right connector points SOUTH (down into empty space)
-    if (heads.length > 1) {
-      result[heads[1].id] = createPlacement('bottom', 'HEAD');
-    }
-    for (let i = 2; i < heads.length; i++) {
-      result[heads[i].id] = createPlacement(i % 2 === 0 ? 'bottom' : 'right', 'HEAD');
-    }
+    const avgCx = centers.reduce((sum, c) => sum + c.cx, 0) / centers.length;
+    const avgCy = centers.reduce((sum, c) => sum + c.cy, 0) / centers.length;
 
-    // 2. TAIL Ends:
-    // Top tail points NORTH (up into empty space above the cluster)
-    if (tails.length > 0) {
-      result[tails[0].id] = createPlacement('top', 'TAIL');
-    }
-    // Lower/Right tail points EAST (right into empty space to the right of the cluster)
-    if (tails.length > 1) {
-      result[tails[1].id] = createPlacement('right', 'TAIL');
-    }
-    for (let i = 2; i < tails.length; i++) {
-      result[tails[i].id] = createPlacement(i % 2 === 0 ? 'top' : 'right', 'TAIL');
-    }
+    // 2. Calculate outward vector & polar angle from center
+    const withAngles = centers.map((item) => {
+      const dx = item.cx - avgCx;
+      const dy = item.cy - avgCy;
+      const angle = Math.atan2(dy, dx);
+      return { ...item, dx, dy, angle };
+    });
 
-    // Fallback for any other detections
-    validTubes.forEach((t) => {
-      if (!result[t.id]) {
-        result[t.id] = createPlacement(t.y > 50 ? 'bottom' : 'top', t.role);
+    // Walk around the cluster perimeter
+    withAngles.sort((a, b) => a.angle - b.angle);
+
+    const sideCounts: Record<'left' | 'right' | 'top' | 'bottom', number> = {
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+    };
+
+    withAngles.forEach((item) => {
+      const { tube, dx, dy, angle } = item;
+      let side: 'left' | 'right' | 'top' | 'bottom';
+
+      // Natural outward compass direction based on polar sector:
+      // North: -135° to -45°
+      // East:  -45° to +45°
+      // South: +45° to +135°
+      // West:  <-135° or >+135°
+      if (angle >= -Math.PI * 0.75 && angle < -Math.PI * 0.25) {
+        side = 'top';
+      } else if (angle >= -Math.PI * 0.25 && angle < Math.PI * 0.25) {
+        side = 'right';
+      } else if (angle >= Math.PI * 0.25 && angle < Math.PI * 0.75) {
+        side = 'bottom';
+      } else {
+        side = 'left';
       }
+
+      // If the natural side is already occupied, try the secondary outward direction
+      if (sideCounts[side] > 0) {
+        if (side === 'top' && dx < 0 && sideCounts['left'] === 0) side = 'left';
+        else if (side === 'top' && dx >= 0 && sideCounts['right'] === 0) side = 'right';
+        else if (side === 'bottom' && dx < 0 && sideCounts['left'] === 0) side = 'left';
+        else if (side === 'bottom' && dx >= 0 && sideCounts['right'] === 0) side = 'right';
+        else if (side === 'left' && dy < 0 && sideCounts['top'] === 0) side = 'top';
+        else if (side === 'left' && dy >= 0 && sideCounts['bottom'] === 0) side = 'bottom';
+        else if (side === 'right' && dy < 0 && sideCounts['top'] === 0) side = 'top';
+        else if (side === 'right' && dy >= 0 && sideCounts['bottom'] === 0) side = 'bottom';
+      }
+
+      // Canvas boundary safety guard
+      if (tube.y < 8 && side === 'top') side = 'bottom';
+      if (tube.y > 88 && side === 'bottom') side = 'top';
+      if (tube.x < 10 && side === 'left') side = 'right';
+      if (tube.x > 88 && side === 'right') side = 'left';
+
+      const count = sideCounts[side];
+      sideCounts[side] += 1;
+
+      // If multiple badges share the same side, stagger them so they never overlap
+      const offsetPx = count === 0 ? 0 : (count % 2 === 1 ? -42 * count : 42 * count);
+      const stemLen = count === 0 ? 18 : 22;
+
+      result[tube.id] = createPlacement(side, tube.role, offsetPx, stemLen);
     });
 
     return result;
@@ -199,6 +254,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
 
         const bracketColor = isHead ? 'border-cyan-200' : 'border-amber-200';
         const effectiveZIndex = isSelected || isHovered ? 50 : placement.zIndex;
+        const isCoasting = tube.status === 'COASTED' || Boolean(tube.is_coasting);
 
         return (
           <div
@@ -226,7 +282,9 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               height: `${tube.height}%`,
               zIndex: effectiveZIndex,
             }}
-            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-all duration-150 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5`}
+            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-all duration-150 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${
+              isCoasting ? 'border-dashed opacity-70' : 'border-solid'
+            }`}
           >
             {/* Corner Crosshair Brackets (High contrast for pinpoint accuracy) */}
             <span className={`absolute -top-1 -left-1 w-2.5 h-2.5 border-t-2 border-l-2 ${bracketColor}`} />
@@ -250,7 +308,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                     : 'bg-amber-500 text-slate-950 border-amber-200'
                 } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}
               >
-                {tube.id}
+                {tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}
               </div>
             )}
 
@@ -273,7 +331,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                       isHead ? 'bg-cyan-400' : 'bg-amber-400'
                     }`}
                   />
-                  <span>#{tube.id}</span>
+                  <span>#{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
                   <span className={isHead ? 'text-cyan-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
                     {tube.role}
                   </span>
@@ -299,7 +357,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                 <div className="flex items-center justify-between pb-1 border-b border-white/10 font-bold">
                   <span className="flex items-center gap-1">
                     <span className={`w-2 h-2 rounded-full ${isHead ? 'bg-cyan-400' : 'bg-amber-400'}`} />
-                    <span>Tube End #{tube.id}</span>
+                    <span>Tube End #{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
                   </span>
                   <span className={isHead ? 'text-cyan-300' : 'text-amber-300'}>
                     {tube.role}

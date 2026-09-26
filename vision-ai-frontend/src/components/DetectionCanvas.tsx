@@ -15,11 +15,13 @@ import { CameraStandbyCard } from './canvas/CameraStandbyCard';
 import { TopToolbar } from './canvas/TopToolbar';
 import { StatusBar } from './canvas/StatusBar';
 import { LoadingOverlay } from './canvas/LoadingOverlay';
+import { ZoomControls } from './canvas/ZoomControls';
 
 // Extracted Canvas Hooks
 import { useFullscreen } from '../hooks/useFullscreen';
 import { useContainerFit } from '../hooks/useContainerFit';
 import { useVideoUpload } from '../hooks/useVideoUpload';
+import { useCanvasZoom } from '../hooks/useCanvasZoom';
 
 interface DetectionCanvasProps {
   tubes: TubeEntity[];
@@ -135,9 +137,32 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const isVideoSource = sourceType === 'uploaded-video' || sourceType === 'sample-pond';
   const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
   const hasCameraRecording = isCameraSource && Boolean(cameraRecordSessionId);
-  const hasActiveVideo = isVideoSource && !!customVideoUrl;
-  const isWaitingForVideo = isVideoSource && !hasActiveVideo;
+  const hasActiveVideo = isVideoSource && Boolean(customVideoUrl || videoSessionId);
+  const isWaitingForVideo = isVideoSource && !hasActiveVideo && !isRunning;
   const isCameraOffline = isCameraSource && !isCameraConnected && !hasCameraRecording;
+  const isMediaActive = Boolean(hasActiveVideo || videoSessionId || hasCameraRecording || (isCameraSource && isCameraConnected && isStreaming) || (isCameraSource && isRunning) || (isVideoSource && isRunning));
+
+  // Canvas Zoom & Pan
+  const {
+    zoom,
+    pan: _pan,
+    isPanning: _isPanning,
+    zoomIn,
+    zoomOut,
+    setZoomLevel,
+    resetZoom,
+    viewportRef,
+    transformStyle,
+    handleMouseDown,
+    handleDoubleClick,
+    cursorStyle,
+    hasMoved,
+  } = useCanvasZoom(isMediaActive);
+
+  // Reset zoom whenever stream or video source changes
+  useEffect(() => {
+    resetZoom();
+  }, [sourceType, customVideoUrl, cameraRecordSessionId, resetZoom]);
 
   // Ensure camera stream reconnects cleanly whenever running state changes while streaming
   useEffect(() => {
@@ -154,13 +179,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     Boolean(isCameraSource && !hasCameraRecording && isCameraConnected && cameraStartingState !== 'ready') ||
     Boolean((isVideoSource || hasCameraRecording) && (hasActiveVideo || hasCameraRecording) && isRunning && !isFirstFrameLoaded);
 
-
-
   // Hooks
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef);
   const { fittedRect } = useContainerFit(containerRef, canvasRef, videoAspect, videoDimensions, isCameraSource);
   const { uploadProgress, isSelectingVideo, handleFileInputChange, handleSelectVideoAndStart, handleDragOver, handleDragLeave, handleDrop, isDragOver } = useVideoUpload(fileInputRef, onCustomVideoUploaded, recordedFile, clearRecording, initialUploadFile);
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (hasMoved) return; // Do not trigger click/deselection if user was dragging to pan
     if (e.target !== e.currentTarget && (e.target as HTMLElement).closest('[role="button"]')) {
       return;
     }
@@ -356,10 +380,23 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )}
 
-      {/* 2 & 3. VIDEO & CAMERA VIEWPORT WITH TRUE ASPECT RATIO */}
-      {(hasActiveVideo || hasCameraRecording || (isCameraSource && isCameraConnected && isStreaming)) && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-auto bg-black">
-          <div className="relative shrink-0" style={fittedRect} onClick={handleCanvasClick}>
+      {/* 2 & 3. VIDEO & CAMERA VIEWPORT WITH TRUE ASPECT RATIO & ZOOM/PAN */}
+      {isMediaActive && (
+        <div
+          ref={viewportRef}
+          onMouseDown={handleMouseDown}
+          onDoubleClick={handleDoubleClick}
+          className="absolute inset-0 flex items-center justify-center pointer-events-auto bg-black overflow-hidden select-none"
+          style={{ cursor: cursorStyle }}
+        >
+          <div
+            className="relative shrink-0"
+            style={{
+              ...fittedRect,
+              ...transformStyle,
+            }}
+            onClick={handleCanvasClick}
+          >
             {/* BACKDROP: Cached or stopped frame rendered as a reliable persistent background */}
             {effectiveBackdrop && (
               <img
@@ -511,6 +548,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           onClearCustomVideo={onClearCustomVideo}
           labelMode={labelMode}
           onLabelModeChange={setLabelMode}
+          zoom={zoom}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          onResetZoom={resetZoom}
+          onSetZoom={setZoomLevel}
         />
       )}
 
@@ -521,6 +563,19 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           backendStatus={backendStats?.status}
           tubes={tubes}
         />
+      )}
+
+      {/* Floating Bottom-Right Corner Zoom Controls: Always prominent and accessible on canvas */}
+      {!isOverlayShowing && showHUD && isMediaActive && (
+        <div className="absolute bottom-3.5 right-3.5 sm:bottom-4 sm:right-4 z-30 pointer-events-auto">
+          <ZoomControls
+            zoom={zoom}
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onResetZoom={resetZoom}
+            onSetZoom={setZoomLevel}
+          />
+        </div>
       )}
     </div>
   );

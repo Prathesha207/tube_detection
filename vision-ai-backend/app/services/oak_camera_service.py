@@ -52,7 +52,7 @@ class OakCameraService:
         self._control_queue = None
 
         # ---- Inter-thread queue (hires capture -> converter) ----
-        self._hires_packet_queue: Queue = Queue(maxsize=1000)
+        self._hires_packet_queue: Queue = Queue(maxsize=16)
 
         # ---- Offline frame queue (synchronized, every frame processed once) ----
         self._offline_frame_queue: Queue = Queue(maxsize=32) 
@@ -84,6 +84,11 @@ class OakCameraService:
         self.current_fps: float = 0.0
         self._configured_fps: int = 30
         self._ae_limit_us: int | None = None  # None = manual mode
+        self.current_exposure_us: int = 10000  # Default 10ms manual shutter
+        self.current_gain: int = 100          # Default ISO 100 manual gain
+        self.current_focus: int = 120         # Default lens position (0-255)
+        self.auto_exposure_enabled: bool = True
+        self.auto_focus_enabled: bool = True
 
         # ---- Recording ----
         self._active_recording = None  # RecordingSession instance when active
@@ -126,6 +131,25 @@ class OakCameraService:
                 self.device.setLogLevel(dai.LogLevel.WARN)
                 self.device.setLogOutputLevel(dai.LogLevel.WARN)
                 self.is_connected = True
+
+                try:
+                    usb_speed = self.device.getUsbSpeed()
+                    logger.info(f"[DEVICE] Connected link speed: {usb_speed}")
+                    if usb_speed == dai.UsbSpeed.HIGH:
+                        logger.warning(
+                            "[DEVICE] ⚠️ Camera connected via USB 2.0 (HIGH speed: ~35-40 MB/s). "
+                            "Uncompressed 1080p stream exceeds USB 2.0 bandwidth and will cause X_LINK_ERROR. "
+                            "Please connect camera to a blue USB 3.0 port using a USB 3.0 SuperSpeed cable."
+                        )
+                        realtime_log_service.add_log(
+                            "camera",
+                            "WARN",
+                            "OAK connected at USB 2.0 speed! Use a USB 3.0 port and cable for stability.",
+                            "warning"
+                        )
+                except Exception as speed_err:
+                    logger.debug(f"[DEVICE] Could not determine USB speed: {speed_err}")
+
                 logger.info(f"[DEVICE] Connected to {ip}")
                 realtime_log_service.add_log(
                     "camera",
@@ -133,13 +157,28 @@ class OakCameraService:
                     f"Camera connected ({ip})",
                     "success"
                 )
+                self._last_connection_error = None
                 return True
             except Exception as e:
                 err_str = str(e)
-                if attempt == 0 and ("already used" in err_str.lower() or "in use" in err_str.lower()):
-                    logger.warning(f"[DEVICE] Device is reported in use, waiting 1.5s to retry: {e}")
-                    await asyncio.sleep(1.5)
-                    continue
+                if "already used" in err_str.lower() or "in use" in err_str.lower():
+                    clean_msg = "Device is already used by another application/process. Make sure to close all applications/processes using the device before starting a new one."
+                    self._last_connection_error = clean_msg
+                    if attempt == 0:
+                        logger.warning(f"[DEVICE] Device is reported in use, waiting 1.5s to retry: {clean_msg}")
+                        await asyncio.sleep(1.5)
+                        continue
+                    else:
+                        logger.warning(f"[DEVICE] Connection failed: {clean_msg}")
+                        realtime_log_service.add_log(
+                            "camera",
+                            "CAMERA",
+                            clean_msg,
+                            "error"
+                        )
+                        self.is_connected = False
+                        return False
+
                 logger.error(f"[DEVICE] Connection failed: {e}")
                 realtime_log_service.add_log(
                     "camera",
@@ -150,7 +189,7 @@ class OakCameraService:
                 self.is_connected = False
                 self._last_connection_error = err_str
                 return False
-        self._last_connection_error = "Failed after retries"
+        self._last_connection_error = self._last_connection_error or "Failed after retries"
         return False
 
     @staticmethod
@@ -303,6 +342,22 @@ class OakCameraService:
                 init_ctrl.setContrast(hw_c)
                 logger.info(f"[PIPELINE] Manual: exp={exposure}, gain={gain}, focus={focus}")
 
+            is_usb2 = False
+            if self.device is not None:
+                try:
+                    if self.device.getUsbSpeed() == dai.UsbSpeed.HIGH:
+                        is_usb2 = True
+                        logger.warning(
+                            "[PIPELINE] ⚠️ Detected USB 2.0 connection. "
+                            "Uncompressed 1080p @ 30fps requires ~93 MB/s which exceeds USB 2.0 bandwidth (~35 MB/s). "
+                            "Throttling raw frame output rate to 10 FPS to prevent XLink communication buffer overflows. "
+                            "Please connect camera to a blue USB 3.0 port with a SuperSpeed cable for full 30 FPS."
+                        )
+                except Exception:
+                    pass
+
+            raw_fps = min(fps, 10) if is_usb2 else fps
+
             encoder = pipeline.create(dai.node.VideoEncoder)
             encoder.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.MJPEG)
 
@@ -317,14 +372,14 @@ class OakCameraService:
 
                 # --- Node 2: Raw NV12 → inference / recording ---
                 raw_out = cam.requestOutput(
-                    (width, height), type=dai.ImgFrame.Type.NV12, fps=fps
+                    (width, height), type=dai.ImgFrame.Type.NV12, fps=raw_fps
                 )
-                self._raw_dai_queue = raw_out.createOutputQueue(maxSize=4, blocking=False)
-                logger.info("[PIPELINE] Node 2: Raw NV12 ready")
+                self._raw_dai_queue = raw_out.createOutputQueue(maxSize=2, blocking=False)
+                logger.info(f"[PIPELINE] Node 2: Raw NV12 ready (fps={raw_fps})")
             else:
                 cam.video.link(encoder.input)
                 self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
-                self._raw_dai_queue = cam.video.createOutputQueue(maxSize=4, blocking=False)
+                self._raw_dai_queue = cam.video.createOutputQueue(maxSize=2, blocking=False)
                 logger.info("[PIPELINE] ColorCamera outputs wired successfully")
 
             # --- Camera control input ---
@@ -354,6 +409,52 @@ class OakCameraService:
                 self._raw_dai_queue = None
                 self._control_queue = None
             logger.info("[PIPELINE] Cleaned up")
+
+    def _on_device_lost(self, reason: str = "Device disconnected") -> None:
+        """Central teardown when DepthAI device disconnects, XLink crashes, or queues close."""
+        with self._pipeline_lock:
+            if not self._is_running and not self.is_connected:
+                return
+            logger.warning(f"[DEVICE] Teardown triggered: {reason}")
+            self._is_running = False
+            self.is_connected = False
+            self._is_streaming = False
+
+            # Signal capture & inference loops to stop
+            self._mjpeg_stop.set()
+            self._hires_stop.set()
+            self._convert_stop.set()
+            self._inference_stop.set()
+
+            # Invalidate queues so callers know device is unavailable
+            self._mjpeg_dai_queue = None
+            self._raw_dai_queue = None
+            self._control_queue = None
+            self._pipeline = None
+
+            # Wake up any streaming client queues with None sentinel so generators exit cleanly
+            for q in list(self._stream_subscribers):
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            self._stream_subscribers.clear()
+            self._stream_queue = None
+
+            # Close device handle safely if not already closed
+            if self.device is not None:
+                try:
+                    self.device.close()
+                except Exception:
+                    pass
+                self.device = None
+
+            realtime_log_service.add_log(
+                "camera",
+                "CAMERA",
+                f"Camera device disconnected: {reason}",
+                "error"
+            )
 
     
 
@@ -390,8 +491,8 @@ class OakCameraService:
     # ==================== Capture Threads ====================
 
     def _start_capture_threads(self) -> bool:
-        if not self._is_running:
-            logger.error("[CAPTURE] Cannot start — pipeline not running")
+        if not self._is_running or not self.is_connected or self._mjpeg_dai_queue is None:
+            logger.warning("[CAPTURE] Cannot start — pipeline or device queue not running")
             return False
 
         mjpeg_alive = self._mjpeg_thread and self._mjpeg_thread.is_alive()
@@ -518,11 +619,16 @@ class OakCameraService:
 
 
         except Exception as e:
-            logger.error(f"[MJPEG] Thread error: {e}", exc_info=True)
+            err_msg = str(e)
+            if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
+                logger.warning(f"[MJPEG] Device connection lost: {err_msg}")
+            else:
+                logger.error(f"[MJPEG] Thread error: {e}", exc_info=True)
+            self._on_device_lost(f"MJPEG queue closed: {err_msg}")
             realtime_log_service.add_log(
                 "stream",
                 "NETWORK",
-                "MJPEG Thread error",
+                "MJPEG Thread disconnected",
                 "error"
             )
         finally:
@@ -556,7 +662,12 @@ class OakCameraService:
                         pass
 
         except Exception as e:
-            logger.error(f"[HIRES] Thread error: {e}", exc_info=True)
+            err_msg = str(e)
+            if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
+                logger.warning(f"[HIRES] Device connection lost: {err_msg}")
+            else:
+                logger.error(f"[HIRES] Thread error: {e}", exc_info=True)
+            self._on_device_lost(f"Hi-res queue closed: {err_msg}")
         finally:
             logger.info("[HIRES] Thread ended")
 
@@ -741,23 +852,41 @@ class OakCameraService:
         auto_focus: bool | None = None,
         auto_exposure: bool | None = None,
     ) -> None:
+        """Update hardware camera controls (Exposure, Gain, Focus, Brightness, Contrast)."""
+        # 1. Update internal state
         if brightness is not None:
-            self.current_brightness = int(brightness)
-            logger.info(f"[CONTROL] Brightness={brightness}")
+            self.current_brightness = max(-50, min(50, int(brightness)))
 
         if contrast is not None:
-            self.current_contrast = int(contrast)
-            logger.info(f"[CONTROL] Contrast={contrast}")
+            self.current_contrast = max(0, min(100, int(contrast)))
 
-        if self._control_queue is None:
-            logger.warning("[CONTROL] DepthAI device queue not available — software adjustments active")
+        if gain is not None:
+            self.current_gain = max(100, min(1600, int(gain)))
+
+        if focus is not None:
+            self.current_focus = max(0, min(255, int(focus)))
+
+        if exposure is not None:
+            val = int(exposure)
+            if val <= 100:
+                exp_us = val * 1000
+            elif val < 1000:
+                exp_us = val * 1000
+            else:
+                exp_us = val
+            max_period_us = max(1000, int(1_000_000 / max(self._configured_fps, 1)))
+            self.current_exposure_us = max(100, min(max_period_us, exp_us))
+
+        if not self._is_running or not self.is_connected or self._control_queue is None:
             return
 
         ctrl = dai.CameraControl()
+        should_send = False
 
-        # --- Exposure Control ---
-        # If auto_exposure is explicitly True, or auto_exposure is not requested and exposure <= 0:
-        if auto_exposure is True:
+        # 2. Exposure & Gain Logic
+        if auto_exposure is True and exposure is None and gain is None:
+            self.auto_exposure_enabled = True
+            self.control_mode = "auto"
             try:
                 ctrl.setAutoExposureEnable()
                 if self._ae_limit_us is not None:
@@ -765,88 +894,72 @@ class OakCameraService:
                         ctrl.setAutoExposureLimit(self._ae_limit_us)
                     except Exception:
                         pass
-                self.control_mode = "auto"
-                logger.info(f"[CONTROL] AutoExposure=ENABLED (ae_limit={self._ae_limit_us}us)")
+                should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
-        elif auto_exposure is False and exposure is not None:
-            exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
-            # Default gain to base ISO 100 if not specified (NOT 400, which blows out image)
-            gain_val = int(gain if gain is not None else 100)
+        elif auto_exposure is False or exposure is not None or gain is not None:
+            self.auto_exposure_enabled = False
+            self.control_mode = "manual"
             try:
                 ctrl.setAutoExposureLock(False)
-                ctrl.setManualExposure(exp_us, gain_val)
-                self.control_mode = "manual"
-                logger.info(f"[CONTROL] Manual Exposure={exp_us}us, Gain={gain_val}")
+                ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
+                should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setManualExposure failed: {e}")
-        elif auto_exposure is None and exposure is not None:
-            if exposure <= 0:
-                try:
-                    ctrl.setAutoExposureEnable()
-                    if self._ae_limit_us is not None:
-                        ctrl.setAutoExposureLimit(self._ae_limit_us)
-                    self.control_mode = "auto"
-                    logger.info("[CONTROL] Exposure<=0 -> AutoExposure=ENABLED")
-                except Exception as e:
-                    logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
-            else:
-                exp_us = int(exposure) * 1000 if int(exposure) < 10000 else int(exposure)
-                gain_val = int(gain if gain is not None else 100)
-                try:
-                    ctrl.setAutoExposureLock(False)
-                    ctrl.setManualExposure(exp_us, gain_val)
-                    self.control_mode = "manual"
-                    logger.info(f"[CONTROL] Exposure={exp_us}us, Gain={gain_val}")
-                except Exception as e:
-                    logger.warning(f"[CONTROL] setManualExposure failed: {e}")
 
-        # --- Focus Control ---
-        if auto_focus is not None:
+        # 3. Focus Logic (Both auto_focus toggle and manual focus position)
+        if auto_focus is True and focus is None:
+            self.auto_focus_enabled = True
             try:
-                if auto_focus:
-                    ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-                    try:
-                        ctrl.setAutoFocusTrigger()
-                    except Exception:
-                        pass
-                    logger.info("[CONTROL] AutoFocus=CONTINUOUS_VIDEO (trigger sent)")
-                else:
-                    ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                    logger.info("[CONTROL] AutoFocus=OFF")
+                ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+                try:
+                    ctrl.setAutoFocusTrigger()
+                except Exception:
+                    pass
+                should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setAutoFocusMode failed: {e}")
-        elif focus is not None:
+        elif auto_focus is False or focus is not None:
+            self.auto_focus_enabled = False
             try:
                 ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                ctrl.setManualFocus(int(focus))
-                logger.info(f"[CONTROL] Focus={focus}")
+                ctrl.setManualFocus(self.current_focus)
+                should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setManualFocus failed: {e}")
 
-        # --- Hardware Brightness (-10 to 10) ---
+        # 4. Hardware Brightness (-10 to 10)
         if brightness is not None:
             try:
                 hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
                 ctrl.setBrightness(hw_b)
-                logger.info(f"[CONTROL] Hardware Brightness={hw_b}")
+                should_send = True
             except Exception as e:
                 logger.debug(f"[CONTROL] setBrightness failed: {e}")
 
-        # --- Hardware Contrast (-10 to 10) ---
+        # 5. Hardware Contrast (-10 to 10)
         if contrast is not None:
             try:
                 hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
                 ctrl.setContrast(hw_c)
-                logger.info(f"[CONTROL] Hardware Contrast={hw_c}")
+                should_send = True
             except Exception as e:
                 logger.debug(f"[CONTROL] setContrast failed: {e}")
 
-        try:
-            self._control_queue.send(ctrl)
-            logger.info("[CONTROL] Sent to device")
-        except Exception as e:
-            logger.warning(f"[CONTROL] Device send failed: {e}")
+        # 6. Send to device
+        if should_send:
+            try:
+                self._control_queue.send(ctrl)
+                logger.info(
+                    f"[CONTROL] Dispatched -> exp={self.current_exposure_us}µs, "
+                    f"gain={self.current_gain} ISO, focus={self.current_focus}, "
+                    f"auto_exp={self.auto_exposure_enabled}, auto_focus={self.auto_focus_enabled}"
+                )
+            except Exception as e:
+                if "closed" in str(e).lower() or "xlink" in str(e).lower():
+                    self._on_device_lost("Control queue closed")
+                else:
+                    logger.warning(f"[CONTROL] Device send failed: {e}")
 
     # ==================== Inference ====================
 
@@ -1694,12 +1807,21 @@ class OakCameraService:
         """App startup — connect device and build pipeline only. Does NOT start capture threads."""
         async with self._lifecycle_lock:
             if self._is_running:
-                logger.warning("[START] Pipeline already running")
+                logger.info("[START] Pipeline already running")
                 return {"status": "already_running"}
 
             try:
                 if not self.is_connected:
                     if not await self.connect(config.ip_address):
+                        # If device is already in use by another process, do NOT attempt USB fallback
+                        # as it will only repeat the exact same failure and spam logs.
+                        if "already used" in (self._last_connection_error or "").lower() or "in use" in (self._last_connection_error or "").lower():
+                            return {
+                                "status": "error",
+                                "message": self._last_connection_error or "Device is already used by another application/process. Make sure to close all applications/processes using the device before starting a new one.",
+                                "error_code": "DEVICE_IN_USE",
+                            }
+
                         # Older databases may select a locked/unavailable
                         # network camera as the newest row. Prefer a local USB
                         # OAK when one is available so startup still works.
@@ -1709,9 +1831,9 @@ class OakCameraService:
                                 f"[START] Could not connect to {config.ip_address}; trying USB OAK"
                             )
                             if not await self.connect("usb"):
-                                return {"status": "error", "message": "Device connection failed"}
+                                return {"status": "error", "message": self._last_connection_error or "Device connection failed"}
                         else:
-                            return {"status": "error", "message": "Device connection failed"}
+                            return {"status": "error", "message": self._last_connection_error or "Device connection failed"}
 
                 self.current_brightness = int(config.brightness or 0)
                 self.current_contrast = int(config.contrast if config.contrast is not None and config.contrast != 0 else 50)
@@ -1791,8 +1913,7 @@ class OakCameraService:
         if self._ae_limit_us is None:
             logger.info("[AE] Control mode is manual — no AE limit to enforce")
             return
-        if self._control_queue is None:
-            logger.warning("[AE] Control queue not available — cannot enforce AE limit")
+        if not self._is_running or not self.is_connected or self._control_queue is None:
             return
         try:
             ctrl = dai.CameraControl()
@@ -1805,7 +1926,10 @@ class OakCameraService:
                 f"guarantees {self._configured_fps} fps)"
             )
         except Exception as e:
-            logger.warning(f"[AE] Runtime AE limit failed: {e}")
+            if "closed" in str(e).lower() or "xlink" in str(e).lower():
+                self._on_device_lost("Control queue closed during AE enforcement")
+            else:
+                logger.warning(f"[AE] Runtime AE limit failed: {e}")
 
     # ==================== Stream Lifecycle (capture threads) ====================
 
@@ -1871,6 +1995,7 @@ class OakCameraService:
             "inference_watchdog_thread": bool(self._inference_watchdog_thread and self._inference_watchdog_thread.is_alive()),
             "streaming": self._is_streaming,
             "fps": round(self.current_fps, 1),
+            "last_error": getattr(self, "_last_connection_error", None),
         }
 
 

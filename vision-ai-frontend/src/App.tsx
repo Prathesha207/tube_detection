@@ -179,6 +179,7 @@ export default function App() {
     addLog('Step 1/3: Starting OAK Camera device (POST /oak/start)...', 'info');
 
     try {
+      camera.setCameraError(null);
       const startRes = await cameraService.start();
       if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
 
@@ -196,15 +197,18 @@ export default function App() {
 
       camera.setCameraStartingState('ready');
       setIsRunning(true);
+      camera.setCameraError(null);
       showToast('success', 'Camera inference started successfully');
       addLog('Step 3/3: First live frame received (1080p). Starting inference • YOLO active.', 'success');
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to start camera pipeline:', error);
       camera.setCameraStartingState('ready');
       setIsRunning(false);
-      showToast('error', 'Failed to start camera device');
-      addLog('Error: Failed to connect to OAK stream or live inference.', 'error');
+      const errMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message || 'Failed to start camera device';
+      camera.setCameraError(errMsg);
+      showToast('error', errMsg);
+      addLog(`Error: ${errMsg}`, 'error');
       return false;
     }
   };
@@ -858,6 +862,7 @@ export default function App() {
               cameraTargetFps={camera.effectiveCameraConfig.targetFps || 30}
               recordingFormat={camera.effectiveCameraConfig.recordingFormat || 'MP4'}
               cameraConfig={camera.effectiveCameraConfig}
+              cameraError={camera.cameraError}
             />
           </main>
 
@@ -1015,8 +1020,10 @@ export default function App() {
             camera.setIsCameraDeviceActive(false);
             camera.setIsStreaming(false);
             camera.setCameraConnected(false);
-            showToast('error', err.message || 'Failed to connect to camera');
-            addLog(`Failed to connect to camera: ${err.message || 'Unknown error'}`, 'error');
+            const errMsg = err?.response?.data?.message || err?.response?.data?.detail || err?.message || 'Failed to connect to camera';
+            camera.setCameraError(errMsg);
+            showToast('error', errMsg);
+            addLog(`Failed to connect to camera: ${errMsg}`, 'error');
             throw err;
           }
         }}

@@ -23,6 +23,8 @@ from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import TubeAnalyzer
 
+logger = setup_logger("tube-video-inference")
+
 from pathlib import Path
 
 _TUBE_DIR = Path(__file__).resolve().parent.parent

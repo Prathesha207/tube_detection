@@ -63,6 +63,7 @@ interface DetectionCanvasProps {
   cameraRecordUrl?: string;
   cameraRecordName?: string;
   onClearCameraRecord?: () => void;
+  cameraError?: string | null;
   cameraTargetFps?: number;
   recordingFormat?: 'AVI' | 'MP4' | 'FFV1';
   cameraConfig?: CameraConfig;
@@ -111,6 +112,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   onClearCameraRecord,
   cameraTargetFps,
   recordingFormat = 'MP4',
+  cameraError,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -369,6 +371,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             }
           })}
           onCanvasClick={handleCanvasClick}
+          errorMessage={cameraError}
         />
       )}
 

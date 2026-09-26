@@ -16,6 +16,7 @@ export function useCameraStatus(
   const [cameraStartingState, setCameraStartingState] = useState<'idle' | 'waking_camera' | 'waiting_frame' | 'ready'>('idle');
   const [cameraConnected, setCameraConnected] = useState<boolean | null>(null);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Automatically fetch latest saved camera from database on mount / refresh
   useEffect(() => {
@@ -70,6 +71,11 @@ export function useCameraStatus(
             setCameraConfig((prev) => (prev.connected !== isOnline ? { ...prev, connected: isOnline } : prev));
             setIsCameraDeviceActive(isOnline);
             setCameraConnected(isOnline);
+            if (data.last_error) {
+              setCameraError(data.last_error);
+            } else if (isOnline) {
+              setCameraError(null);
+            }
             // Only force false if the hardware is completely offline
             if (!isOnline) {
               setIsStreaming(false);
@@ -110,6 +116,7 @@ export function useCameraStatus(
   const startCameraStream = async () => {
     setCameraStartingState('waking_camera');
     try {
+      setCameraError(null);
       if (!isCameraDeviceActive) {
         const startRes = await cameraService.start();
         if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
@@ -119,12 +126,15 @@ export function useCameraStatus(
       if (streamRes?.status === 'error') throw new Error(streamRes.message || 'Stream start failed');
       setIsStreaming(true);
       setCameraStartingState('ready');
+      setCameraError(null);
       showToast('success', 'Camera stream started');
       addLog('Camera stream started. Ready for display or inference.', 'success');
-    } catch (error) {
+    } catch (error: any) {
       setCameraStartingState('ready');
-      showToast('error', error instanceof Error ? error.message : 'Unable to start camera stream');
-      addLog('Camera stream failed to start.', 'error');
+      const errMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message || 'Unable to start camera stream';
+      setCameraError(errMsg);
+      showToast('error', errMsg);
+      addLog(`Error: ${errMsg}`, 'error');
     }
   };
 
@@ -159,6 +169,8 @@ export function useCameraStatus(
     setIsStreaming,
     effectiveCameraConfig,
     startCameraStream,
-    stopCameraStream
+    stopCameraStream,
+    cameraError,
+    setCameraError
   };
 }

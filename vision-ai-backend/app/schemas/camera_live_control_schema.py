@@ -11,3 +11,5 @@ class CameraLiveControl(BaseModel):
     contrast: Optional[int] = None
     auto_focus: Optional[bool] = None
     autoFocus: Optional[bool] = None
+    auto_exposure: Optional[bool] = None
+    autoExposure: Optional[bool] = None

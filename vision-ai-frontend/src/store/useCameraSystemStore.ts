@@ -90,11 +90,11 @@ export type BasicConfig = {
 /* ================= DEFAULTS ================= */
 
 const DEFAULT_CONTROLS = {
-    exposure: 100,
-    gain: 0,
-    focus: 0,
+    exposure: 10,
+    gain: 100,
+    focus: 120,
     brightness: 0,
-    contrast: 0,
+    contrast: 50,
 };
 
 /* ================= STORE ================= */
@@ -227,13 +227,21 @@ export const useCameraSystemStore = create<StoreState>()(
                     await cameraService.start();
 
                     set({ isConnecting: false, retryCount: 0 });
-                } catch (err) {
+                } catch (err: any) {
                     console.error("Camera start failed:", err);
+                    const isDeviceInUse = err?.message?.toLowerCase().includes("already used") || err?.message?.toLowerCase().includes("in use");
+
+                    if (isDeviceInUse) {
+                        set({ isConnecting: false });
+                        showToast(
+                            "error",
+                            err.message || "Camera device is already in use by another application/process."
+                        );
+                        return;
+                    }
 
                     if (retryCount < maxRetries) {
                         const delay = Math.min(1000 * 2 ** retryCount, 10000);
-
-                        
 
                         set({
                             retryCount: retryCount + 1,

@@ -141,9 +141,10 @@ async def stream(request: Request, session_id: Optional[str] = None):
         )
 
     # Ensure capture threads are active so frames are actively produced
-    if not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()):
-        logger.info("[STREAM] Capture threads not running — starting them now")
-        oak_camera_service._start_capture_threads()
+    if oak_camera_service._is_running and oak_camera_service.is_connected:
+        if not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()):
+            logger.info("[STREAM] Capture threads not running — starting them now")
+            oak_camera_service._start_capture_threads()
 
     oak_camera_service._is_streaming = True
     client_queue = oak_camera_service.subscribe_stream()
@@ -158,24 +159,31 @@ async def stream(request: Request, session_id: Optional[str] = None):
                     logger.info(f"[STREAM] Client disconnected — frames sent: {frames_sent}")
                     break
 
-                if not oak_camera_service._is_streaming:
-                    logger.info(f"[STREAM] Stream stopped — ending client stream cleanly (frames sent: {frames_sent})")
+                if not oak_camera_service._is_streaming or not oak_camera_service._is_running or not oak_camera_service.is_connected:
+                    logger.info(f"[STREAM] Stream stopped or camera disconnected — ending client stream (frames sent: {frames_sent})")
                     break
 
                 try:
                     jpeg = await asyncio.wait_for(client_queue.get(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    if not oak_camera_service._is_running or not oak_camera_service._is_streaming:
+                    if not oak_camera_service._is_running or not oak_camera_service._is_streaming or not oak_camera_service.is_connected:
+                        logger.info(f"[STREAM] Camera stopped or disconnected on timeout — ending client stream (frames sent: {frames_sent})")
                         break
-                    # If capture threads died while streaming is active, attempt restart
-                    if oak_camera_service._is_streaming and not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()):
+                    # If capture threads died while streaming is active, attempt restart ONLY if pipeline & queues are healthy
+                    if (
+                        oak_camera_service._is_streaming
+                        and oak_camera_service._is_running
+                        and oak_camera_service.is_connected
+                        and oak_camera_service._mjpeg_dai_queue is not None
+                        and not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive())
+                    ):
+                        logger.info("[STREAM] Attempting to restart capture threads")
                         oak_camera_service._start_capture_threads()
                     continue
 
                 if jpeg is None:
-                    if not oak_camera_service._is_streaming:
-                        break
-                    continue
+                    logger.info(f"[STREAM] Stream termination sentinel received — ending client stream (frames sent: {frames_sent})")
+                    break
 
                 yield (
                     b"--frame\r\n"

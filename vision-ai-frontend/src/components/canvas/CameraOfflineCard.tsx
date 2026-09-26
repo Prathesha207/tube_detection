@@ -5,13 +5,32 @@ interface CameraOfflineCardProps {
   onSwitchToVideo: () => void;
   onRetryConnection?: () => void;
   onCanvasClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  errorMessage?: string | null;
 }
 
 export const CameraOfflineCard: React.FC<CameraOfflineCardProps> = ({
   onSwitchToVideo,
   onRetryConnection,
-  onCanvasClick
+  onCanvasClick,
+  errorMessage,
 }) => {
+  const isDeviceInUse = Boolean(
+    errorMessage?.toLowerCase().includes('already used') || 
+    errorMessage?.toLowerCase().includes('in use')
+  );
+
+  const badgeText = isDeviceInUse 
+    ? 'DEVICE IN USE BY ANOTHER PROCESS' 
+    : (errorMessage ? 'CAMERA UNAVAILABLE' : 'NO OAK CAMERA DETECTED');
+
+  const titleText = isDeviceInUse
+    ? 'Camera Already In Use'
+    : (errorMessage ? 'Camera Connection Failed' : 'OAK-D Hardware Offline');
+
+  const descriptionText = isDeviceInUse
+    ? 'Device is already used by another application/process. Make sure to close all applications/processes using the device before starting a new one.'
+    : (errorMessage || 'No Luxonis OAK-D / USB camera is currently connected. Connect a DepthAI device or switch back to Video mode to run inference.');
+
   return (
     <div 
       onClick={onCanvasClick}
@@ -26,14 +45,14 @@ export const CameraOfflineCard: React.FC<CameraOfflineCardProps> = ({
       {/* Status Badge: theme style, not a round pill */}
       <div className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1 rounded-lg bg-[var(--status-anomaly-bg)] border border-[var(--status-anomaly-border)] text-[var(--status-anomaly-text)] text-[10px] sm:text-xs font-mono font-semibold mb-2.5 shadow-xs">
         <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-anomaly-text)] animate-pulse" />
-        NO OAK CAMERA DETECTED
+        {badgeText}
       </div>
 
       <h3 className="text-lg sm:text-xl lg:text-2xl font-bold text-[var(--text-primary)] mb-1 sm:mb-2 shrink-0">
-        OAK-D Hardware Offline
+        {titleText}
       </h3>
       <p className="text-xs sm:text-sm lg:text-base text-[var(--text-secondary)] max-w-md mb-5 leading-relaxed font-medium">
-        No Luxonis OAK-D / USB camera is currently connected. Connect a DepthAI device or switch back to Video mode to run inference.
+        {descriptionText}
       </p>
 
       <div className="flex flex-wrap items-center justify-center gap-2.5">

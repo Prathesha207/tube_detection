@@ -653,73 +653,166 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         )}
 
         {activeTab === 'image' && (
-          <div className="space-y-3 p-0.5">
-            <div>
-              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)] mb-1">
-                <span>Brightness</span>
-                <span className="font-mono text-[var(--accent-pond)] font-bold">{localConfig.brightness}</span>
+          <div className="space-y-3.5 p-0.5">
+            {/* 1. SENSOR GAIN (ISO) */}
+            <div className="p-2.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                  <span>Sensor Gain (ISO)</span>
+                </div>
+                <span className="font-mono text-xs font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">
+                  ISO {localConfig.gain ?? localConfig.iso ?? 100}
+                </span>
               </div>
               <input
                 type="range"
-                min={-50}
-                max={50}
-                value={localConfig.brightness}
-                onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10) })}
-                style={getSliderStyle(localConfig.brightness, -50, 50)}
+                min={100}
+                max={1600}
+                step={10}
+                value={localConfig.gain ?? localConfig.iso ?? 100}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setLocalConfig({ ...localConfig, gain: val, iso: val, autoExposure: false });
+                }}
+                style={getSliderStyle(localConfig.gain ?? localConfig.iso ?? 100, 100, 1600)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
+              <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
+                <span>100 (Clean)</span>
+                <span>400 (Standard)</span>
+                <span>800 (Boost)</span>
+                <span>1600 (Max)</span>
+              </div>
             </div>
 
-            <div>
-              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)] mb-1">
-                <span>Contrast</span>
-                <span className="font-mono text-[var(--accent-pond)] font-bold">{localConfig.contrast}</span>
+            {/* 2. FOCUS (LENS POSITION) */}
+            <div className="p-2.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500" />
+                  <span>Focus Lens Position</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocalConfig({ ...localConfig, autoFocus: !localConfig.autoFocus });
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                      localConfig.autoFocus
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]'
+                    }`}
+                  >
+                    {localConfig.autoFocus ? 'AUTO (AF)' : 'MANUAL'}
+                  </button>
+                  <span className="font-mono text-xs font-bold text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded">
+                    {localConfig.focus ?? 120} / 255
+                  </span>
+                </div>
               </div>
               <input
                 type="range"
                 min={0}
-                max={100}
-                value={localConfig.contrast}
-                onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10) })}
-                style={getSliderStyle(localConfig.contrast, 0, 100)}
+                max={255}
+                step={1}
+                value={localConfig.focus ?? 120}
+                onChange={(e) => {
+                  setLocalConfig({ ...localConfig, focus: parseInt(e.target.value, 10), autoFocus: false });
+                }}
+                style={getSliderStyle(localConfig.focus ?? 120, 0, 255)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
+              <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
+                <span>0 (Far / Infinity)</span>
+                <span>120 (Standard)</span>
+                <span>255 (Macro / Close)</span>
+              </div>
             </div>
 
-            <div>
-              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)] mb-1">
-                <span>Exposure Time</span>
-                <span className="font-mono text-[var(--accent-pond)] font-bold">{localConfig.exposure} ms</span>
+            {/* 3. EXPOSURE (SHUTTER TIME) */}
+            <div className="p-2.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                  <span>Exposure Shutter Time</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocalConfig({ ...localConfig, autoExposure: !localConfig.autoExposure });
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                      localConfig.autoExposure
+                        ? 'bg-[var(--accent-pond)] text-white shadow-xs'
+                        : 'bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]'
+                    }`}
+                  >
+                    {localConfig.autoExposure ? 'AUTO (AE)' : 'MANUAL'}
+                  </button>
+                  <span className="font-mono text-xs font-bold text-[var(--accent-pond)] bg-[var(--accent-pond-subtle)] px-2 py-0.5 rounded">
+                    {localConfig.exposure ?? 10} ms
+                  </span>
+                </div>
               </div>
               <input
                 type="range"
-                min={10}
-                max={100}
-                value={localConfig.exposure}
-                onChange={(e) => setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10) })}
-                style={getSliderStyle(localConfig.exposure, 10, 100)}
+                min={1}
+                max={33}
+                step={1}
+                value={localConfig.exposure ?? 10}
+                onChange={(e) => {
+                  setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10), autoExposure: false });
+                }}
+                style={getSliderStyle(localConfig.exposure ?? 10, 1, 33)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
+              <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
+                <span>1 ms (Fast)</span>
+                <span>16 ms (Mid)</span>
+                <span>33 ms (Max Light)</span>
+              </div>
             </div>
 
-            <div className="flex items-center justify-between pt-1.5 border-t border-[var(--border-color)]">
+            {/* 4. TONE CONTROLS (Brightness & Contrast) */}
+            <div className="pt-2 border-t border-[var(--border-color)] space-y-3">
               <div>
-                <span className="text-xs font-bold text-[var(--text-primary)] block">Continuous Auto-Focus</span>
-                <span className="text-[10px] text-[var(--text-muted)]">Automatic lens focus adjustment</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setLocalConfig({ ...localConfig, autoFocus: !localConfig.autoFocus });
-                }}
-                className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${localConfig.autoFocus ? 'bg-[var(--accent-pond)]' : 'bg-[var(--btn-secondary-border)]'
-                  }`}
-              >
-                <span
-                  className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${localConfig.autoFocus ? 'translate-x-5' : 'translate-x-0'
-                    }`}
+                <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] mb-1">
+                  <span>Brightness</span>
+                  <span className="font-mono text-xs font-bold text-[var(--text-primary)]">
+                    {(localConfig.brightness ?? 0) > 0 ? `+${localConfig.brightness}` : (localConfig.brightness ?? 0)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-50}
+                  max={50}
+                  value={localConfig.brightness ?? 0}
+                  onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10) })}
+                  style={getSliderStyle(localConfig.brightness ?? 0, -50, 50)}
+                  className="w-full h-1.5 rounded cursor-pointer transition-all"
                 />
-              </button>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] mb-1">
+                  <span>Contrast</span>
+                  <span className="font-mono text-xs font-bold text-[var(--text-primary)]">
+                    {localConfig.contrast ?? 50}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={localConfig.contrast ?? 50}
+                  onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10) })}
+                  style={getSliderStyle(localConfig.contrast ?? 50, 0, 100)}
+                  className="w-full h-1.5 rounded cursor-pointer transition-all"
+                />
+              </div>
             </div>
           </div>
         )}

@@ -58,6 +58,9 @@ export const cameraService = {
 
   async start(payload?: { camera_id?: number; ip_address?: string }) {
     const res = await api.post("/oak/start", payload || {});
+    if (res.data?.status === 'error') {
+      throw new Error(res.data.message || 'Camera start failed');
+    }
     return res.data;
   },
 

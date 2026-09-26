@@ -78,7 +78,13 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
             setattr(camera, key, value)
 
         # Apply control mode AFTER update
-        if camera.control_mode == "auto":
+        if camera.exposure is not None or camera.gain is not None or camera.focus is not None:
+            camera.control_mode = "manual"
+            if camera.auto_exposure is None:
+                camera.auto_exposure = False
+            if camera.auto_focus is None:
+                camera.auto_focus = False
+        elif camera.control_mode == "auto":
             camera.exposure = None
             camera.gain = None
             camera.focus = None
@@ -90,6 +96,22 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
 
         db.commit()
         db.refresh(camera)
+
+        # Sync runtime controls to physical OAK camera if pipeline is currently active
+        try:
+            from app.services.oak_camera_service import oak_camera_service
+            if oak_camera_service.is_running:
+                oak_camera_service.update_controls(
+                    exposure=camera.exposure,
+                    gain=camera.gain,
+                    focus=camera.focus,
+                    brightness=camera.brightness,
+                    contrast=camera.contrast,
+                    auto_focus=camera.auto_focus,
+                    auto_exposure=camera.auto_exposure,
+                )
+        except Exception as sync_err:
+            logger.debug(f"[UPDATE_CAMERA] Dynamic control sync skipped: {sync_err}")
 
         logger.info("[UPDATE_CAMERA] Success")
         realtime_log_service.add_log(

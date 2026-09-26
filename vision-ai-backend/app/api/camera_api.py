@@ -141,12 +141,16 @@ def update_live_controls(camera_id: int, data: CameraLiveControl):
         return {"status": "error", "message": "Camera is not running"}
 
     try:
+        af = data.auto_focus if data.auto_focus is not None else data.autoFocus
+        ae = data.auto_exposure if data.auto_exposure is not None else data.autoExposure
         oak_camera_service.update_controls(
             exposure=data.exposure,
             gain=data.gain,
             focus=data.focus,
             brightness=data.brightness,
             contrast=data.contrast,
+            auto_focus=af,
+            auto_exposure=ae,
         )
         logger.info("[LIVE CONTROLS] Applied successfully")
         return {"status": "success", "message": "Live controls applied"}

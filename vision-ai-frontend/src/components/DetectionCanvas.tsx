@@ -125,6 +125,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
   const [isFirstFrameLoaded, setIsFirstFrameLoaded] = useState<boolean>(false);
   const [streamCacheBuster, setStreamCacheBuster] = useState<number>(Date.now());
+  const [streamError, setStreamError] = useState<boolean>(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -247,8 +248,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
     return customVideoUrl;
   }, [customVideoUrl, hasActiveVideo, isRunning, videoSessionId, streamCacheBuster]);
-
-  const [streamError, setStreamError] = useState<boolean>(false);
 
   useEffect(() => {
     setStreamError(false);

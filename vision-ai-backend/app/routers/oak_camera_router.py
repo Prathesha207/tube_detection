@@ -201,6 +201,8 @@ async def stream(request: Request, session_id: Optional[str] = None):
                         f"avg FPS: {frames_sent / max(elapsed, 1):.1f}"
                     )
 
+        except (asyncio.CancelledError, GeneratorExit):
+            logger.info(f"[STREAM] Client connection closed cleanly — frames sent: {frames_sent}")
         except Exception as e:
             logger.error(f"[STREAM] Generator error: {e}")
         finally:
@@ -234,12 +236,16 @@ async def snapshot():
     if frame is not None:
         return Response(content=frame, media_type="image/jpeg")
 
-    # 2. Try latest BGR frame from converter
+    # 2. Try latest BGR frame from converter (offloaded to thread executor)
     bgr = oak_camera_service.get_bgr_frame()
     if bgr is not None:
-        success, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if success:
-            return Response(content=buf.tobytes(), media_type="image/jpeg")
+        loop = asyncio.get_running_loop()
+        def _enc():
+            s, b = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            return b.tobytes() if s else None
+        buf = await loop.run_in_executor(None, _enc)
+        if buf is not None:
+            return Response(content=buf, media_type="image/jpeg")
 
     # 3. If capture threads are alive, wait briefly for frame
     if oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive():

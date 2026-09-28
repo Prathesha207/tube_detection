@@ -432,12 +432,19 @@ class OakCameraService:
             self._control_queue = None
             self._pipeline = None
 
-            # Wake up any streaming client queues with None sentinel so generators exit cleanly
+            # Wake up any streaming client queues with None sentinel so generators exit cleanly (thread-safe)
+            loop = self._server_loop
             for q in list(self._stream_subscribers):
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
+                if loop is not None and not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(q.put_nowait, None)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        q.put_nowait(None)
+                    except Exception:
+                        pass
             self._stream_subscribers.clear()
             self._stream_queue = None
 
@@ -568,16 +575,11 @@ class OakCameraService:
     def _mjpeg_loop(self) -> None:
         """Drains MJPEG DAI queue and pushes JPEG bytes into the asyncio stream_queue."""
         logger.info("[MJPEG] Thread running")
-        realtime_log_service.add_log(
-            "stream",
-            "NETWORK",
-            "Connection stable - Bitrate: 4.2 Mbps",
-            "info"
-        )
         frames = 0
         frames_pushed = 0
         frames_dropped = 0
         last_log = time.time()
+        last_frame_ts = time.time()
 
         try:
             while not self._mjpeg_stop.is_set():
@@ -587,18 +589,31 @@ class OakCameraService:
 
                 pkt = self._mjpeg_dai_queue.tryGet()
                 if pkt is None:
+                    # Watchdog: detect frozen camera if streaming is active but no frames for 3.0s
+                    if self._is_streaming and (time.time() - last_frame_ts > 3.0):
+                        logger.error("[MJPEG] Watchdog: No MJPEG frames from camera for 3.0s — device connection frozen")
+                        self._on_device_lost("No MJPEG frames from camera for 3.0s")
+                        break
                     time.sleep(0.001)
                     continue
 
+                last_frame_ts = time.time()
                 jpeg = bytes(pkt.getData())
                 frames += 1
 
+                # Push to all subscribed client queues thread-safely
+                # Keep stream/event loop errors completely isolated from camera hardware errors!
                 has_subscribers = bool(self._stream_subscribers) or (self._stream_queue is not None)
-                if has_subscribers and self._server_loop is not None:
-                    asyncio.run_coroutine_threadsafe(
-                        self._async_stream_push(jpeg), self._server_loop
-                    )
-                    frames_pushed += 1
+                loop = self._server_loop
+                if has_subscribers and loop is not None and not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(self._push_sync, jpeg)
+                        frames_pushed += 1
+                    except RuntimeError:
+                        # Event loop closed / server reload — do NOT treat as camera device failure!
+                        pass
+                    except Exception as push_err:
+                        logger.debug(f"[MJPEG] Stream push error: {push_err}")
                 else:
                     frames_dropped += 1
 
@@ -606,17 +621,25 @@ class OakCameraService:
                 if now - last_log >= 5.0:
                     elapsed = now - last_log
                     sub_count = len(self._stream_subscribers)
+                    fps_val = frames / max(elapsed, 0.001)
+                    bitrate_mbps = (frames_pushed * len(jpeg) * 8) / (max(elapsed, 0.001) * 1_000_000)
                     logger.info(
-                        f"[MJPEG] FPS: {frames / elapsed:.1f} | "
+                        f"[MJPEG] FPS: {fps_val:.1f} | "
+                        f"bitrate: {bitrate_mbps:.1f} Mbps | "
                         f"pushed: {frames_pushed} | "
                         f"dropped (no client): {frames_dropped} | "
                         f"subscribers: {sub_count}"
+                    )
+                    realtime_log_service.add_log(
+                        "stream",
+                        "NETWORK",
+                        f"Live Stream: {fps_val:.1f} FPS, {bitrate_mbps:.1f} Mbps",
+                        "info"
                     )
                     frames = 0
                     frames_pushed = 0
                     frames_dropped = 0
                     last_log = now
-
 
         except Exception as e:
             err_msg = str(e)
@@ -737,8 +760,10 @@ class OakCameraService:
 
     # ==================== Stream Queue ====================
 
-    async def _async_stream_push(self, jpeg: bytes) -> None:
-        """Drop-oldest push into all subscribed asyncio stream queues."""
+    def _push_sync(self, jpeg: bytes) -> None:
+        """Runs on the asyncio event loop thread — drop-oldest push into all client queues.
+        Invoked via loop.call_soon_threadsafe so no Futures/Tasks are created.
+        """
         for q in list(self._stream_subscribers):
             if q.full():
                 try:
@@ -760,12 +785,15 @@ class OakCameraService:
             except asyncio.QueueFull:
                 pass
 
+    async def _async_stream_push(self, jpeg: bytes) -> None:
+        """Async fallback for pushing into client queues."""
+        self._push_sync(jpeg)
+
     def subscribe_stream(self) -> asyncio.Queue:
-        if self._server_loop is None:
-            try:
-                self._server_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                pass
+        try:
+            self._server_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         q: asyncio.Queue = asyncio.Queue(maxsize=4)
         self._stream_subscribers.add(q)
         self._stream_queue = q
@@ -789,7 +817,10 @@ class OakCameraService:
                         break
             self._stream_subscribers.clear()
 
-        if not self._stream_subscribers:
+        # Bugfix: Point _stream_queue to an existing active subscriber, not a dead queue!
+        if self._stream_subscribers:
+            self._stream_queue = next(iter(self._stream_subscribers))
+        else:
             self._stream_queue = None
         logger.info(f"[STREAM] Client unsubscribed — remaining subscribers: {len(self._stream_subscribers)}")
 
@@ -807,9 +838,12 @@ class OakCameraService:
                 pass
         if self._latest_bgr is not None:
             try:
-                ret, buf = cv2.imencode(".jpg", self._latest_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                if ret:
-                    return buf.tobytes()
+                frame_copy = self._latest_bgr.copy()
+                loop = asyncio.get_running_loop()
+                def _encode():
+                    ret, buf = cv2.imencode(".jpg", frame_copy, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    return buf.tobytes() if ret else None
+                return await loop.run_in_executor(None, _encode)
             except Exception:
                 pass
         return None

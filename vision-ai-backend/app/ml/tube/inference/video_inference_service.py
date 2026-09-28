@@ -48,7 +48,7 @@ class VideoInferenceService:
         
         logger.info("Initializing TubeAnalyzer for video session...")
         is_cuda = bool(torch and torch.cuda.is_available())
-        analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=True)
+        analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=False)
         self._shared_analyzer = analyzer
         return analyzer
 

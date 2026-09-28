@@ -253,8 +253,8 @@ async def upload_video(
                 if frame0 is not None:
                     try:
                         analyzer = ml_inference_service._get_or_create_analyzer()
-                        res0, vis0 = analyzer.process_frame(frame0.copy(), 0)
-                        _, buf0 = cv2.imencode(".jpg", vis0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        res0, vis0, clean0 = analyzer.process_frame(frame0.copy(), 0, return_clean=True)
+                        _, buf0 = cv2.imencode(".jpg", clean0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         frame0_bytes = buf0.tobytes()
                         for k, v in res0.items():
                             session["stats"][k] = v
@@ -763,8 +763,8 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                 if ret and frame0 is not None:
                     try:
                         analyzer = ml_inference_service._get_or_create_analyzer()
-                        res0, vis0 = analyzer.process_frame(frame0.copy(), 0)
-                        _, buf = cv2.imencode(".jpg", vis0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        res0, vis0, clean0 = analyzer.process_frame(frame0.copy(), 0, return_clean=True)
+                        _, buf = cv2.imencode(".jpg", clean0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         for k, v in res0.items():
                             session["stats"][k] = v
                     except Exception:

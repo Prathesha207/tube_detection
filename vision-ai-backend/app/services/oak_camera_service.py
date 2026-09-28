@@ -842,6 +842,55 @@ class OakCameraService:
 
     # ==================== Camera Controls ====================
 
+    def reset_controls(self) -> dict:
+        """Fully resets physical camera controls to factory auto defaults (just like camera startup).
+        Releases all manual exposure/gain/focus locks and enables full hardware 3A (AE, AF, AWB).
+        """
+        self.current_brightness = 0
+        self.current_contrast = 50
+        self.current_gain = 400
+        self.current_focus = 120
+        self.current_exposure_us = 16000
+        self.auto_exposure_enabled = True
+        self.auto_focus_enabled = True
+        self.control_mode = "auto"
+
+        if not self._is_running or not self.is_connected or self._control_queue is None:
+            return {"status": "ok", "message": "Controls reset to default state"}
+
+        ctrl = dai.CameraControl()
+        try:
+            ctrl.setAutoExposureEnable()
+            ctrl.setAutoExposureLock(False)
+            if self._ae_limit_us is not None:
+                try:
+                    ctrl.setAutoExposureLimit(self._ae_limit_us)
+                except Exception:
+                    pass
+            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+            try:
+                ctrl.setAutoFocusTrigger()
+            except Exception:
+                pass
+            try:
+                ctrl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.AUTO)
+                ctrl.setAutoWhiteBalanceLock(False)
+            except Exception:
+                pass
+            ctrl.setBrightness(0)
+            ctrl.setContrast(0)
+            try:
+                ctrl.setAutoExposureCompensation(0)
+            except Exception:
+                pass
+
+            self._control_queue.send(ctrl)
+            logger.info("[CONTROL] 🔄 Real Camera Hardware Reset: Auto Exposure (AE), Auto Focus (AF), Auto White Balance (AWB) restored.")
+            return {"status": "ok", "message": "Camera hardware reset to full auto defaults"}
+        except Exception as e:
+            logger.warning(f"[CONTROL] Factory reset send failed: {e}")
+            return {"status": "error", "message": str(e)}
+
     def update_controls(
         self,
         exposure: int | None = None,
@@ -851,8 +900,12 @@ class OakCameraService:
         contrast: int | None = None,
         auto_focus: bool | None = None,
         auto_exposure: bool | None = None,
+        reset: bool | None = None,
     ) -> None:
         """Update hardware camera controls (Exposure, Gain, Focus, Brightness, Contrast)."""
+        if reset:
+            self.reset_controls()
+            return
         # 1. Update internal state
         if brightness is not None:
             self.current_brightness = max(-50, min(50, int(brightness)))
@@ -884,7 +937,7 @@ class OakCameraService:
         should_send = False
 
         # 2. Exposure & Gain Logic
-        if auto_exposure is True and exposure is None and gain is None:
+        if auto_exposure is True:
             self.auto_exposure_enabled = True
             self.control_mode = "auto"
             try:
@@ -897,7 +950,7 @@ class OakCameraService:
                 should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
-        elif auto_exposure is False or exposure is not None or gain is not None:
+        elif auto_exposure is False or (auto_exposure is None and (exposure is not None or gain is not None)):
             self.auto_exposure_enabled = False
             self.control_mode = "manual"
             try:
@@ -908,7 +961,7 @@ class OakCameraService:
                 logger.warning(f"[CONTROL] setManualExposure failed: {e}")
 
         # 3. Focus Logic (Both auto_focus toggle and manual focus position)
-        if auto_focus is True and focus is None:
+        if auto_focus is True:
             self.auto_focus_enabled = True
             try:
                 ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
@@ -919,7 +972,7 @@ class OakCameraService:
                 should_send = True
             except Exception as e:
                 logger.warning(f"[CONTROL] setAutoFocusMode failed: {e}")
-        elif auto_focus is False or focus is not None:
+        elif auto_focus is False or (auto_focus is None and focus is not None):
             self.auto_focus_enabled = False
             try:
                 ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)

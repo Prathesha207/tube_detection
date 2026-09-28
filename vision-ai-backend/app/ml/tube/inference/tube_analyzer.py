@@ -178,7 +178,7 @@ class TubeAnalyzer:
         tile_overlap: float = 0.3,
         mm_per_px: Optional[float] = None,
         gray: bool = True,
-        draw_overlay: bool = True,
+        draw_overlay: bool = False,
         min_frames: int = 5,
         max_dist: float = 60.0,
         roi_path: Optional[str] = None,
@@ -231,7 +231,7 @@ class TubeAnalyzer:
         self.last_known = {"bigger_tube": None, "smaller_tube": None}
         self.roi = load_roi(self.roi_path)
 
-    def process_frame(self, frame: np.ndarray, frame_idx: int = 0) -> Tuple[Dict[str, Any], np.ndarray]:
+    def process_frame(self, frame: np.ndarray, frame_idx: int = 0, return_clean: bool = False) -> Any:
         """Process a single frame directly on the original color frame."""
         if frame is None or frame.size == 0:
             return {}, frame
@@ -335,13 +335,21 @@ class TubeAnalyzer:
             "video_height": h,
         }
 
-        if self.draw_overlay:
-            vis = self.render_overlay(frame, result, inst=inst, tubing_id=self.class_map[2])
-            if self.roi is not None and len(self.roi) > 2:
-                cv2.polylines(vis, [self.roi], isClosed=True, color=(0, 255, 255), thickness=2)
-            return result, vis
+        # Clean preview frame with ONLY the yellow ROI polygon (clean for frontend stream)
+        clean_frame = frame.copy()
+        if self.roi is not None and len(self.roi) > 2:
+            cv2.polylines(clean_frame, [self.roi], isClosed=True, color=(0, 255, 255), thickness=2)
 
-        return result, frame
+        # Fully annotated diagnostic frame: starts from clean_frame (with yellow ROI) + OpenCV HUD banner & badges
+        annotated_frame = self.render_overlay(clean_frame, result, inst=inst, tubing_id=self.class_map[2])
+
+        if return_clean:
+            return result, annotated_frame, clean_frame
+
+        if self.draw_overlay:
+            return result, annotated_frame
+
+        return result, clean_frame
 
     def render_overlay(
         self,

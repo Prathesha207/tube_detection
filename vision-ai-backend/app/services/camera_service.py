@@ -78,13 +78,7 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
             setattr(camera, key, value)
 
         # Apply control mode AFTER update
-        if camera.exposure is not None or camera.gain is not None or camera.focus is not None:
-            camera.control_mode = "manual"
-            if camera.auto_exposure is None:
-                camera.auto_exposure = False
-            if camera.auto_focus is None:
-                camera.auto_focus = False
-        elif camera.control_mode == "auto":
+        if camera.control_mode == "auto":
             camera.exposure = None
             camera.gain = None
             camera.focus = None
@@ -93,6 +87,12 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
         elif camera.control_mode == "manual":
             camera.auto_exposure = False
             camera.auto_focus = False
+        elif camera.exposure is not None or camera.gain is not None or camera.focus is not None:
+            camera.control_mode = "manual"
+            if camera.auto_exposure is None:
+                camera.auto_exposure = False
+            if camera.auto_focus is None:
+                camera.auto_focus = False
 
         db.commit()
         db.refresh(camera)

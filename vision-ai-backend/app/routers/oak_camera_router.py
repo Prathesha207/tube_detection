@@ -304,6 +304,19 @@ class CameraControlsRequest(BaseModel):
     autoFocus: Optional[bool] = None
     auto_exposure: Optional[bool] = None
     autoExposure: Optional[bool] = None
+    reset: Optional[bool] = None
+
+@router.post("/controls/reset")
+def reset_camera_controls():
+    """Real Camera Hardware Reset — restores full 3A (Auto Exposure, Auto Focus, Auto White Balance)
+    and removes all manual shutter/gain/focus overrides, matching fresh boot state.
+    """
+    try:
+        return oak_camera_service.reset_controls()
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /oak/controls/reset: {e}", exc_info=True)
+        realtime_log_service.add_log("camera", "CRASH", f"Camera controls reset failed: {e}", "error")
+        raise HTTPException(status_code=500, detail=f"Failed to reset controls: {e}")
 
 @router.post("/controls")
 def update_controls(
@@ -315,8 +328,13 @@ def update_controls(
     contrast: int | None = None,
     auto_focus: bool | None = None,
     auto_exposure: bool | None = None,
+    reset: bool | None = None,
 ):
     try:
+        is_reset = (body.reset if body and body.reset is not None else reset)
+        if is_reset:
+            return oak_camera_service.reset_controls()
+
         exp = body.exposure if body and body.exposure is not None else exposure
         g = body.gain if body and body.gain is not None else gain
         f = body.focus if body and body.focus is not None else focus
@@ -333,6 +351,7 @@ def update_controls(
             contrast=c,
             auto_focus=af,
             auto_exposure=ae,
+            reset=is_reset,
         )
         return {"status": "ok"}
     except HTTPException:

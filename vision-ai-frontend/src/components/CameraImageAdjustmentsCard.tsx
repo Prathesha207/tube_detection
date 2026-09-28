@@ -16,11 +16,11 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   onUpdateConfig,
   isLive = true,
 }) => {
-  const [exposure, setExposure] = useState<number>(config?.exposure ?? 10);
-  const [gain, setGain] = useState<number>(config?.gain ?? 100);
+  const [exposure, setExposure] = useState<number>(config?.exposure ?? 16);
+  const [gain, setGain] = useState<number>(config?.gain ?? 400);
   const [focus, setFocus] = useState<number>(config?.focus ?? 120);
-  const [autoExposure, setAutoExposure] = useState<boolean>(config?.autoExposure ?? false);
-  const [autoFocus, setAutoFocus] = useState<boolean>(config?.autoFocus ?? false);
+  const [autoExposure, setAutoExposure] = useState<boolean>(config?.autoExposure ?? true);
+  const [autoFocus, setAutoFocus] = useState<boolean>(config?.autoFocus ?? true);
   const [brightness, setBrightness] = useState<number>(config?.brightness ?? 0);
   const [contrast, setContrast] = useState<number>(config?.contrast ?? 50);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'adjusting'>('synced');
@@ -43,7 +43,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       if (typeof config.brightness === 'number') setBrightness(config.brightness);
       if (typeof config.contrast === 'number') setContrast(config.contrast);
     }
-  }, [config?.id]);
+  }, [config?.id, config?.exposure, config?.gain, config?.focus, config?.autoExposure, config?.autoFocus, config?.brightness, config?.contrast]);
 
   // Actual network dispatch with in-flight queuing
   const dispatchToBackend = useCallback(async (payload: any) => {
@@ -208,10 +208,10 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     });
   };
 
-  // Auto Calibrate / Reset
-  const handleAutoAdjust = () => {
-    const defaultExp = 10;
-    const defaultGain = 100;
+  // Auto Calibrate / Real Camera Reset
+  const handleAutoAdjust = async () => {
+    const defaultExp = 16;
+    const defaultGain = 400;
     const defaultFocus = 120;
     const defaultB = 0;
     const defaultC = 50;
@@ -234,15 +234,22 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       contrast: defaultC,
     });
 
-    scheduleDispatch({
-      exposure: defaultExp,
-      gain: defaultGain,
-      focus: defaultFocus,
-      brightness: defaultB,
-      contrast: defaultC,
-      auto_exposure: true,
-      auto_focus: true,
-    });
+    setSyncStatus('adjusting');
+    try {
+      await cameraService.resetCameraControls();
+      setSyncStatus('synced');
+    } catch {
+      scheduleDispatch({
+        reset: true,
+        exposure: defaultExp,
+        gain: defaultGain,
+        focus: defaultFocus,
+        brightness: defaultB,
+        contrast: defaultC,
+        auto_exposure: true,
+        auto_focus: true,
+      });
+    }
   };
 
   const getSliderStyle = (val: number, min: number, max: number) => {

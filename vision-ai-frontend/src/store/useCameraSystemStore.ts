@@ -90,8 +90,8 @@ export type BasicConfig = {
 /* ================= DEFAULTS ================= */
 
 const DEFAULT_CONTROLS = {
-    exposure: 10,
-    gain: 100,
+    exposure: 16,
+    gain: 400,
     focus: 120,
     brightness: 0,
     contrast: 50,
@@ -179,7 +179,10 @@ export const useCameraSystemStore = create<StoreState>()(
 
             setBulkControls: (values) => set({ ...values }),
 
-            resetControls: () => set({ ...DEFAULT_CONTROLS }),
+            resetControls: () => {
+                set({ ...DEFAULT_CONTROLS });
+                cameraService.resetCameraControls().catch(() => {});
+            },
 
             /* ================= MODE & TESTING PATHS ================= */
 

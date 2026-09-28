@@ -106,6 +106,16 @@ export const cameraService = {
     }
   },
 
+  async resetCameraControls() {
+    try {
+      const res = await api.post("/oak/controls/reset");
+      return res.data;
+    } catch {
+      const res = await api.post("/oak/controls", { reset: true, auto_exposure: true, auto_focus: true, brightness: 0, contrast: 50 });
+      return res.data;
+    }
+  },
+
    async updateInferenceMode(mode: "testing" | "production") {
     const res = await api.patch("/camera/inference-mode", { mode });
     return res.data;

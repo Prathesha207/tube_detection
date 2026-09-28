@@ -48,7 +48,7 @@ def _get_or_create_session(session_id: str, model_path: Optional[str] = None) ->
             logger.info(f"Creating fresh TubeAnalyzer for camera session {session_id}.")
             path = model_path or _DEFAULT_MODEL_PATH
             is_cuda = bool(torch and torch.cuda.is_available())
-            analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=True)
+            analyzer = TubeAnalyzer(model_path=path, device="0" if is_cuda else "cpu", draw_overlay=False)
         except Exception as e:
             logger.error(f"Failed to create camera analyzer: {e}", exc_info=True)
             app_state.exit_inference("camera")
@@ -104,9 +104,9 @@ def run_inference(frame, session_id: str, model_path: Optional[str] = None, vide
     try:
         if torch is not None:
             with torch.inference_mode():
-                result, annotated_frame = analyzer.process_frame(frame, session["frames_processed"])
+                result, annotated_frame, clean_frame = analyzer.process_frame(frame, session["frames_processed"], return_clean=True)
         else:
-            result, annotated_frame = analyzer.process_frame(frame, session["frames_processed"])
+            result, annotated_frame, clean_frame = analyzer.process_frame(frame, session["frames_processed"], return_clean=True)
     except Exception as e:
         logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
         return {"session_id": session_id, "status": "error", "reasons": [str(e)], "frames_processed": session["frames_processed"]}, frame
@@ -127,7 +127,8 @@ def run_inference(frame, session_id: str, model_path: Optional[str] = None, vide
     }
 
     session["last_stats"] = stats
-    return stats, annotated_frame
+    session["last_annotated_frame"] = annotated_frame
+    return stats, clean_frame
 
 def get_session_status(session_id: str) -> Optional[Dict[str, Any]]:
     session = _sessions.get(session_id)

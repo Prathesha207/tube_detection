@@ -231,6 +231,10 @@ async def stream(request: Request, session_id: Optional[str] = None):
 @router.get("/snapshot")
 async def snapshot():
     """Single JPEG frame — returns latest live frame or fallback to prevent UI errors."""
+    # 0. Instant cached JPEG check (no queue pop, zero latency, zero live stream frame stealing)
+    if oak_camera_service._latest_jpeg is not None:
+        return Response(content=oak_camera_service._latest_jpeg, media_type="image/jpeg")
+
     # 1. Try from stream queue / buffer
     frame = await oak_camera_service.get_stream_frame(timeout=0.5)
     if frame is not None:

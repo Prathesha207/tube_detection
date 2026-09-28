@@ -166,12 +166,22 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     resetZoom();
   }, [sourceType, customVideoUrl, cameraRecordSessionId, resetZoom]);
 
-  // Ensure camera stream reconnects cleanly whenever running state changes while streaming
+  // Ensure camera stream reconnects cleanly whenever running state changes while streaming or camera reconnects
   useEffect(() => {
     if (isCameraSource && isStreaming) {
       setStreamCacheBuster(Date.now());
     }
-  }, [isRunning, isCameraSource, isStreaming]);
+  }, [isRunning, isCameraSource, isStreaming, isCameraConnected]);
+
+  // Auto-retry reconnect loop if stream encountered an error or connection was interrupted
+  useEffect(() => {
+    if (streamError && isCameraSource && isStreaming) {
+      const timer = setTimeout(() => {
+        setStreamCacheBuster(Date.now());
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [streamError, isCameraSource, isStreaming, streamCacheBuster]);
 
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
   const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;

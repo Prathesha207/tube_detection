@@ -74,8 +74,12 @@ class OakCameraService:
         self._hires_stop = threading.Event()
         self._convert_stop = threading.Event()
 
-        # ---- Latest BGR frame (GIL-safe, no lock needed for single ref assign) ----
+        # ---- Latest BGR & JPEG frame caches (GIL-safe single ref assign) ----
         self._latest_bgr: np.ndarray | None = None
+        self._latest_jpeg: bytes | None = None
+        self._latest_bgr_seq: int = 0
+        self._pipeline_width: int = 1920
+        self._pipeline_height: int = 1080
 
         # ---- Camera settings ----
         self.control_mode: str = "auto"
@@ -231,7 +235,7 @@ class OakCameraService:
     async def disconnect(self) -> None:
         try:
             if self.device is not None:
-                self.device.close()
+                await asyncio.to_thread(self.device.close)
                 logger.info("[DEVICE] Disconnected")
                 realtime_log_service.add_log(
                     "camera",
@@ -265,6 +269,8 @@ class OakCameraService:
             except Exception:
                 logger.warning("[PIPELINE] Bad resolution — fallback 1920x1080")
                 width, height = 1920, 1080
+            self._pipeline_width = width
+            self._pipeline_height = height
             fps = int(config.fps or 30)
             self._configured_fps = fps
             logger.info(f"[PIPELINE] {width}x{height} @ {fps}fps")
@@ -408,6 +414,8 @@ class OakCameraService:
                 self._mjpeg_dai_queue = None
                 self._raw_dai_queue = None
                 self._control_queue = None
+                self._latest_jpeg = None
+                self._latest_bgr = None
             logger.info("[PIPELINE] Cleaned up")
 
     def _on_device_lost(self, reason: str = "Device disconnected") -> None:
@@ -431,6 +439,8 @@ class OakCameraService:
             self._raw_dai_queue = None
             self._control_queue = None
             self._pipeline = None
+            self._latest_jpeg = None
+            self._latest_bgr = None
 
             # Wake up any streaming client queues with None sentinel so generators exit cleanly (thread-safe)
             loop = self._server_loop
@@ -555,6 +565,7 @@ class OakCameraService:
         self._hires_thread = None
 
         self._latest_bgr = None
+        self._latest_jpeg = None
         self._drain_hires_packet_queue()
 
         logger.info("[CAPTURE] Threads stopped")
@@ -589,8 +600,8 @@ class OakCameraService:
 
                 pkt = self._mjpeg_dai_queue.tryGet()
                 if pkt is None:
-                    # Watchdog: detect frozen camera if streaming is active but no frames for 3.0s
-                    if self._is_streaming and (time.time() - last_frame_ts > 3.0):
+                    # Watchdog: detect frozen camera if no frames from camera for 3.0s
+                    if time.time() - last_frame_ts > 3.0:
                         logger.error("[MJPEG] Watchdog: No MJPEG frames from camera for 3.0s — device connection frozen")
                         self._on_device_lost("No MJPEG frames from camera for 3.0s")
                         break
@@ -599,6 +610,7 @@ class OakCameraService:
 
                 last_frame_ts = time.time()
                 jpeg = bytes(pkt.getData())
+                self._latest_jpeg = jpeg
                 frames += 1
 
                 # Push to all subscribed client queues thread-safely
@@ -730,6 +742,7 @@ class OakCameraService:
                     display_bgr = raw_bgr
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
+                self._latest_bgr_seq += 1
 
                 if self._active_recording is not None:
                     # Feed the authentic, unmodified camera stream frame to the recording
@@ -831,6 +844,8 @@ class OakCameraService:
         self.unsubscribe_stream(q)
 
     async def get_stream_frame(self, timeout: float = 1.0) -> bytes | None:
+        if self._latest_jpeg is not None:
+            return self._latest_jpeg
         if self._stream_queue is not None:
             try:
                 return await asyncio.wait_for(self._stream_queue.get(), timeout=timeout)
@@ -1192,6 +1207,7 @@ class OakCameraService:
 
         recorder: InferenceRecorder | None = None
         recording_active = False
+        last_seen_seq = -1
 
         try:
             while not self._inference_stop.is_set():
@@ -1245,10 +1261,11 @@ class OakCameraService:
                         break
                     self._latest_bgr = frame
                 else:
-                    frame = self._latest_bgr
-                    if frame is None:
-                        time.sleep(0.01)
+                    if self._latest_bgr is None or self._latest_bgr_seq == last_seen_seq:
+                        time.sleep(0.005)
                         continue
+                    last_seen_seq = self._latest_bgr_seq
+                    frame = self._latest_bgr
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:
@@ -1832,6 +1849,22 @@ class OakCameraService:
         root_path = self._resolve_recording_path()
         rec_fmt = self._resolve_recording_format(recording_format)
 
+        # Ensure recording resolution matches the actual camera pipeline to prevent PyAV rescaling
+        if hasattr(self, "_pipeline_width") and self._pipeline_width and hasattr(self, "_pipeline_height") and self._pipeline_height:
+            if (width, height) != (self._pipeline_width, self._pipeline_height):
+                logger.warning(
+                    f"[RECORD] Requested resolution {width}x{height} differs from camera pipeline "
+                    f"{self._pipeline_width}x{self._pipeline_height} — overriding to match camera."
+                )
+                width = self._pipeline_width
+                height = self._pipeline_height
+
+        if self._latest_bgr is not None:
+            actual_h, actual_w = self._latest_bgr.shape[:2]
+            if (width, height) != (actual_w, actual_h):
+                logger.warning(f"[RECORD] Resolution adjusted to actual frame size: {actual_w}x{actual_h}")
+                width, height = actual_w, actual_h
+
         logger.info(f"[RECORD] Starting recording — session: {session_id}, {width}x{height} @ {fps}fps | format={rec_fmt}")
         logger.info(f"[RECORD] Pipeline running: {self._is_running}")
         logger.info(f"[RECORD] Threads — mjpeg: {bool(self._mjpeg_thread and self._mjpeg_thread.is_alive())} | hires: {bool(self._hires_thread and self._hires_thread.is_alive())} | convert: {bool(self._convert_thread and self._convert_thread.is_alive())}")
@@ -1963,17 +1996,18 @@ class OakCameraService:
         """App shutdown — stop capture threads if running, cleanup pipeline, disconnect device."""
         async with self._lifecycle_lock:
             try:
-                self.stop_inference()
+                await asyncio.to_thread(self.stop_inference)
                 
                 # If a recording is active, we should attempt to stop it gracefully
                 if self._active_recording and getattr(self._active_recording, "session_id", None):
-                    self.stop_recording(self._active_recording.session_id)
+                    await asyncio.to_thread(self.stop_recording, self._active_recording.session_id)
                 elif self._inference_session_id:
-                    self.stop_recording(self._inference_session_id)
+                    await asyncio.to_thread(self.stop_recording, self._inference_session_id)
                     
                 self._close_stream_queue()
-                self._stop_capture_threads()
-                self._cleanup_pipeline()
+                self._latest_jpeg = None
+                await asyncio.to_thread(self._stop_capture_threads)
+                await asyncio.to_thread(self._cleanup_pipeline)
                 await self.disconnect()
                 logger.info("[STOP] Camera stopped")
                 realtime_log_service.add_log(
@@ -2047,6 +2081,7 @@ class OakCameraService:
     async def stop_streaming(self) -> dict:
         """User clicks Stop Streaming — close stream queue, stop threads if recording and inference also inactive."""
         self._is_streaming = False
+        self._latest_jpeg = None
         for q in list(self._stream_subscribers):
             try:
                 q.put_nowait(None)
@@ -2059,7 +2094,7 @@ class OakCameraService:
         inference_active = bool(self._inference_thread and self._inference_thread.is_alive())
         if not recording_active and not inference_active:
             logger.info("[STREAMING] No active recording or inference — stopping capture threads")
-            self._stop_capture_threads()
+            await asyncio.to_thread(self._stop_capture_threads)
         else:
             logger.info(f"[STREAMING] Keeping capture threads running (recording={recording_active}, inference={inference_active})")
 

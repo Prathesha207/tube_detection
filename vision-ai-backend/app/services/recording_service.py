@@ -54,6 +54,7 @@ class RecordingSession:
             codec_name = "mjpeg"
             pix_fmt    = "yuvj420p"
             ext        = ".avi"
+            options    = {"qmin": "2", "qmax": "3"}
         elif fmt in ("FFV1", "MKV"):
             fmt        = "FFV1"
             codec_name = "ffv1"
@@ -88,7 +89,8 @@ class RecordingSession:
         # Initialize all state stop()/add_frame() touch BEFORE attempting to open
         # the container, so a failed open leaves a fully-formed (just inert)
         # object instead of a half-built one that crashes on the first stop().
-        self.frame_queue = queue.Queue(maxsize=1000)
+        # maxsize=150 keeps memory bounded under ~1 GB at 1080p BGR while tolerating transient stalls
+        self.frame_queue = queue.Queue(maxsize=150)
         self.is_running  = False
         # Set start clock at session creation — not on first frame — so the
         # container duration matches the wall-clock recording time exactly.
@@ -99,7 +101,11 @@ class RecordingSession:
         self.thread = None
 
         try:
-            self.container = av.open(self.video_path, mode="w")
+            container_options = {}
+            if fmt == "MP4":
+                # Fragmented MP4 writes playable chunks at each keyframe so video is crash-resilient
+                container_options = {"movflags": "frag_keyframe+empty_moov"}
+            self.container = av.open(self.video_path, mode="w", options=container_options)
             # rate=1000 → time_base = 1/1000 s = 1 ms per PTS unit.
             # VFR timestamps allow precise wall-clock synchronization.
             self.stream = self.container.add_stream(codec_name, rate=1000)

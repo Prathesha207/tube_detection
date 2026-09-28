@@ -179,6 +179,7 @@ class TubeAnalyzer:
         mm_per_px: Optional[float] = None,
         gray: bool = True,
         draw_overlay: bool = False,
+        draw_roi: bool = False,
         min_frames: int = 5,
         max_dist: float = 60.0,
         roi_path: Optional[str] = None,
@@ -210,6 +211,7 @@ class TubeAnalyzer:
         self.mm_per_px = mm_per_px
         self.gray = gray
         self.draw_overlay = draw_overlay
+        self.draw_roi = draw_roi
         self.min_frames = min_frames
         self.max_dist = max_dist
 
@@ -335,9 +337,9 @@ class TubeAnalyzer:
             "video_height": h,
         }
 
-        # Clean preview frame with ONLY the yellow ROI polygon (clean for frontend stream)
+        # Clean preview frame (clean for frontend stream without ROI polygon)
         clean_frame = frame.copy()
-        if self.roi is not None and len(self.roi) > 2:
+        if self.draw_roi and self.roi is not None and len(self.roi) > 2:
             cv2.polylines(clean_frame, [self.roi], isClosed=True, color=(0, 255, 255), thickness=2)
 
         # Fully annotated diagnostic frame: starts from clean_frame (with yellow ROI) + OpenCV HUD banner & badges

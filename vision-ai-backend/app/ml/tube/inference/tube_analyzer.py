@@ -264,25 +264,51 @@ class TubeAnalyzer:
         # 4. Whole-image tracking across frames (tracking does not drop ends outside ROI)
         match(self.tracks, ends, frame_idx, self.max_dist)
 
-        # Prune stale tracks older than 90 frames to keep tracking fast and memory lean
-        if len(self.tracks) > 20:
-            self.tracks = [t for t in self.tracks if (frame_idx - getattr(t, 'last_seen', 0)) <= 90]
+        # Prune stale tracks: drop any track not seen in the last 30 frames to prevent ghost counts
+        self.tracks = [t for t in self.tracks if (frame_idx - getattr(t, 'last_seen', frame_idx)) <= 30]
 
         # 5. Filter ends for display and reporting by ROI polygon
         ends_for_display = filter_by_roi(ends, self.roi)
 
-        # 6. Build frame result dictionary matching run_video_frames.py
-        eff_min_frames = min(self.min_frames, max(1, frame_idx))
-        conf_tracks = confirmed(self.tracks, eff_min_frames)
-        if not conf_tracks and self.tracks:
-            conf_tracks = self.tracks
+        # 6. Build frame result dictionary from active tracks visible in current frame
+        active_track_ids = {e.get("_track_id") for e in ends_for_display if e.get("_track_id") is not None}
+        active_tracks = [t for t in self.tracks if t.id in active_track_ids]
+        if not active_tracks and self.tracks:
+            # Fallback to tracks seen very recently if tracking just updated
+            active_tracks = [t for t in self.tracks if (frame_idx - getattr(t, 'last_seen', 0)) <= 3]
 
-        sizes = size_labels(
-            [t for t in conf_tracks if self.size_from == "all" or t.role == "TAIL"],
-            self.min_ratio,
-        )
-        summaries = {t.id: t.summary(self.mm_per_px, sizes.get(t.id)) for t in conf_tracks}
-        pair_ends(list(summaries.values()))
+        # Size classification on active tail tracks
+        active_tails = [t for t in active_tracks if self.size_from == "all" or t.role == "TAIL"]
+        sizes = size_labels(active_tails, self.min_ratio)
+
+        summaries = {t.id: t.summary(self.mm_per_px, sizes.get(t.id)) for t in active_tracks}
+        summary_list = list(summaries.values())
+
+        # Pair heads and tails on the active visible ends
+        pair_ends(summary_list, max_width_diff=0.35)
+
+        # Fallback pairing by width rank-order if equal numbers of heads and tails remain unpaired
+        unpaired_heads = [s for s in summary_list if s.get("role") == "HEAD" and s.get("pair_id") is None]
+        unpaired_tails = [s for s in summary_list if s.get("role") == "TAIL" and s.get("pair_id") is None]
+        if len(unpaired_heads) == len(unpaired_tails) and len(unpaired_heads) > 0:
+            existing_pairs = {s.get("pair_id") for s in summary_list if s.get("pair_id") is not None}
+            next_pair_id = max(existing_pairs, default=0) + 1
+            for uh, ut in zip(
+                sorted(unpaired_heads, key=lambda s: s.get("width_px") or 0),
+                sorted(unpaired_tails, key=lambda s: s.get("width_px") or 0),
+            ):
+                uh["pair_id"] = ut["pair_id"] = next_pair_id
+                next_pair_id += 1
+
+        # Propagate size label (BIGGER / SMALLER) to both ends of the same paired tube
+        pair_to_size = {
+            s["pair_id"]: s["size"]
+            for s in summary_list
+            if s.get("pair_id") and s.get("size") in ("BIGGER", "SMALLER")
+        }
+        for s in summary_list:
+            if s.get("pair_id") in pair_to_size and not s.get("size"):
+                s["size"] = pair_to_size[s["pair_id"]]
 
         detections = []
         for e in ends_for_display:
@@ -307,21 +333,27 @@ class TubeAnalyzer:
                 "missed_frames": 0,
             })
 
-        heads_count = sum(t.role == "HEAD" for t in conf_tracks)
-        tails_count = sum(t.role == "TAIL" for t in conf_tracks)
+        # Frame-accurate counts from active detections on screen (not stale accumulated tracks)
+        heads_count = sum(d["role"] == "HEAD" for d in detections)
+        tails_count = sum(d["role"] == "TAIL" for d in detections)
         total_count = heads_count + tails_count
 
-        bigger = next((s for s in summaries.values() if s.get("size") == "BIGGER"), None)
-        smaller = next((s for s in summaries.values() if s.get("size") == "SMALLER"), None)
+        bigger = next((d for d in detections if d.get("size") == "BIGGER"), None)
+        smaller = next((d for d in detections if d.get("size") == "SMALLER"), None)
         used_last_known = False
 
-        if bigger is not None:
+        if bigger is not None and smaller is not None:
             self.last_known["bigger_tube"] = bigger
             self.last_known["smaller_tube"] = smaller
-        elif self.last_known.get("bigger_tube") is not None:
-            bigger = self.last_known["bigger_tube"]
-            smaller = self.last_known["smaller_tube"]
-            used_last_known = True
+        elif self.last_known.get("bigger_tube") is not None and (heads_count > 0 or tails_count > 0):
+            # Only use last known if it matches currently active detection IDs
+            active_ids = {d["id"] for d in detections}
+            if self.last_known["bigger_tube"].get("id") in active_ids:
+                bigger = self.last_known["bigger_tube"]
+                smaller = self.last_known.get("smaller_tube")
+                used_last_known = True
+            else:
+                self.last_known = {"bigger_tube": None, "smaller_tube": None}
 
         result = {
             "frame": frame_idx,

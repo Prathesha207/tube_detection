@@ -78,7 +78,27 @@ export const StatusBar: React.FC<StatusBarProps> = ({
               <span className="text-xs sm:text-sm font-bold font-mono text-purple-300">
                 {stats.bigger_tube.width_mm
                   ? `${stats.bigger_tube.width_mm.toFixed(1)}mm`
-                  : `${stats.bigger_tube.width_px}px`}
+                  : typeof stats.bigger_tube.width_px === 'number'
+                    ? `${stats.bigger_tube.width_px.toFixed(1)}px`
+                    : `${stats.bigger_tube.width_px}px`}
+              </span>
+            </div>
+          </>
+        )}
+
+        {stats?.smaller_tube && (
+          <>
+            <div className="h-6 w-[1px] bg-[var(--border-color)]" />
+            <div className="flex flex-col items-center">
+              <span className="text-[9.5px] text-amber-400 uppercase tracking-wider font-semibold">
+                Smaller Tube
+              </span>
+              <span className="text-xs sm:text-sm font-bold font-mono text-amber-300">
+                {stats.smaller_tube.width_mm
+                  ? `${stats.smaller_tube.width_mm.toFixed(1)}mm`
+                  : typeof stats.smaller_tube.width_px === 'number'
+                    ? `${stats.smaller_tube.width_px.toFixed(1)}px`
+                    : `${stats.smaller_tube.width_px}px`}
               </span>
             </div>
           </>

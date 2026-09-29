@@ -1,20 +1,39 @@
 """
 video_inference_service.py
 ==========================
-Handles batch / offline video file inference for Tube tracing.
+Batch / offline video-file inference for Tube tracing.
+
+How a run works
+---------------
+    router:  session_id = create_session(...)
+             run_seq    = start_run(session_id)
+             await process_video_task(session_id, path, name, run_seq)
+
+    process_video_task() (async) hands the whole job to ONE worker thread, so reading
+    frames, running the model, writing the annotated mp4 and JPEG-encoding never block
+    the FastAPI event loop. Per frame the worker does:
+
+        cap.read() -> analyzer.analyze_frame()   <- frame_time_ms is measured around this only
+                   -> analyzer.draw_annotations() -> VideoWriter (annotated mp4)
+                   -> analyzer.get_clean_frame()  -> JPEG -> live stream queue
+                   -> session["stats"]            (polled by get_status)
+
+    One video job runs at a time (single worker thread). The model is loaded when a job
+    starts and freed when it ends, so VRAM is empty whenever app_state says the GPU is free.
 """
 
-import json
-import tempfile
 import asyncio
+import json
 import os
+import tempfile
+import threading
 import time
 import uuid
-import logging
-from typing import Dict, Any, Optional
-import cv2
 import concurrent.futures
-from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import cv2
 
 try:
     import torch
@@ -22,69 +41,118 @@ except Exception:
     torch = None
 from app.ml import app_state
 from app.core.logger import setup_logger
-from .tube_analyzer import TubeAnalyzer
+from .tube_analyzer import (
+    TubeAnalyzer,
+    build_frontend_stats,
+    default_device,
+    inference_context,
+    new_stats,
+    release_gpu_memory,
+)
 
 logger = setup_logger("tube-video-inference")
-
-from pathlib import Path
 
 _ML_DIR = Path(__file__).resolve().parent
 _DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
 _ROI_PATH = str(_ML_DIR / "config" / "roi.json")
 _CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 
-import threading
+_FINISHED_STATES = ("completed", "stopped", "error")
+_JPEG_QUALITY = 85
+_SAVE_PREVIEW_EVERY_N_FRAMES = 15
+_HIGH_FPS_THRESHOLD = 45.0        # above this the model runs on every 2nd frame
+
+
+# ------------------------------------------------------------------- helpers
+def _put_latest(queue: asyncio.Queue, item) -> None:
+    """Put item in the queue, dropping the oldest entry when full. Must run on the event loop."""
+    if queue.full():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        pass
+
+
+def _json_default(obj):
+    if hasattr(obj, "item"):
+        return obj.item()
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    return str(obj)
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except Exception:
+        pass
+
+
+def _output_video_name(original_filename: Optional[str], session_id: str) -> str:
+    if not original_filename:
+        return f"annotated_{session_id}.mp4"
+    base = os.path.splitext(os.path.basename(original_filename))[0]
+    return f"{base}.mp4" if base.startswith("annotated_") else f"annotated_{base}.mp4"
+
+
+def _output_base_dir() -> str:
+    try:
+        from app.core.app_paths import get_ml_output_dir
+        return str(get_ml_output_dir())
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), "vision_monitor_output")
+
 
 class VideoInferenceService:
     def __init__(self):
         self.sessions: Dict[str, Dict[str, Any]] = {}
         self._sessions_lock = threading.Lock()
-        self._gpu_lock = asyncio.Lock()
-        self._ml_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # ONE worker thread = one video job at a time, and the model is only ever used from it.
+        self._ml_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-infer")
+        self._shared_analyzer: Optional[TubeAnalyzer] = None   # only set via _set_shared_analyzer()
 
-    def _get_or_create_analyzer(self) -> TubeAnalyzer:
-        shared = getattr(self, "_shared_analyzer", None)
-        if shared is not None:
-            return shared
-
-        path = _DEFAULT_MODEL_PATH
-        
-        logger.info(f"Initializing TubeAnalyzer for video session with model={path}...")
-        is_cuda = bool(torch and torch.cuda.is_available())
+    # ------------------------------------------------------------- analyzer
+    def _acquire_analyzer(self) -> Tuple[TubeAnalyzer, bool]:
+        """(analyzer, owned). An analyzer injected with _set_shared_analyzer() is reused and never
+        freed by us; otherwise a fresh one is created and the job frees it when it ends."""
+        if self._shared_analyzer is not None:
+            return self._shared_analyzer, False
+        logger.info(f"Loading TubeAnalyzer for video job (model={_DEFAULT_MODEL_PATH})")
         analyzer = TubeAnalyzer(
-            model_path=path,
+            model_path=_DEFAULT_MODEL_PATH,
             config_path=_CONFIG_PATH,
             roi_path=_ROI_PATH,
-            device="0" if is_cuda else "cpu",
+            device=default_device(),
             draw_overlay=False,
         )
-        self._shared_analyzer = analyzer
-        return analyzer
+        return analyzer, True
 
+    # ------------------------------------------------------------- sessions
     def stop_all_sessions(self):
         with self._sessions_lock:
-            sessions_list = list(self.sessions.values())
-        for session in sessions_list:
-            if not session["stop_event"].is_set():
-                session["stop_event"].set()
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            session["stop_event"].set()
 
     def delete_session(self, session_id: str):
         with self._sessions_lock:
             session = self.sessions.pop(session_id, None)
         if session:
-            self.clear_session_files(session_id)
             session["stop_event"].set()
+            self._remove_temp_files(session)
             session["analyzer"] = None
             logger.info(f"Released video session {session_id}")
 
     def cleanup_stale_sessions(self, max_idle_seconds: int = 3600):
         now = time.time()
         with self._sessions_lock:
-            stale = [
-                sid for sid, s in list(self.sessions.items())
-                if s.get("status") in ("completed", "stopped", "error")
-                and (now - s.get("last_active", now)) > max_idle_seconds
-            ]
+            stale = [sid for sid, s in self.sessions.items()
+                     if s.get("status") in _FINISHED_STATES and now - s.get("last_active", now) > max_idle_seconds]
         for sid in stale:
             logger.info(f"Evicting stale video session {sid}")
             self.delete_session(sid)
@@ -99,9 +167,9 @@ class VideoInferenceService:
         if session_id and session_id in self.sessions:
             return session_id
         self.stop_all_sessions()
-        
+
         session_id = session_id or str(uuid.uuid4())
-        session_data = {
+        session = {
             "status": "queued",
             "queue": asyncio.Queue(maxsize=2),
             "original_filename": original_filename,
@@ -109,65 +177,42 @@ class VideoInferenceService:
             "temp_files_to_cleanup": [],
             "created_at": time.time(),
             "last_active": time.time(),
-            "stats": {
-                "session_id": session_id,
-                "original_filename": original_filename,
-                "status": "queued",
-                "frames_processed": 0,
-                "total_frames": 0,
-                "progress": 0.0,
-                "fps": 0.0,
-                "frame_time_ms": None,
-                "latency_ms": None,
-                "heads_count": 0,
-                "tails_count": 0,
-                "heads_total": 0,
-                "tails_total": 0,
-                "heads_visible": 0,
-                "tails_visible": 0,
-                "total_count": 0,
-                "bigger_tube": None,
-                "smaller_tube": None,
-                "detections": [],
-                "video_width": 0,
-                "video_height": 0,
-            },
-            "stop_event": asyncio.Event(),
+            "stats": new_stats(session_id=session_id, original_filename=original_filename,
+                               total_frames=0, progress=0.0),
+            "stop_event": threading.Event(),
             "run_seq": 0,
-            "temp_file": None
+            "temp_file": None,
         }
         with self._sessions_lock:
-            self.sessions[session_id] = session_data
+            self.sessions[session_id] = session
         return session_id
 
     def get_status(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._sessions_lock:
             session = self.sessions.get(session_id)
-        if not session:
-            return None
-        return session["stats"]
+        return session["stats"] if session else None
 
+    # --------------------------------------------------------------- stream
     async def get_stream_generator(self, session_id: str):
         session = self.sessions.get(session_id)
         if not session:
             return
 
         if session.get("last_frame_bytes"):
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + session["last_frame_bytes"] + b"\r\n")
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + session["last_frame_bytes"] + b"\r\n"
 
         queue = session["queue"]
         try:
             while not session["stop_event"].is_set():
-                frame_bytes = None
                 try:
                     frame_bytes = await asyncio.wait_for(queue.get(), timeout=1.5)
                 except asyncio.TimeoutError:
-                    if session["stop_event"].is_set() or session.get("status") in ("stopped", "completed", "error"):
+                    if session["stop_event"].is_set() or session.get("status") in _FINISHED_STATES:
                         break
                     continue
                 if frame_bytes is None:
                     break
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         except asyncio.CancelledError:
             logger.info(f"Stream disconnected for session {session_id}")
         finally:
@@ -175,65 +220,50 @@ class VideoInferenceService:
 
     async def stop_session(self, session_id: str, timeout: float = 1.0):
         session = self.sessions.get(session_id)
-        if session:
-            session["stop_event"].set()
-            session["status"] = "stopped"
-            session["stats"]["status"] = "stopped"
-            session["last_frame_bytes"] = None
+        if not session:
+            return
+        session["stop_event"].set()
+        session["status"] = "stopped"
+        session["stats"]["status"] = "stopped"
+        session["last_frame_bytes"] = None
+        _put_latest(session["queue"], None)
+        start_wait = time.time()
+        while session.get("is_task_active", False) and time.time() - start_wait < timeout:
+            await asyncio.sleep(0.01)
+
+    # ---------------------------------------------------------------- files
+    def _remove_temp_files(self, session: Dict[str, Any]) -> None:
+        for path in list(session.get("temp_files_to_cleanup", [])):
             try:
-                if session["queue"].full():
-                    session["queue"].get_nowait()
-                session["queue"].put_nowait(None)
-            except Exception:
-                pass
-            start_wait = time.time()
-            while session.get("is_task_active", False) and (time.time() - start_wait < timeout):
-                await asyncio.sleep(0.01)
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Could not remove temporary file {path}: {e}")
+        session["temp_files_to_cleanup"] = []
 
     def clear_session_files(self, session_id: str):
         session = self.sessions.get(session_id)
-        if not session:
-            return
-        for tf in list(session.get("temp_files_to_cleanup", [])):
-            try:
-                if tf and os.path.exists(tf):
-                    os.remove(tf)
-            except Exception as e:
-                logger.warning(f"Could not remove temporary file {tf}: {e}")
-        session["temp_files_to_cleanup"] = []
+        if session:
+            self._remove_temp_files(session)
 
+    # ----------------------------------------------------------------- runs
     def start_run(self, session_id: str) -> int:
+        """Begin a new run of this session: stops the previous run, resets stats, new queue."""
         session = self.sessions[session_id]
         session["run_seq"] += 1
-        session["stop_event"].set()
-        old_queue = session["queue"]
-        try:
-            if old_queue.full():
-                old_queue.get_nowait()
-            old_queue.put_nowait(None)
-        except (asyncio.QueueEmpty, asyncio.QueueFull):
-            pass
+        session["stop_event"].set()                       # ends the previous run's loop
+        _put_latest(session["queue"], None)               # ends the previous run's stream
         session["queue"] = asyncio.Queue(maxsize=2)
-        session["stop_event"] = asyncio.Event()
+        session["stop_event"] = threading.Event()
+        session["last_frame_bytes"] = None
         session["status"] = "processing"
-        
         session["stats"].update({
+            **new_stats(),
             "status": "processing",
-            "frames_processed": 0,
+            "total_frames": session["stats"].get("total_frames", 0),
             "progress": 0.0,
-            "fps": 0.0,
-            "frame_time_ms": None,
-            "latency_ms": None,
-            "heads_count": 0,
-            "tails_count": 0,
-            "heads_total": 0,
-            "tails_total": 0,
-            "heads_visible": 0,
-            "tails_visible": 0,
-            "total_count": 0,
-            "bigger_tube": None,
-            "smaller_tube": None,
-            "detections": [],
+            "video_width": session["stats"].get("video_width", 0),
+            "video_height": session["stats"].get("video_height", 0),
         })
         return session["run_seq"]
 
@@ -241,11 +271,11 @@ class VideoInferenceService:
         session = self.sessions.get(session_id)
         return bool(session and session.get("run_seq") == run_seq)
 
-    async def process_video_task(self, session_id: str, temp_file_path: str, original_filename: Optional[str] = None, run_seq: Optional[int] = None):
+    async def process_video_task(self, session_id: str, temp_file_path: str,
+                                 original_filename: Optional[str] = None, run_seq: Optional[int] = None):
         session = self.sessions.get(session_id)
         if not session or (run_seq is not None and not self._is_current_run(session_id, run_seq)):
             return
-
         if run_seq is None:
             run_seq = session.get("run_seq", 0)
 
@@ -254,250 +284,190 @@ class VideoInferenceService:
             session["original_filename"] = original_filename
             session["stats"]["original_filename"] = original_filename
 
-        if not self._is_current_run(session_id, run_seq):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._ml_executor, self._run_video_job,
+            session_id, run_seq, temp_file_path, original_filename, loop,
+        )
+
+    # ------------------------------------------------- the job (worker thread)
+    def _run_video_job(self, session_id: str, run_seq: int, video_path: str,
+                       original_filename: Optional[str], loop: asyncio.AbstractEventLoop) -> None:
+        session = self.sessions.get(session_id)
+        if session is None or not self._is_current_run(session_id, run_seq):
             return
-        
-        claimed_inference_lock = False
+        # Captured now: start_run() replaces these for the NEXT run, and this run must keep
+        # using (and finishing) its own.
+        stop_event = session["stop_event"]
+        frame_queue = session["queue"]
+        stats = session["stats"]
 
-        async with self._gpu_lock:
+        def set_status(status: str, reasons=None) -> None:
             if not self._is_current_run(session_id, run_seq):
-                return
-                
-            if app_state.get_mode() == "TRAINING":
-                session["status"] = "error"
-                session["stats"]["status"] = "error"
-                session["stats"]["reasons"] = ["Training is in progress -- try again after it finishes"]
-                return
+                return                                    # a newer run owns the session now
+            session["status"] = status
+            stats["status"] = status
+            if reasons:
+                stats["reasons"] = reasons
 
-            if session["stop_event"].is_set():
-                session["status"] = "stopped"
-                session["stats"]["status"] = "stopped"
-                return
-
-            if not app_state.try_enter_inference("video"):
-                session["status"] = "error"
-                session["stats"]["status"] = "error"
-                session["stats"]["reasons"] = ["GPU is currently in use by another inference session (camera or training) -- try again shortly"]
-                return
-                
-            claimed_inference_lock = True
-            session["status"] = "processing"
-            session["stats"]["status"] = "processing"
-            session["is_task_active"] = True
-            
-            logger.info(f"Starting inference for session {session_id}")
-            
-            cap = None
-            out_writer = None
+        def publish(item) -> None:
             try:
-                analyzer = self._get_or_create_analyzer()
-                analyzer.reset()
-                session["analyzer"] = analyzer
+                loop.call_soon_threadsafe(_put_latest, frame_queue, item)
+            except RuntimeError:
+                pass                                      # event loop already closed
 
-                cap = cv2.VideoCapture(temp_file_path, cv2.CAP_FFMPEG)
-                if not cap.isOpened():
-                    raise ValueError(f"Could not open video file: {temp_file_path}")
+        if app_state.get_mode() == "TRAINING":
+            set_status("error", ["Training is in progress -- try again after it finishes"])
+            return
+        if stop_event.is_set():
+            set_status("stopped")
+            return
+        if not app_state.try_enter_inference("video"):
+            set_status("error", ["GPU is currently in use by another inference session (camera or training) -- try again shortly"])
+            return
 
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-                session["stats"]["total_frames"] = max(1, total_frames)
-                
-                try:
-                    from app.core.app_paths import get_ml_output_dir
-                    base_output_dir = str(get_ml_output_dir())
-                except Exception:
-                    base_output_dir = os.path.join(tempfile.gettempdir(), "vision_monitor_output")
-                    
-                session_dir = os.path.join(base_output_dir, session_id)
-                os.makedirs(session_dir, exist_ok=True)
-                session["session_dir"] = session_dir
+        session["is_task_active"] = True
+        set_status("processing")
+        logger.info(f"Starting inference for session {session_id}")
 
-                orig_name = original_filename or session.get("original_filename")
-                if orig_name:
-                    base_name = os.path.splitext(os.path.basename(orig_name))[0]
-                    video_filename = f"{base_name}.mp4" if base_name.startswith("annotated_") else f"annotated_{base_name}.mp4"
-                else:
-                    video_filename = f"annotated_{session_id}.mp4"
+        cap = writer = analyzer = last_analysis = None
+        owns_analyzer = False
+        reached_eof = False
+        try:
+            analyzer, owns_analyzer = self._acquire_analyzer()   # model load happens here, off the event loop
+            analyzer.reset_tracking()
+            session["analyzer"] = analyzer
 
-                output_path = os.path.join(session_dir, video_filename)
-                session["stats"]["output_dir"] = session_dir
-                session["stats"]["output_file"] = output_path
+            cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
 
-                raw_fps = cap.get(cv2.CAP_PROP_FPS)
-                video_fps = raw_fps if (raw_fps and 10.0 <= raw_fps <= 120.0) else 30.0
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                session["stats"]["video_width"] = width
-                session["stats"]["video_height"] = height
-                
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out_writer = cv2.VideoWriter(output_path, fourcc, video_fps, (width, height))
-                
-                frame_idx = 0
-                stride = 2 if video_fps > 45.0 else 1
-                last_result = {}
-                last_annotated_frame = None
-                last_clean_frame = None
-                frame_time_ms = None
-                infer_fps = 0.0
-                loop = asyncio.get_running_loop()
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            raw_fps = cap.get(cv2.CAP_PROP_FPS)
+            video_fps = raw_fps if (raw_fps and 10.0 <= raw_fps <= 120.0) else 30.0
+            stats.update(total_frames=max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)),
+                         video_width=width, video_height=height)
+            analyzer.warm_up((height, width))                    # so frame 1 is not slow
 
-                def _infer_frame(analyzer_inst, frame_in, idx):
-                    """Runs on the ML thread. frame_time_ms covers ONLY process_frame():
-                    not frame reading, not the thread hand-off, not video writing / JPEG encoding."""
-                    with (torch.inference_mode() if torch is not None else nullcontext()):
-                        t_start = time.perf_counter()
-                        res, annotated, clean = analyzer_inst.process_frame(frame_in, idx, return_clean=True)
-                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-                    return res, annotated, clean, elapsed_ms
+            session_dir = os.path.join(_output_base_dir(), session_id)
+            os.makedirs(session_dir, exist_ok=True)
+            output_path = os.path.join(session_dir, _output_video_name(
+                original_filename or session.get("original_filename"), session_id))
+            session["session_dir"] = session_dir
+            stats["output_dir"] = session_dir
+            stats["output_file"] = output_path
+            writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (width, height))
+            if not writer.isOpened():
+                logger.warning(f"Session {session_id}: cannot write {output_path}; continuing without annotated video")
+                writer = None
 
-                while not session["stop_event"].is_set() and self._is_current_run(session_id, run_seq):
-                    ret, frame = cap.read()
-                    if not self._is_current_run(session_id, run_seq):
-                        break
+            stride = 2 if video_fps > _HIGH_FPS_THRESHOLD else 1   # high-fps: model on every 2nd frame
+            frame_number = 0
+            frame_time_ms: Optional[float] = None
+            inference_fps = 0.0
 
-                    if not ret or frame is None:
-                        logger.info(f"Session {session_id}: reached EOF at frame {frame_idx}")
-                        session["status"] = "completed"
-                        session["stats"]["status"] = "completed"
-                        session["stats"]["progress"] = 100.0
-                        if session.get("last_frame_bytes") and session.get("session_dir"):
-                            try:
-                                with open(os.path.join(session["session_dir"], "last_frame.jpg"), "wb") as f:
-                                    f.write(session["last_frame_bytes"])
-                            except Exception:
-                                pass
-                        if session.get("session_dir") and session.get("stats"):
-                            try:
-                                def _default_serializer(obj):
-                                    if hasattr(obj, "item"):
-                                        return obj.item()
-                                    if hasattr(obj, "tolist"):
-                                        return obj.tolist()
-                                    return str(obj)
-                                with open(os.path.join(session["session_dir"], "results.json"), "w") as rf:
-                                    json.dump(session["stats"], rf, indent=2, default=_default_serializer)
-                            except Exception as json_err:
-                                logger.warning(f"Could not save results.json: {json_err}")
-                        break
-                    
-                    frame_idx += 1
-                    session["last_active"] = time.time()
-                    if frame.shape[1] > 0 and frame.shape[0] > 0:
-                        session["stats"]["video_width"] = frame.shape[1]
-                        session["stats"]["video_height"] = frame.shape[0]
-                    session["stats"]["total_frames"] = max(session["stats"]["total_frames"], frame_idx)
+            while not stop_event.is_set():
+                ok, frame = cap.read()
+                if not self._is_current_run(session_id, run_seq):
+                    break
+                if not ok or frame is None:
+                    reached_eof = True
+                    break
 
-                    if stride > 1 and (frame_idx % stride != 0) and last_annotated_frame is not None:
-                        result = last_result
-                        annotated_frame = last_annotated_frame
-                        clean_frame = last_clean_frame
-                    else:
-                        try:
-                            result, annotated_frame, clean_frame, frame_time_ms = await loop.run_in_executor(
-                                self._ml_executor, _infer_frame, analyzer, frame.copy(), frame_idx
-                            )
-                            infer_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
-                            last_result = result
-                            last_annotated_frame = annotated_frame
-                            last_clean_frame = clean_frame
-                        except Exception as frame_err:
-                            logger.warning(f"Session {session_id}: frame {frame_idx} inference failed: {frame_err}")
-                            result = last_result
-                            annotated_frame = last_annotated_frame if last_annotated_frame is not None else frame.copy()
-                            clean_frame = last_clean_frame if last_clean_frame is not None else annotated_frame
-                            frame_time_ms = None
-                            infer_fps = 0.0
+                frame_number += 1
+                session["last_active"] = time.time()
+                stats["total_frames"] = max(stats["total_frames"], frame_number)
 
-                    session["stats"]["frames_processed"] = frame_idx
-                    if session["stats"]["total_frames"] > 0:
-                        session["stats"]["progress"] = round((frame_idx / session["stats"]["total_frames"]) * 100, 1)
-                    session["stats"]["fps"] = infer_fps
-                    
-                    # Update stats with latest frame results
-                    for k, v in result.items():
-                        session["stats"][k] = v
-
-                    detections = []
-                    for d in result.get("detections", []):
-                        det = dict(d)
-                        det["confidence"] = det.get("conf", 1.0)
-                        det["class"] = det.get("role", "HEAD")
-                        det["status"] = "OK"
-                        detections.append(det)
-
-                    session["stats"].update({
-                        "frame_time_ms": round(frame_time_ms, 2) if frame_time_ms is not None else None,
-                        "latency_ms": round(frame_time_ms, 2) if frame_time_ms is not None else None,
-                        "fps": infer_fps,
-                        "total_count": session["stats"].get("heads_count", 0) + session["stats"].get("tails_count", 0),
-                        "heads_total": session["stats"].get("heads_total", 0),
-                        "tails_total": session["stats"].get("tails_total", 0),
-                        "heads_visible": session["stats"].get("heads_visible", session["stats"].get("heads_count", 0)),
-                        "tails_visible": session["stats"].get("tails_visible", session["stats"].get("tails_count", 0)),
-                        "bigger_tube": None,
-                        "smaller_tube": None,
-                        "detections": detections,
-                    })
-
-                    if out_writer:
-                        out_writer.write(annotated_frame)   # saved video: boxes drawn by the wheel
-
+                # Run the model on this frame, or (stride) reuse the last detections.
+                if last_analysis is None or frame_number % stride == 0:
                     try:
-                        # live stream: clean frame; the frontend draws boxes from result["detections"]
-                        _, buffer = cv2.imencode('.jpg', clean_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                        with inference_context():
+                            t_start = time.perf_counter()
+                            last_analysis = analyzer.analyze_frame(frame, frame_number)
+                            frame_time_ms = (time.perf_counter() - t_start) * 1000.0
+                        inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
+                    except Exception as frame_err:
+                        logger.warning(f"Session {session_id}: frame {frame_number} inference failed: {frame_err}")
+                        frame_time_ms, inference_fps = None, 0.0
+
+                # Stats for the frontend (one update() so readers never see a half-written frame).
+                update = build_frontend_stats(last_analysis.result) if last_analysis else {}
+                update.update(
+                    frame=frame_number,
+                    frames_processed=frame_number,
+                    progress=round(frame_number / stats["total_frames"] * 100, 1),
+                    fps=inference_fps,
+                    frame_time_ms=round(frame_time_ms, 2) if frame_time_ms is not None else None,
+                    latency_ms=round(frame_time_ms, 2) if frame_time_ms is not None else None,
+                )
+                stats.update(update)
+
+                # Saved video: boxes drawn on THIS frame (also on stride-skipped frames).
+                if writer is not None:
+                    writer.write(analyzer.draw_annotations(frame, last_analysis))
+
+                # Live stream: clean frame; the frontend draws boxes from stats["detections"].
+                try:
+                    encoded, buffer = cv2.imencode(".jpg", analyzer.get_clean_frame(frame),
+                                                   [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
+                    if encoded:
                         frame_bytes = buffer.tobytes()
                         session["last_frame_bytes"] = frame_bytes
+                        if frame_number == 1 or frame_number % _SAVE_PREVIEW_EVERY_N_FRAMES == 0:
+                            _write_bytes(os.path.join(session_dir, "last_frame.jpg"), frame_bytes)
+                        publish(frame_bytes)
+                except Exception as enc_err:
+                    logger.warning(f"Session {session_id}: could not encode frame {frame_number}: {enc_err}")
 
-                        if (frame_idx % 15 == 0 or frame_idx == 1) and session.get("session_dir"):
-                            try:
-                                with open(os.path.join(session["session_dir"], "last_frame.jpg"), "wb") as f:
-                                    f.write(frame_bytes)
-                            except Exception:
-                                pass
+            # Finalise the output file BEFORE reporting "completed", so a client that sees
+            # "completed" can open a fully written mp4.
+            cap.release(); cap = None
+            if writer is not None:
+                writer.release(); writer = None
 
-                        try:
-                            if session["queue"].full():
-                                session["queue"].get_nowait()
-                            session["queue"].put_nowait(frame_bytes)
-                        except (asyncio.QueueFull, asyncio.QueueEmpty):
-                            pass
-                    except Exception as e:
-                        logger.warning(f"Failed to encode frame for SSE in session {session_id}: {e}")
-
-                    # Yield control briefly
-                    await asyncio.sleep(0.001)
-
-            except Exception as e:
-                logger.error(f"Error in video inference task for session {session_id}: {e}", exc_info=True)
-                session["status"] = "error"
-                session["stats"]["status"] = "error"
-                session["stats"]["reasons"] = [str(e)]
-            finally:
-                if cap:
-                    cap.release()
-                if out_writer:
-                    out_writer.release()
-                if claimed_inference_lock:
-                    app_state.exit_inference("video")
-                if torch and torch.cuda.is_available():
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
-                session["is_task_active"] = False
+            if reached_eof:
+                logger.info(f"Session {session_id}: reached EOF at frame {frame_number}")
+                stats["progress"] = 100.0
+                if session.get("last_frame_bytes"):
+                    _write_bytes(os.path.join(session_dir, "last_frame.jpg"), session["last_frame_bytes"])
                 try:
-                    session["queue"].put_nowait(None)
-                except Exception:
-                    pass
+                    with open(os.path.join(session_dir, "results.json"), "w") as rf:
+                        json.dump({**stats, "status": "completed"}, rf, indent=2, default=_json_default)
+                except Exception as json_err:
+                    logger.warning(f"Could not save results.json: {json_err}")
+                set_status("completed")
+            elif session.get("status") == "processing":
+                set_status("stopped")                         # stopped via stop_all_sessions / delete_session
+
+        except Exception as e:
+            logger.error(f"Error in video inference task for session {session_id}: {e}", exc_info=True)
+            set_status("error", [str(e)])
+        finally:
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            session["analyzer"] = None
+            analyzer = last_analysis = None                   # drop our references to the model
+            release_gpu_memory()                              # VRAM back BEFORE the claim is released
+            app_state.exit_inference("video")
+            session["is_task_active"] = False
+            if self._is_current_run(session_id, run_seq):
+                publish(None)                                 # ends this run's live stream
+
 
 video_inference_service = VideoInferenceService()
 ml_inference_service = video_inference_service
+
 
 def is_cuda_operational() -> bool:
     if torch is None:
         return False
     return torch.cuda.is_available() and torch.cuda.device_count() > 0
 
-def _set_shared_analyzer(analyzer):
-    video_inference_service._shared_analyzer = analyzer
 
+def _set_shared_analyzer(analyzer):
+    """Optional: pre-loaded analyzer that video jobs reuse instead of loading one per job.
+    NOTE: it stays in VRAM permanently, which defeats the video/camera exclusion in app_state."""
+    video_inference_service._shared_analyzer = analyzer

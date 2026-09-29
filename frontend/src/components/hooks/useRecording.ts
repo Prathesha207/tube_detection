@@ -29,7 +29,8 @@ export function useRecording() {
   }, []);
 
   const startRecording = useCallback(async (recordingFormat: string = 'MP4') => {
-    if (isRecording || isSaving) return false;
+    const isProcessing = useInferenceStore.getState().stats.status === 'processing';
+    if (isProcessing || isRecording || isSaving) return false;
 
     const newSessionId = `rec_${Date.now()}`;
     sessionIdRef.current = newSessionId;

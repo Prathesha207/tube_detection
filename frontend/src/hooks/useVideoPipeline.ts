@@ -89,9 +89,7 @@ export function useVideoPipeline({
       setFps(0);
       useInferenceStore.getState().resetStats();
       resetBBoxCache();
-      if (sessionId) {
-        await startVideoInference(sessionId);
-      }
+      showToast('info', `Recorded video loaded: "${name}". Click START INFERENCE to run.`);
       return;
     }
 

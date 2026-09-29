@@ -203,29 +203,31 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         {/* Recording Button (Camera Only) */}
         {isCameraSource && (
           <button
-            disabled={hasCameraRecording || isSaving}
+            disabled={hasCameraRecording || isSaving || isRunning}
             onClick={() => {
-              if (hasCameraRecording || isSaving) return;
+              if (hasCameraRecording || isSaving || isRunning) return;
               onToggleRecording();
             }}
             title={
-              hasCameraRecording
-                ? 'Cannot record while reviewing a recorded clip. Return to live camera feed first.'
-                : isSaving
-                  ? 'Finalizing recording... please wait'
-                  : isRecording
-                    ? 'Click to stop recording'
-                    : isStreaming
-                      ? 'Click to record live camera stream'
-                      : 'Start camera stream and begin recording'
+              isRunning
+                ? 'Cannot record while AI inference is running. Stop inference first.'
+                : hasCameraRecording
+                  ? 'Cannot record while reviewing a recorded clip. Return to live camera feed first.'
+                  : isSaving
+                    ? 'Finalizing recording... please wait'
+                    : isRecording
+                      ? 'Click to stop recording'
+                      : isStreaming
+                        ? 'Click to record live camera stream'
+                        : 'Start camera stream and begin recording'
             }
-            className={`group h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 sm:gap-2 rounded-xl backdrop-blur-md border text-[10px] sm:text-xs font-bold transition-all shrink-0 shadow-xs active:scale-95 ${hasCameraRecording
+            className={`group h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 sm:gap-2 rounded-xl backdrop-blur-md border text-[10px] sm:text-xs font-bold transition-all shrink-0 shadow-xs ${isRunning || hasCameraRecording
               ? 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-muted)] opacity-40 cursor-not-allowed'
               : isSaving
                 ? 'bg-rose-700/90 text-white border-rose-400/80 shadow-md cursor-wait'
                 : isRecording
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-600/40 animate-pulse ring-2 ring-rose-500/30 cursor-pointer'
-                  : 'bg-rose-50 hover:bg-rose-100 border-rose-300 text-rose-700 dark:bg-rose-950/60 dark:hover:bg-rose-900/80 dark:border-rose-500/50 dark:text-rose-200 dark:hover:text-white hover:shadow-rose-600/25 cursor-pointer'
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-600/40 animate-pulse ring-2 ring-rose-500/30 cursor-pointer active:scale-95'
+                  : 'bg-rose-50 hover:bg-rose-100 border-rose-300 text-rose-700 dark:bg-rose-950/60 dark:hover:bg-rose-900/80 dark:border-rose-500/50 dark:text-rose-200 dark:hover:text-white hover:shadow-rose-600/25 cursor-pointer active:scale-95'
               }`}
           >
             {isSaving ? (

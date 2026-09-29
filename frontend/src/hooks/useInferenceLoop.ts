@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import type { StreamSourceType, LogEntry, TubeEntity } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
@@ -47,30 +47,24 @@ export function useInferenceLoop({
   framesProcessed: number;
   setFramesProcessed: (val: number) => void;
   uptimeSeconds: number;
-  setUptimeSeconds: (val: number) => void;
+  setUptimeSeconds: React.Dispatch<React.SetStateAction<number>> | ((val: any) => void);
   setLastCameraFrame?: (frame: string) => void;
 }) {
-  const uptimeRef = useRef(uptimeSeconds);
-  uptimeRef.current = uptimeSeconds;
-
   useEffect(() => {
     if (!isRunning) return;
-    const start = Date.now();
-    const initial = uptimeRef.current;
-    const interval = setInterval(() => {
-      setUptimeSeconds(initial + Math.floor((Date.now() - start) / 1000));
+
+    const uptimeTimer = setInterval(() => {
+      setUptimeSeconds((prev: any) => (typeof prev === 'number' ? prev + 1 : 1));
     }, 1000);
-    return () => clearInterval(interval);
-  }, [isRunning, setUptimeSeconds]);
-
-  useEffect(() => {
-    if (!isRunning) return;
 
     const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
     const effectiveVideoSessionId = isCameraSource ? cameraRecordSessionId : videoSessionId;
     const isLive = isCameraSource && !effectiveVideoSessionId;
 
-    if (!isLive && !effectiveVideoSessionId) return;
+    if (!isLive && !effectiveVideoSessionId) {
+      clearInterval(uptimeTimer);
+      return;
+    }
 
     if (isLive) {
       let ws: WebSocket | null = null;
@@ -112,7 +106,7 @@ export function useInferenceLoop({
         };
       };
       connectWs();
-      return () => { isMounted = false; if (ws) ws.close(); };
+      return () => { isMounted = false; if (ws) ws.close(); clearInterval(uptimeTimer); };
     }
 
     const sessionId = effectiveVideoSessionId as string;
@@ -206,6 +200,7 @@ export function useInferenceLoop({
 
     return () => {
       isMounted = false;
+      clearInterval(uptimeTimer);
       clearTimeout(timeoutId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
@@ -220,6 +215,12 @@ export function useInferenceLoop({
 
     if (isRunning) {
       setIsRunning(false);
+      setTubes([]);
+      useInferenceStore.getState().resetStats();
+      setFramesProcessed(0);
+      setFps(0);
+      setUptimeSeconds(0);
+      resetBBoxCache();
       showToast('info', 'Inference paused. Click Resume or Start.');
       addLog('Inference paused • Model evaluation temporarily suspended.', 'info');
 

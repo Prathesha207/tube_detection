@@ -54,21 +54,24 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
     return `${hrs.toString().padStart(2, '0')}:${(mins % 60).toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const displayFps = mlStats.status !== 'idle' && mlStats.fps > 0 ? mlStats.fps : metrics.fps;
-  const displayFrames = mlStats.status !== 'idle' && mlStats.frames_processed > 0 ? mlStats.frames_processed : metrics.framesProcessed;
-  const displayProgress = mlStats.status !== 'idle' ? mlStats.progress : 100;
+  const displayFps = isRunning ? (mlStats.fps > 0 ? mlStats.fps : metrics.fps) : 0;
+  const displayFrames = mlStats.status !== 'idle' && mlStats.status !== 'stopped' && mlStats.frames_processed > 0
+    ? mlStats.frames_processed
+    : (isRunning ? metrics.framesProcessed : 0);
+  const displayProgress = mlStats.status !== 'idle' && mlStats.status !== 'stopped' ? (mlStats.progress ?? 0) : 0;
   const latencyMs = mlStats.latency_ms ?? mlStats.frame_time_ms ?? metrics.latencyMs ?? metrics.inferenceTimeMs;
 
-  const displayUptime = metrics.uptimeSeconds || 0;
+  const displayUptime = isRunning ? (metrics.uptimeSeconds || 0) : 0;
 
   const isCompleted =
-    mlStats.status === 'completed' ||
-    anomalyStatus.message === 'COMPLETED' ||
-    (mlStats.total_frames > 0 && mlStats.frames_processed >= mlStats.total_frames) ||
-    displayProgress >= 100;
+    !isRunning &&
+    displayFrames > 0 &&
+    (mlStats.status === 'completed' ||
+      anomalyStatus.message === 'COMPLETED' ||
+      (mlStats.total_frames > 0 && mlStats.frames_processed >= mlStats.total_frames));
 
-  const isSessionActive = isRunning || isCompleted || displayFrames > 0;
-  const isEmptyState = !isSessionActive && tubes.length === 0 && !anomalyStatus.headsCount && !anomalyStatus.tailsCount;
+  const isSessionActive = isRunning || (isCompleted && displayFrames > 0);
+  const isEmptyState = !isSessionActive;
   const isWarming = anomalyStatus.message === 'WARMING';
 
   // Construct frame numbers and verdict
@@ -92,7 +95,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
     if (isStandby) {
       return 'Standby';
     }
-    return anomalyStatus.message || 'Completed';
+    return anomalyStatus.message || 'Standby';
   }, [isRunning, isCameraSource, isCompleted, mlStats.status, isStandby, anomalyStatus.message]);
 
   const verdictText = useMemo(() => {
@@ -160,7 +163,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
               size="sm"
               dot
             >
-              <span>{isRunning ? 'PROCESSING' : (isCompleted ? 'COMPLETED' : (isStandby ? 'STANDBY' : anomalyStatus.message))}</span>
+              <span>{isRunning ? 'PROCESSING' : (isCompleted ? 'COMPLETED' : (isStandby ? 'STANDBY' : (mlStats.status === 'stopped' || anomalyStatus.message === 'STOPPED' ? 'STOPPED' : anomalyStatus.message || 'STANDBY')))}</span>
               {displayFps > 0 && isRunning && (
                 <span className="ml-1 opacity-90 font-mono text-[10px]">
                   &bull; {displayFps.toFixed(1)} fps

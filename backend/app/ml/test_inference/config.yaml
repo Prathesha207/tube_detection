@@ -1,0 +1,35 @@
+# config.yaml - settings for head_tail_analyzer (hta-frames)
+# Relative paths are relative to THIS file's folder, so you can copy this
+# folder (config + model + roi.json) to another machine as-is.
+# Any setting can be overridden on the command line, e.g. --video, --output.
+
+model_path: model/best.pt
+video: C:\Users\EmageVision\Downloads\session_2026-09-26_14-12-54_batch_rec_1790403174831_1.avi
+device: "0"          # "0" = first GPU, "cpu" = CPU
+
+# detection
+conf: 0.35           # best F1 on validation was at ~0.35
+iou: 0.5
+tile: 640            # must match training (0 = whole frame, not recommended)
+tile_overlap: 0.3
+merge_iou: 0.4       # merge duplicate boxes from overlapping tiles
+merge_contain: 0.75
+gray: false          # model was trained on grayscale images
+stride: 1            # 1 = every frame
+
+# tracking
+min_frames: 5        # sightings before an end is confirmed and counted
+max_dist: 60         # px an end may move between frames and stay the same end
+max_missed: 15       # frames a lost track can still be re-matched
+
+# ROI - inference + tracking use the whole frame; only detections inside
+# this polygon are reported, drawn and counted. Set roi_json: null for none.
+roi_json: roi.json
+draw_roi: true
+
+# outputs (null = don't write)
+output_video: measured/frames.mp4
+latest_json: measured/latest_frame.json
+history_jsonl: null                       # e.g. measured/history.jsonl
+print_frames: true
+show_preview: false

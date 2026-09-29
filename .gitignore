@@ -1,15 +1,20 @@
 node_modules/
+dist/
 dist*/
 build/
 .venv/
+venv/
 __pycache__/
+*.pyc
 output/
 *.mp4
 *.avi
 *.whl
-!vision-ai-backend/app/ml/whl/*.whl
+!backend/app/ml/whl/*.whl
 manual_inference_output/
-vision-ai-frontend/release-backend/
+release-backend/
 *.db
 measured/
+.DS_Store
+*.log
 

@@ -175,6 +175,10 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [roiPoints, setRoiPoints] = useState<Point[]>([]);
   const [savedRoiPoints, setSavedRoiPoints] = useState<Point[]>([]);
   const [isSavingRoi, setIsSavingRoi] = useState<boolean>(false);
+  const [roiFrameSize, setRoiFrameSize] = useState<{ width: number; height: number }>({
+    width: 1920,
+    height: 1080,
+  });
 
   // Effective native frame width and height (from authoritative ML stats or video dimensions)
   const effectiveFw = Number(backendStats?.video_width) || Number(videoDimensions?.width) || 1920;
@@ -188,15 +192,18 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     let isMounted = true;
     roiService.getRoi(activeSessionId, effectiveFw, effectiveFh).then((res) => {
       if (!isMounted) return;
-      if (res && Array.isArray(res.points)) {
+      if (res && Array.isArray(res.points) && res.points.length > 0) {
         setRoiPoints(res.points);
         setSavedRoiPoints(res.points);
+        if (res.frame_width && res.frame_height) {
+          setRoiFrameSize({ width: Number(res.frame_width), height: Number(res.frame_height) });
+        }
       }
     });
     return () => {
       isMounted = false;
     };
-  }, [activeSessionId, effectiveFw, effectiveFh]);
+  }, [activeSessionId]);
 
   const hasRoiChanges = useMemo(() => {
     if (roiPoints.length !== savedRoiPoints.length) return true;
@@ -213,8 +220,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     try {
       const res = await roiService.saveRoi(
         roiPoints,
-        effectiveFw,
-        effectiveFh,
+        roiFrameSize.width || effectiveFw,
+        roiFrameSize.height || effectiveFh,
         activeSessionId,
         isCameraSource ? 'camera' : 'video'
       );
@@ -240,8 +247,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     try {
       await roiService.saveRoi(
         [],
-        effectiveFw,
-        effectiveFh,
+        roiFrameSize.width || effectiveFw,
+        roiFrameSize.height || effectiveFh,
         activeSessionId,
         isCameraSource ? 'camera' : 'video'
       );
@@ -590,19 +597,22 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             {/* AI Bounding Boxes: Shown in INFERENCE mode or always for video upload / camera recording */}
             {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && tubes.length > 0 && (
-              <BoundingBoxOverlay
-                tubes={tubes}
-                selectedTubeId={selectedTubeId}
-                onSelectTube={onSelectTube}
-                labelMode={labelMode}
-              />
+              <div className={`absolute inset-0 ${isRoiActive ? 'pointer-events-none opacity-40' : 'pointer-events-auto'}`}>
+                <BoundingBoxOverlay
+                  tubes={tubes}
+                  selectedTubeId={selectedTubeId}
+                  onSelectTube={onSelectTube}
+                  labelMode={labelMode}
+                />
+              </div>
             )}
 
-            {/* Passive Saved ROI Reference Outline (When ROI editor is closed) */}
+            {/* Passive Saved ROI Reference Outline (Always visible on canvas as default ROI from roi.json) */}
             {!isRoiActive && roiPoints.length >= 3 && (
               <svg
-                className="absolute inset-0 z-15 w-full h-full pointer-events-none"
-                viewBox={`0 0 ${effectiveFw} ${effectiveFh}`}
+                className="absolute inset-0 z-20 w-full h-full pointer-events-none"
+                style={{ zIndex: 20 }}
+                viewBox={`0 0 ${roiFrameSize.width || effectiveFw} ${roiFrameSize.height || effectiveFh}`}
                 preserveAspectRatio="none"
               >
                 <polygon
@@ -622,8 +632,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 onChange={setRoiPoints}
                 activeTool={activeRoiTool}
                 onSelectTool={setActiveRoiTool}
-                frameWidth={effectiveFw}
-                frameHeight={effectiveFh}
+                frameWidth={roiFrameSize.width || effectiveFw}
+                frameHeight={roiFrameSize.height || effectiveFh}
               />
             )}
           </div>

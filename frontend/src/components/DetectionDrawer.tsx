@@ -136,7 +136,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
 
   return (
     <aside
-      className="w-full lg:w-[22rem] xl:w-[24rem] 2xl:w-[26rem] h-auto lg:h-full flex-shrink-0 flex flex-col gap-3 min-h-0 overflow-y-auto invisible-scrollbar items-stretch"
+      className="w-full lg:w-[25%] lg:min-w-[280px] h-auto lg:h-full flex-shrink-0 flex flex-col gap-3 min-h-0 overflow-y-auto invisible-scrollbar items-stretch"
     >
       {/* SINGLE UNIFIED INFERENCE CARD */}
       <div

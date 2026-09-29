@@ -829,7 +829,7 @@ export default function App() {
         />
 
         <div className="w-full flex flex-col lg:flex-row items-stretch flex-1 min-h-0 gap-4">
-          <main className="flex-1 w-full min-w-0 min-h-0 flex flex-col">
+          <main className="w-full lg:w-[75%] flex-1 min-w-0 min-h-0 flex flex-col">
             <DetectionCanvas
               tubes={anomalyFinal.activeTubes}
               anomalyStatus={anomalyFinal.anomalyStatus}

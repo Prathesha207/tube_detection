@@ -24,6 +24,12 @@ import { useContainerFit } from '../hooks/useContainerFit';
 import { useVideoUpload } from '../hooks/useVideoUpload';
 import { useCanvasZoom } from '../hooks/useCanvasZoom';
 
+// ROI Components & Utilities
+import { RoiDrawingOverlay } from './canvas/RoiDrawingOverlay';
+import { RoiLeftToolbar, RoiToolMode } from './canvas/RoiLeftToolbar';
+import { roiService } from './service/roiService';
+import { Point, validateRoi } from '../utils/roiUtils';
+
 interface DetectionCanvasProps {
   tubes: TubeEntity[];
   setTubes?: React.Dispatch<React.SetStateAction<TubeEntity[]>>;
@@ -162,6 +168,98 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     cursorStyle,
     hasMoved,
   } = useCanvasZoom(isMediaActive);
+
+  // ROI Mask Management State
+  const [isRoiActive, setIsRoiActive] = useState<boolean>(false);
+  const [activeRoiTool, setActiveRoiTool] = useState<RoiToolMode>('pointer');
+  const [roiPoints, setRoiPoints] = useState<Point[]>([]);
+  const [savedRoiPoints, setSavedRoiPoints] = useState<Point[]>([]);
+  const [isSavingRoi, setIsSavingRoi] = useState<boolean>(false);
+
+  // Effective native frame width and height (from authoritative ML stats or video dimensions)
+  const effectiveFw = Number(backendStats?.video_width) || Number(videoDimensions?.width) || 1920;
+  const effectiveFh = Number(backendStats?.video_height) || Number(videoDimensions?.height) || 1080;
+
+  // Active session id (video or camera)
+  const activeSessionId = videoSessionId || cameraRecordSessionId || (isCameraSource ? 'camera' : undefined);
+
+  // Fetch saved ROI on mount or whenever active session changes
+  useEffect(() => {
+    let isMounted = true;
+    roiService.getRoi(activeSessionId, effectiveFw, effectiveFh).then((res) => {
+      if (!isMounted) return;
+      if (res && Array.isArray(res.points)) {
+        setRoiPoints(res.points);
+        setSavedRoiPoints(res.points);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [activeSessionId, effectiveFw, effectiveFh]);
+
+  const hasRoiChanges = useMemo(() => {
+    if (roiPoints.length !== savedRoiPoints.length) return true;
+    return JSON.stringify(roiPoints) !== JSON.stringify(savedRoiPoints);
+  }, [roiPoints, savedRoiPoints]);
+
+  const handleSaveRoi = async () => {
+    const val = validateRoi(roiPoints);
+    if (!val.valid) {
+      showToast('error', val.error || 'Invalid ROI geometry');
+      return;
+    }
+    setIsSavingRoi(true);
+    try {
+      const res = await roiService.saveRoi(
+        roiPoints,
+        effectiveFw,
+        effectiveFh,
+        activeSessionId,
+        isCameraSource ? 'camera' : 'video'
+      );
+      setSavedRoiPoints(res.points || roiPoints);
+      showToast('success', 'ROI saved & applied. Tracker totals recalibrated for the new region.');
+      // Automatically close editor mode after saving: hides toolbar and handles, shows clean line only
+      setIsRoiActive(false);
+      // Reset counters in store to prevent jump in totals from looking like a bug
+      useInferenceStore.getState().setStats({
+        ...backendStats,
+        heads_total: 0,
+        tails_total: 0,
+      });
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to save ROI';
+      showToast('error', msg);
+    } finally {
+      setIsSavingRoi(false);
+    }
+  };
+
+  const handleClearRoi = async () => {
+    try {
+      await roiService.saveRoi(
+        [],
+        effectiveFw,
+        effectiveFh,
+        activeSessionId,
+        isCameraSource ? 'camera' : 'video'
+      );
+      setRoiPoints([]);
+      setSavedRoiPoints([]);
+      showToast('info', 'ROI deleted. Full frame is now being inspected.');
+      useInferenceStore.getState().setStats({
+        ...backendStats,
+        heads_total: 0,
+        tails_total: 0,
+      });
+      // Close the ROI editor
+      setIsRoiActive(false);
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to delete ROI on server';
+      showToast('error', msg);
+    }
+  };
 
   // Reset zoom whenever stream or video source changes
   useEffect(() => {
@@ -499,8 +597,50 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 labelMode={labelMode}
               />
             )}
+
+            {/* Passive Saved ROI Reference Outline (When ROI editor is closed) */}
+            {!isRoiActive && roiPoints.length >= 3 && (
+              <svg
+                className="absolute inset-0 z-15 w-full h-full pointer-events-none"
+                viewBox={`0 0 ${effectiveFw} ${effectiveFh}`}
+                preserveAspectRatio="none"
+              >
+                <polygon
+                  points={roiPoints.map(([x, y]) => `${x},${y}`).join(' ')}
+                  fill="none"
+                  stroke="#06b6d4"
+                  strokeWidth="2"
+                  strokeDasharray="6 4"
+                />
+              </svg>
+            )}
+
+            {/* Interactive ROI Mask Drawing & Editing Overlay (Active when user toggles [ 🎯 ]) */}
+            {isRoiActive && (
+              <RoiDrawingOverlay
+                points={roiPoints}
+                onChange={setRoiPoints}
+                activeTool={activeRoiTool}
+                onSelectTool={setActiveRoiTool}
+                frameWidth={effectiveFw}
+                frameHeight={effectiveFh}
+              />
+            )}
           </div>
         </div>
+      )}
+
+      {/* Floating Left-Center Vertical Tool Palette for ROI Drawing */}
+      {isRoiActive && isMediaActive && !isOverlayShowing && (
+        <RoiLeftToolbar
+          activeTool={activeRoiTool}
+          onSelectTool={setActiveRoiTool}
+          onClear={handleClearRoi}
+          onSave={handleSaveRoi}
+          isSaving={isSavingRoi}
+          hasChanges={hasRoiChanges}
+          hasRoi={roiPoints.length > 0}
+        />
       )}
 
       <LoadingOverlay
@@ -560,6 +700,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           onZoomOut={zoomOut}
           onResetZoom={resetZoom}
           onSetZoom={setZoomLevel}
+          isRoiActive={isRoiActive}
+          onToggleRoi={() => setIsRoiActive((prev) => !prev)}
         />
       )}
 

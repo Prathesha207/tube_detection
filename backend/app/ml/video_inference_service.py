@@ -48,6 +48,8 @@ from .tube_analyzer import (
     inference_context,
     new_stats,
     release_gpu_memory,
+    save_roi,
+    load_roi,
 )
 
 logger = setup_logger("tube-video-inference")
@@ -465,6 +467,20 @@ def is_cuda_operational() -> bool:
     if torch is None:
         return False
     return torch.cuda.is_available() and torch.cuda.device_count() > 0
+
+
+def set_video_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
+    """Validate and save ROI to roi.json atomically, then hot-swap active video session analyzer."""
+    save_roi(points, _ROI_PATH, frame_size)
+    with video_inference_service._sessions_lock:
+        if session_id and session_id in video_inference_service.sessions:
+            targets = [video_inference_service.sessions[session_id]]
+        else:
+            targets = list(video_inference_service.sessions.values())
+    for s in targets:
+        analyzer = s.get("analyzer")
+        if analyzer is not None:
+            analyzer.set_roi(points, frame_size)
 
 
 def _set_shared_analyzer(analyzer):

@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2, Trash2, Tag, Hash } from 'lucide-react';
+import { CheckCircle2, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2, Trash2, Tag, Hash, Target } from 'lucide-react';
 import type { AnomalyStatus, LabelMode } from '../../types';
 import { useInferenceStore } from '../../store/inferenceStore';
 
@@ -39,6 +39,8 @@ interface TopToolbarProps {
   onZoomOut?: () => void;
   onResetZoom?: () => void;
   onSetZoom?: (zoom: number) => void;
+  isRoiActive?: boolean;
+  onToggleRoi?: () => void;
 }
 
 
@@ -69,6 +71,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onZoomOut,
   onResetZoom,
   onSetZoom,
+  isRoiActive = false,
+  onToggleRoi,
 }) => {
   const latencyMs = useInferenceStore((state) => state.stats.latency_ms ?? state.stats.frame_time_ms);
   const isMediaActive = isRunning || hasActiveVideo || (isCameraSource && isStreaming);
@@ -264,6 +268,22 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                 </div>
               </>
             )}
+          </button>
+        )}
+
+        {/* ROI Region of Interest Mask Toggle: Clean Icon Button [ 🎯 ] */}
+        {onToggleRoi && (
+          <button
+            onClick={onToggleRoi}
+            aria-label={isRoiActive ? "Close ROI Mask Editor" : "Open ROI Mask Editor"}
+            title={isRoiActive ? "Close ROI Mask Editor (🎯)" : "Region of Interest Mask Editor (🎯)"}
+            className={`w-7 sm:w-8 h-7 sm:h-8 flex items-center justify-center rounded-xl backdrop-blur-md border active:scale-95 shrink-0 shadow-xs cursor-pointer transition-all ${
+              isRoiActive
+                ? 'bg-cyan-500/25 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.5)] ring-1 ring-cyan-400/50'
+                : 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-primary)] hover:text-cyan-400 hover:bg-[var(--btn-secondary-hover)] hover:border-cyan-500/30'
+            }`}
+          >
+            <Target className={`w-4 h-4 transition-transform ${isRoiActive ? 'scale-110 text-cyan-300' : 'text-[var(--text-primary)] dark:text-white'}`} />
           </button>
         )}
 

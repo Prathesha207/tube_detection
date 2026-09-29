@@ -33,6 +33,8 @@ from .tube_analyzer import (
     inference_context,
     new_stats,
     release_gpu_memory,
+    save_roi,
+    load_roi,
 )
 
 logger = setup_logger("tube-camera-inference")
@@ -228,6 +230,20 @@ get_session_status = get_camera_session_stats
 clear_session = close_camera_session
 cleanup_stale_sessions = evict_idle_camera_sessions
 reset_session_for_next_video = close_camera_session
+
+
+def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
+    """Validate and save ROI to roi.json atomically, then hot-swap active camera session analyzer."""
+    save_roi(points, _ROI_PATH, frame_size)
+    with _sessions_lock:
+        if session_id and session_id in _sessions:
+            targets = [_sessions[session_id]]
+        else:
+            targets = list(_sessions.values())
+    for s in targets:
+        analyzer = s.get("analyzer")
+        if analyzer is not None:
+            analyzer.set_roi(points, frame_size)
 
 
 def _set_camera_analyzer(analyzer):

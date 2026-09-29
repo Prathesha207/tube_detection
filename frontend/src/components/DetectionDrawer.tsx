@@ -59,8 +59,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   const displayProgress = mlStats.status !== 'idle' ? mlStats.progress : 100;
   const latencyMs = mlStats.latency_ms ?? mlStats.frame_time_ms ?? metrics.latencyMs ?? metrics.inferenceTimeMs;
 
-  const fpsForTime = displayFps > 0 ? displayFps : 30;
-  const computedUptime = displayFrames / fpsForTime;
+  const displayUptime = metrics.uptimeSeconds || 0;
 
   const isCompleted =
     mlStats.status === 'completed' ||
@@ -218,7 +217,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                       Live Feed
                     </span>
                     <span className="font-mono">{displayFrames.toLocaleString()} frames</span>
-                    <span className="font-mono">{formatTime(computedUptime)}</span>
+                    <span className="font-mono">{formatTime(displayUptime)}</span>
                   </div>
                 ) : (
                   <div className="space-y-1.5">
@@ -234,7 +233,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     </div>
                     <div className="flex justify-between items-center font-mono text-[10px] text-[var(--text-secondary)] pt-0.5">
                       <span>{displayFrames.toLocaleString()} frames</span>
-                      <span>{formatTime(computedUptime)}</span>
+                      <span>{formatTime(displayUptime)}</span>
                     </div>
                   </div>
                 )}
@@ -253,9 +252,6 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     TAILS={anomalyStatus.tailsCount}
                   </span>
                 </div>
-                <span className="text-[10px] text-[var(--text-secondary)] font-normal">
-                  {formatTime(computedUptime)}
-                </span>
               </div>
 
               {/* DETECTIONS LIST */}

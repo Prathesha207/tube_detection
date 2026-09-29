@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { StreamSourceType, LogEntry, TubeEntity } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
@@ -50,6 +50,19 @@ export function useInferenceLoop({
   setUptimeSeconds: (val: number) => void;
   setLastCameraFrame?: (frame: string) => void;
 }) {
+  const uptimeRef = useRef(uptimeSeconds);
+  uptimeRef.current = uptimeSeconds;
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const start = Date.now();
+    const initial = uptimeRef.current;
+    const interval = setInterval(() => {
+      setUptimeSeconds(initial + Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isRunning, setUptimeSeconds]);
+
   useEffect(() => {
     if (!isRunning) return;
 
@@ -82,7 +95,6 @@ export function useInferenceLoop({
             if (data.status !== 'queued' && data.status !== 'idle') {
               setFps(data.metrics?.fps || data.fps || 0);
               setFramesProcessed(data.frames_processed || 0);
-              setUptimeSeconds(Math.floor((data.frames_processed || 0) / (data.metrics?.fps || data.fps || 30)));
 
               if (data.video_width && data.video_height) {
                 setVideoDimensions({ width: data.video_width, height: data.video_height });
@@ -144,7 +156,6 @@ export function useInferenceLoop({
         if (data.status !== 'queued' && data.status !== 'idle') {
           setFps(data.fps || 0);
           setFramesProcessed(data.frames_processed || 0);
-          setUptimeSeconds(Math.floor((data.frames_processed || 0) / (data.fps || 30)));
 
           if (data.video_width && data.video_height) {
             setVideoDimensions({ width: data.video_width, height: data.video_height });

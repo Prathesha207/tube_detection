@@ -124,11 +124,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('compact')}
             title="Quadrant Labels: labels point into North, South, East, West with zero overlap"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
-              (labelMode ?? 'compact') === 'compact'
-                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-            }`}
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'compact') === 'compact'
+              ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+              }`}
           >
             <Tag className="w-3 h-3" />
             <span>Quadrant</span>
@@ -138,11 +137,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('pins')}
             title="Pins Mode: tiny numbered circle pins (#1, #2) with zero obstruction"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
-              labelMode === 'pins'
-                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-            }`}
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${labelMode === 'pins'
+              ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+              }`}
           >
             <Hash className="w-3 h-3" />
             <span>Pins</span>
@@ -152,11 +150,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('hidden')}
             title="Boxes Mode: pure bounding boxes with crosshairs and 0 text"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${
-              labelMode === 'hidden'
-                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-            }`}
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${labelMode === 'hidden'
+              ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+              }`}
           >
             <EyeOff className="w-3 h-3" />
             <span>Boxes</span>
@@ -285,7 +282,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         </button>
 
         {/* Quick HUD Visibility Toggle */}
-        <button
+        {/* <button
           onClick={onToggleHUD}
           aria-label={showHUD ? 'Hide HUD overlay' : 'Show HUD overlay'}
           title={showHUD ? 'Hide HUD overlay' : 'Show HUD overlay'}
@@ -296,7 +293,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
           ) : (
             <EyeOff className="w-4 h-4 text-[var(--text-muted)] dark:text-white/70" />
           )}
-        </button>
+        </button> */}
 
         {/* Clear Video button when video is loaded and stopped */}
         {!isCameraSource && hasActiveVideo && !isRunning && onClearCustomVideo && (

@@ -14,7 +14,7 @@ import { VideoUploadCard } from './canvas/VideoUploadCard';
 import { CameraOfflineCard } from './canvas/CameraOfflineCard';
 import { CameraStandbyCard } from './canvas/CameraStandbyCard';
 import { TopToolbar } from './canvas/TopToolbar';
-import { StatusBar } from './canvas/StatusBar';
+// import { StatusBar } from './canvas/StatusBar';
 import { LoadingOverlay } from './canvas/LoadingOverlay';
 import { ZoomControls } from './canvas/ZoomControls';
 
@@ -349,9 +349,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={(e) => handleDrop(e, isVideoSource)}
-      className={`relative w-full flex-1 h-full min-h-[350px] lg:min-h-0 overflow-hidden border select-none group transition-colors duration-200 ${
-        isFullscreen ? 'rounded-none border-none' : 'rounded-3xl'
-      } ${isDragOver ? 'ring-4 ring-cyan-500/80 border-cyan-400' : 'border-[var(--border-color)]'} shadow-sm`}
+      className={`relative w-full flex-1 h-full min-h-[350px] lg:min-h-0 overflow-hidden border select-none group transition-colors duration-200 ${isFullscreen ? 'rounded-none border-none' : 'rounded-3xl'
+        } ${isDragOver ? 'ring-4 ring-cyan-500/80 border-cyan-400' : 'border-[var(--border-color)]'} shadow-sm`}
       style={{
         backgroundColor: (isWaitingForVideo || (!isCameraConnected && isCameraSource)) ? 'var(--bg-card)' : '#000000',
         ...(isFullscreen ? { width: '100%', height: '100%', minHeight: '100vh', maxHeight: '100vh' } : {})
@@ -564,14 +563,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )}
 
-      {!isOverlayShowing && showHUD && !isCameraOffline && (isRunning || isStarting || hasInferenceResult) && (
+      {/* {!isOverlayShowing && showHUD && !isCameraOffline && (isRunning || isStarting || hasInferenceResult) && (
         <StatusBar
           anomalyStatus={anomalyStatus}
           fps={fps}
           backendStatus={backendStats?.status}
           tubes={tubes}
         />
-      )}
+      )} */}
 
       {/* Floating Bottom-Right Corner Zoom Controls: Always prominent and accessible on canvas */}
       {!isOverlayShowing && showHUD && isMediaActive && (

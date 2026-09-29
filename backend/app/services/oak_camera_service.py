@@ -319,16 +319,14 @@ class OakCameraService:
                     raise cam_err
 
             if control_mode == "auto":
-                init_ctrl.setAutoExposureEnable()
-                init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-                # Cap shutter to frame period — prevents AE from picking 300ms in dim scenes.
-                ae_limit_us = max(1_000, int(1_000_000 / max(fps, 1)) - 2_000)
-                self._ae_limit_us = ae_limit_us
-                try:
-                    init_ctrl.setAutoExposureLimit(ae_limit_us)
-                    logger.info(f"[PIPELINE] Auto exposure + focus | AE shutter hint: {ae_limit_us} µs")
-                except AttributeError:
-                    logger.warning("[PIPELINE] setAutoExposureLimit not on initialControl — will send via runtime control only")
+                # For standard inspection stream: Do NOT run CONTINUOUS_VIDEO autofocus (causes focus hunting on moving tubes).
+                # Keep autofocus OFF and lock to calibrated standard focus (120) and standard exposure (16ms, 400 ISO)
+                # so the image remains perfectly steady and never hunts or flickers when tubes move.
+                self._ae_limit_us = None
+                init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                init_ctrl.setManualFocus(120)
+                init_ctrl.setManualExposure(16000, 400)
+                logger.info("[PIPELINE] Auto mode: calibrated steady stream (Focus=120, Exp=16ms, Gain=400 ISO, continuous AF hunting disabled)")
             else:
                 self._ae_limit_us = None
                 try:
@@ -892,35 +890,26 @@ class OakCameraService:
     # ==================== Camera Controls ====================
 
     def reset_controls(self) -> dict:
-        """Fully resets physical camera controls to factory auto defaults (just like camera startup).
-        Releases all manual exposure/gain/focus locks and enables full hardware 3A (AE, AF, AWB).
+        """Resets physical camera controls to calibrated standard stream defaults (Focus=120, Exp=16ms, Gain=400).
+        Disables continuous AF hunting and AE fluctuations so tube movement does not cause blur or flicker.
         """
         self.current_brightness = 0
         self.current_contrast = 50
         self.current_gain = 400
         self.current_focus = 120
         self.current_exposure_us = 16000
-        self.auto_exposure_enabled = True
-        self.auto_focus_enabled = True
+        self.auto_exposure_enabled = False
+        self.auto_focus_enabled = False
         self.control_mode = "auto"
 
         if not self._is_running or not self.is_connected or self._control_queue is None:
-            return {"status": "ok", "message": "Controls reset to default state"}
+            return {"status": "ok", "message": "Controls reset to default steady stream"}
 
         ctrl = dai.CameraControl()
         try:
-            ctrl.setAutoExposureEnable()
-            ctrl.setAutoExposureLock(False)
-            if self._ae_limit_us is not None:
-                try:
-                    ctrl.setAutoExposureLimit(self._ae_limit_us)
-                except Exception:
-                    pass
-            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-            try:
-                ctrl.setAutoFocusTrigger()
-            except Exception:
-                pass
+            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            ctrl.setManualFocus(120)
+            ctrl.setManualExposure(16000, 400)
             try:
                 ctrl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.AUTO)
                 ctrl.setAutoWhiteBalanceLock(False)
@@ -928,14 +917,10 @@ class OakCameraService:
                 pass
             ctrl.setBrightness(0)
             ctrl.setContrast(0)
-            try:
-                ctrl.setAutoExposureCompensation(0)
-            except Exception:
-                pass
 
             self._control_queue.send(ctrl)
-            logger.info("[CONTROL] 🔄 Real Camera Hardware Reset: Auto Exposure (AE), Auto Focus (AF), Auto White Balance (AWB) restored.")
-            return {"status": "ok", "message": "Camera hardware reset to full auto defaults"}
+            logger.info("[CONTROL] 🔄 Camera reset to standard steady stream (Focus=120, Exp=16ms, Gain=400, AF hunting OFF)")
+            return {"status": "ok", "message": "Camera hardware reset to steady stream defaults"}
         except Exception as e:
             logger.warning(f"[CONTROL] Factory reset send failed: {e}")
             return {"status": "error", "message": str(e)}

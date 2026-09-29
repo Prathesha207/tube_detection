@@ -24,6 +24,7 @@ import { useCameraStatus } from './hooks/useCameraStatus';
 import { useVideoPipeline } from './hooks/useVideoPipeline';
 import { useInferenceLoop } from './hooks/useInferenceLoop';
 import { useAnomalyStatus } from './hooks/useAnomalyStatus';
+import { useRecording } from './components/hooks/useRecording';
 
 export default function App() {
   // ─── 1. System Health ──────────────────────────────────────────────
@@ -462,7 +463,23 @@ export default function App() {
     };
   }, [anomalyFinal.activeTubes, inference.fps, inference.framesProcessed, inference.uptimeSeconds]);
 
-  const isRecording = useInferenceStore((state) => state.isRecording);
+  const recording = useRecording();
+
+  const handleToggleRecording = async () => {
+    if (video.cameraRecordSessionId || isRunning) return;
+    if (recording.isRecording) {
+      const res = await recording.stopRecording();
+      if (res && res.filename) {
+        showToast('success', `Recording saved: ${res.filename}`);
+      }
+    } else {
+      if (!camera.isStreaming && camera.startCameraStream) {
+        await camera.startCameraStream();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      await recording.startRecording(camera.effectiveCameraConfig.recordingFormat || 'MP4');
+    }
+  };
 
   // ─── 12. Misc Handlers ────────────────────────────────────────────
   const handleRestart = () => {
@@ -809,7 +826,10 @@ export default function App() {
           onRequestSwitchMode={handleRequestSwitchMode}
           isRunning={isRunning}
           isStarting={isStarting}
-          isRecording={isRecording}
+          isRecording={recording.isRecording}
+          isSavingRecording={recording.isSaving}
+          recordingDuration={recording.recordingDuration}
+          onToggleRecording={handleToggleRecording}
           onToggleRunning={handleToggleRunning}
           onStopInference={handleStopInference}
           onResumeInference={handleResumeInference}
@@ -870,6 +890,8 @@ export default function App() {
               recordingFormat={camera.effectiveCameraConfig.recordingFormat || 'MP4'}
               cameraConfig={camera.effectiveCameraConfig}
               cameraError={camera.cameraError}
+              recordedFile={recording.recordedFile}
+              clearRecording={recording.clearRecording}
             />
           </main>
 

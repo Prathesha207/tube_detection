@@ -1,8 +1,13 @@
 import React from 'react';
 import { StreamSourceType } from '../types';
-import { Video, Camera, Play, Square, Loader2, Trash2 } from 'lucide-react';
+import { Video, Camera, Play, Square, Loader2, Trash2, Disc, Clock } from 'lucide-react';
 import { useInferenceStore } from '../store/inferenceStore';
 
+const formatTime = (totalSeconds: number = 0) => {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
 
 interface SourceSelectorProps {
   sourceType: StreamSourceType;
@@ -18,6 +23,9 @@ interface SourceSelectorProps {
   isRunning?: boolean;
   isStarting?: boolean;
   isRecording?: boolean;
+  isSavingRecording?: boolean;
+  recordingDuration?: number;
+  onToggleRecording?: () => void;
   onToggleRunning?: () => void;
   onStopInference?: () => void;
   onResumeInference?: () => void;
@@ -29,7 +37,6 @@ interface SourceSelectorProps {
   cameraStartingState?: 'idle' | 'waking_camera' | 'waiting_frame' | 'ready';
   cameraRecordSessionId?: string | null;
   onClearCameraRecord?: () => void;
-
 }
 
 export const SourceSelector: React.FC<SourceSelectorProps> = ({
@@ -43,6 +50,9 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   isRunning = false,
   isStarting = false,
   isRecording = false,
+  isSavingRecording = false,
+  recordingDuration = 0,
+  onToggleRecording,
   onToggleRunning,
   onStopInference,
   onResumeInference,
@@ -199,6 +209,53 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                       )}
                     </span>
                   </button>
+
+                  {/* For Camera: Record Button next to START INFERENCE when stream is active and inference not running */}
+                  {isCameraMode && isStreaming && !isRunning && !cameraRecordSessionId && (
+                    <button
+                      disabled={isSavingRecording}
+                      onClick={() => onToggleRecording?.()}
+                      title={
+                        isSavingRecording
+                          ? 'Finalizing recording... please wait'
+                          : isRecording
+                            ? 'Stop camera recording'
+                            : 'Start recording camera stream'
+                      }
+                      className={`h-8 sm:h-9 flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 rounded-xl font-bold text-[11px] sm:text-xs shadow-xs transition-all shrink-0 cursor-pointer active:scale-95 ${
+                        isSavingRecording
+                          ? 'bg-rose-700/80 text-white cursor-wait opacity-80'
+                          : isRecording
+                            ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse ring-2 ring-rose-400/50 shadow-md shadow-rose-600/30'
+                            : 'bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-500 dark:text-rose-400 hover:text-rose-600 dark:hover:text-white'
+                      }`}
+                    >
+                      {isSavingRecording ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-white shrink-0" />
+                          <span className="whitespace-nowrap uppercase tracking-wider text-[10px] sm:text-xs">SAVING...</span>
+                        </>
+                      ) : isRecording ? (
+                        <>
+                          <span className="relative flex h-2 w-2 shrink-0">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-80" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
+                          </span>
+                          <Disc className="w-3.5 h-3.5 text-white shrink-0 animate-spin [animation-duration:3s]" />
+                          <span className="whitespace-nowrap font-black tracking-wider text-white">REC</span>
+                          <span className="font-mono text-[10px] sm:text-[11px] font-bold bg-black/40 border border-white/20 px-1.5 py-0.2 rounded-md text-white">
+                            {formatTime(recordingDuration)}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0 shadow-[0_0_6px_rgba(244,63,94,0.8)]" />
+                          <Video className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
+                          <span className="whitespace-nowrap">REC</span>
+                        </>
+                      )}
+                    </button>
+                  )}
 
                   {/* For Uploaded Video: Allow clearing the video so the upload card reappears */}
                   {!isCameraMode && hasActiveVideo && onClearCustomVideo && (

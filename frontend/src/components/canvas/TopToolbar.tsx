@@ -15,10 +15,6 @@ interface TopToolbarProps {
   hasActiveVideo: boolean;
   feedMode: 'raw' | 'inference';
   onFeedModeChange: (mode: 'raw' | 'inference') => void;
-  isRecording: boolean;
-  isSaving?: boolean;
-  recordingDuration?: number;
-  onToggleRecording: () => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   showHUD: boolean;
@@ -49,10 +45,6 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   hasActiveVideo,
   feedMode,
   onFeedModeChange,
-  isRecording,
-  isSaving = false,
-  recordingDuration = 0,
-  onToggleRecording,
   isFullscreen,
   onToggleFullscreen,
   showHUD,
@@ -199,76 +191,6 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
 
           </>
-        )}
-
-        {/* Recording Button (Camera Only) */}
-        {isCameraSource && (
-          <button
-            disabled={hasCameraRecording || isSaving || isRunning}
-            onClick={() => {
-              if (hasCameraRecording || isSaving || isRunning) return;
-              onToggleRecording();
-            }}
-            title={
-              isRunning
-                ? 'Cannot record while AI inference is running. Stop inference first.'
-                : hasCameraRecording
-                  ? 'Cannot record while reviewing a recorded clip. Return to live camera feed first.'
-                  : isSaving
-                    ? 'Finalizing recording... please wait'
-                    : isRecording
-                      ? 'Click to stop recording'
-                      : isStreaming
-                        ? 'Click to record live camera stream'
-                        : 'Start camera stream and begin recording'
-            }
-            className={`group h-7 sm:h-8 px-2 sm:px-2.5 flex items-center gap-1.5 sm:gap-2 rounded-xl backdrop-blur-md border text-[10px] sm:text-xs font-bold transition-all shrink-0 shadow-xs ${isRunning || hasCameraRecording
-              ? 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-muted)] opacity-40 cursor-not-allowed'
-              : isSaving
-                ? 'bg-rose-700/90 text-white border-rose-400/80 shadow-md cursor-wait'
-                : isRecording
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-600/40 animate-pulse ring-2 ring-rose-500/30 cursor-pointer active:scale-95'
-                  : 'bg-rose-50 hover:bg-rose-100 border-rose-300 text-rose-700 dark:bg-rose-950/60 dark:hover:bg-rose-900/80 dark:border-rose-500/50 dark:text-rose-200 dark:hover:text-white hover:shadow-rose-600/25 cursor-pointer active:scale-95'
-              }`}
-          >
-            {isSaving ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-white shrink-0" />
-                <span className="font-bold text-[11px] uppercase tracking-wide">SAVING...</span>
-                <div className="flex items-center gap-1 font-mono text-[10px] sm:text-[10.5px] font-bold bg-black/35 border border-white/20 px-1.5 py-0.5 rounded-md text-white/90">
-                  <Clock className="w-2.5 h-2.5 text-rose-200 shrink-0" />
-                  <span>{formatRecordingTime(recordingDuration)}</span>
-                </div>
-              </>
-            ) : isRecording ? (
-              <>
-                {/* Live pulsing dot indicator */}
-                <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-85" />
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white shadow-xs" />
-                </span>
-                <Disc className="w-3.5 h-3.5 text-white shrink-0 animate-spin [animation-duration:3s]" />
-                <span className="font-black text-[11px] sm:text-xs tracking-wider uppercase text-white">REC</span>
-                {/* Active Live Timer */}
-                <div className="flex items-center gap-1 font-mono text-[10.5px] sm:text-[11px] font-bold bg-black/35 border border-white/20 px-1.5 sm:px-2 py-0.5 rounded-lg text-white tracking-wider shadow-inner">
-                  <Clock className="w-3 h-3 text-rose-200 shrink-0" />
-                  <span>{formatRecordingTime(recordingDuration)}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                {/* Anomaly red dot indicator */}
-                <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)] shrink-0" />
-                <Video className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0 group-hover:scale-110 transition-transform" />
-                <span className="font-bold text-[11px] sm:text-xs tracking-wide">REC</span>
-                {/* Standby Time badge */}
-                <div className="flex items-center gap-1 font-mono text-[10px] sm:text-[10.5px] font-semibold bg-rose-100/80 border border-rose-300 dark:bg-black/30 dark:border-rose-500/30 px-1.5 py-0.5 rounded-md text-rose-600 dark:text-rose-300/90">
-                  <Clock className="w-2.5 h-2.5 text-rose-500 dark:text-rose-400/80 shrink-0" />
-                  <span>00:00</span>
-                </div>
-              </>
-            )}
-          </button>
         )}
 
         {/* ROI Region of Interest Mask Toggle: Clean Icon Button [ 🎯 ] */}

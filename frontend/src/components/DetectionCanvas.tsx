@@ -3,7 +3,6 @@ import type { TubeEntity, StreamSourceType, AnomalyStatus, LabelMode, CameraConf
 import { getApiBaseUrl } from '../lib/api';
 import { showToast } from '../lib/toast';
 import { useInferenceStore } from '../store/inferenceStore';
-import { useRecording } from './hooks/useRecording';
 import { cameraService } from './service/cameraService';
 
 import { Loader2 } from 'lucide-react';
@@ -74,6 +73,8 @@ interface DetectionCanvasProps {
   cameraTargetFps?: number;
   recordingFormat?: 'AVI' | 'MP4' | 'FFV1';
   cameraConfig?: CameraConfig;
+  recordedFile?: File | null;
+  clearRecording?: () => void;
 }
 
 export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
@@ -120,6 +121,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   cameraTargetFps,
   recordingFormat = 'MP4',
   cameraError,
+  recordedFile,
+  clearRecording,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -141,7 +144,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     };
   }, []);
 
-  const { isRecording, isSaving, recordedFile, recordingDuration, startRecording, stopRecording, clearRecording } = useRecording();
   const backendStats = useInferenceStore((state) => state.stats);
 
   const isVideoSource = sourceType === 'uploaded-video' || sourceType === 'sample-pond';
@@ -671,25 +673,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           hasActiveVideo={hasActiveVideo}
           feedMode={feedMode}
           onFeedModeChange={onFeedModeChange}
-          isRecording={isRecording}
-          isSaving={isSaving}
-          recordingDuration={recordingDuration}
-          onToggleRecording={async () => {
-            if (hasCameraRecording || isRunning) return; // block recording while reviewing a clip or during inference
-            if (isRecording) {
-              const res = await stopRecording();
-              if (res && res.filename) {
-                showToast('success', `Recording saved: ${res.filename}`);
-              }
-            } else {
-              // If stream is not running yet, start the stream first automatically
-              if (!isStreaming && onStartStream) {
-                await onStartStream();
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-              }
-              await startRecording(recordingFormat || 'MP4');
-            }
-          }}
           isFullscreen={isFullscreen}
           onToggleFullscreen={toggleFullscreen}
           showHUD={showHUD}

@@ -311,33 +311,33 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       </div>
 
       {/* 2. Mode Selector: Auto (Standard Stream) vs Manual */}
-      <div className="pt-2.5 flex bg-[var(--bg-card-subtle)] p-0.5 rounded-xl border border-[var(--border-color)] mt-2">
+      <div className="grid grid-cols-2 p-1 bg-[var(--bg-card-subtle)] rounded-xl border border-[var(--border-color)] mt-2.5 gap-1 items-center">
         <button
           type="button"
           onClick={() => handleSwitchMode('auto')}
           title="Default steady stream: autofocus and autoexposure hunting are disabled for stable inspection"
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+          className={`w-full py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer select-none ${
             mode === 'auto'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
           }`}
         >
-          <Zap className="w-3.5 h-3.5" />
-          <span>Auto (Stream)</span>
+          <Zap className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Auto (Stream)</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleSwitchMode('manual')}
           title="Open manual sliders to adjust focus, shutter speed, and sensor gain"
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+          className={`w-full py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer select-none ${
             mode === 'manual'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
           }`}
         >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          <span>Manual</span>
+          <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Manual</span>
         </button>
       </div>
 

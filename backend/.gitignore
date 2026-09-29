@@ -47,6 +47,7 @@ FailedFrames/
 # ML / AI Models
 # =========================
 *.pt
+!app/ml/model/best.pt
 !app/ml/tube/model/best.pt
 *.pth
 *.onnx
@@ -73,6 +74,7 @@ FailedFrames/
 # Local package/build artifacts
 *.mp4
 *.whl
+!app/ml/whl/*.whl
 !app/ml/duck_analyzer-*.whl
 vision_ai.db*
 

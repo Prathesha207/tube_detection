@@ -189,13 +189,16 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   // Active session id (video or camera)
   const activeSessionId = videoSessionId || cameraRecordSessionId || (isCameraSource ? 'camera' : undefined);
 
-  // Fetch saved ROI on mount or whenever active session changes
+  // Fetch saved ROI on mount or whenever active session changes.
+  // Only populate savedRoiPoints — roiPoints stays empty until the user opens
+  // the editor, so the passive dashed outline never appears on its own.
   useEffect(() => {
     let isMounted = true;
     roiService.getRoi(activeSessionId, effectiveFw, effectiveFh).then((res) => {
       if (!isMounted) return;
       if (res && Array.isArray(res.points) && res.points.length > 0) {
-        setRoiPoints(res.points);
+        // Don't push into roiPoints here: the user hasn't drawn anything yet.
+        // savedRoiPoints drives the passive outline; roiPoints starts blank.
         setSavedRoiPoints(res.points);
         if (res.frame_width && res.frame_height) {
           setRoiFrameSize({ width: Number(res.frame_width), height: Number(res.frame_height) });
@@ -609,8 +612,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
               </div>
             )}
 
-            {/* Passive Saved ROI Reference Outline (Always visible on canvas as default ROI from roi.json) */}
-            {!isRoiActive && roiPoints.length >= 3 && (
+            {/* Passive Saved ROI Reference Outline — only shown after the user draws & saves an ROI */}
+            {!isRoiActive && savedRoiPoints.length >= 3 && (
               <svg
                 className="absolute inset-0 z-20 w-full h-full pointer-events-none"
                 style={{ zIndex: 20 }}
@@ -618,7 +621,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 preserveAspectRatio="none"
               >
                 <polygon
-                  points={roiPoints.map(([x, y]) => `${x},${y}`).join(' ')}
+                  points={savedRoiPoints.map(([x, y]) => `${x},${y}`).join(' ')}
                   fill="none"
                   stroke="#06b6d4"
                   strokeWidth="2"
@@ -694,7 +697,18 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           onResetZoom={resetZoom}
           onSetZoom={setZoomLevel}
           isRoiActive={isRoiActive}
-          onToggleRoi={() => setIsRoiActive((prev) => !prev)}
+          onToggleRoi={() => {
+            setIsRoiActive((prev) => {
+              if (!prev) {
+                // Opening editor: pre-populate with any previously saved ROI so user can edit it
+                setRoiPoints(savedRoiPoints.length > 0 ? savedRoiPoints : []);
+              } else {
+                // Closing editor without saving: discard unsaved edits
+                setRoiPoints([]);
+              }
+              return !prev;
+            });
+          }}
         />
       )}
 

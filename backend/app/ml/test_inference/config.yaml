@@ -3,8 +3,8 @@
 # folder (config + model + roi.json) to another machine as-is.
 # Any setting can be overridden on the command line, e.g. --video, --output.
 
-model_path: model/best.pt
-video: C:\Users\EmageVision\Downloads\session_2026-09-26_14-12-54_batch_rec_1790403174831_1.avi
+model_path: tube_pt/best_1280.pt
+video: C:\Users\EmageVision\Videos\session_2026-09-29_20-09-53.mp4      # set here or pass --video (a file, or 0 for webcam)
 device: "0"          # "0" = first GPU, "cpu" = CPU
 
 # detection
@@ -12,9 +12,11 @@ conf: 0.35           # best F1 on validation was at ~0.35
 iou: 0.5
 tile: 640            # must match training (0 = whole frame, not recommended)
 tile_overlap: 0.3
-merge_iou: 0.4       # merge duplicate boxes from overlapping tiles
+merge_iou: 0.5       # merge duplicate boxes from overlapping tiles
 merge_contain: 0.75
-gray: false          # model was trained on grayscale images
+merge_gap: 0        # px - same-role boxes this close = one end split in two -> joined (0 = off)
+cross_role_contain: 0.5   # tail box sitting on a head (or vice versa) -> keep the more confident (0 = off)
+gray: true           # model was trained on grayscale images
 stride: 1            # 1 = every frame
 
 # tracking
@@ -24,8 +26,8 @@ max_missed: 15       # frames a lost track can still be re-matched
 
 # ROI - inference + tracking use the whole frame; only detections inside
 # this polygon are reported, drawn and counted. Set roi_json: null for none.
-roi_json: roi.json
-draw_roi: true
+roi_json: null
+draw_roi: false
 
 # outputs (null = don't write)
 output_video: measured/frames.mp4

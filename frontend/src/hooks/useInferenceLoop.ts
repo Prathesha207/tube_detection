@@ -80,6 +80,11 @@ export function useInferenceLoop({
 
             if (data.status === 'error' || data.status === 'stopped' || data.done) {
               setIsRunning(false);
+              if (data.status === 'error') {
+                const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Camera inference failed';
+                showToast('error', `Inference error: ${errDetail}`);
+                addLog(`Inference stopped on error: ${errDetail}`, 'error');
+              }
               return;
             }
 

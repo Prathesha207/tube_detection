@@ -56,6 +56,8 @@ DEFAULTS = {
     "tile_overlap": 0.3,
     "merge_iou": 0.4,         # merge duplicate boxes from overlapping tiles...
     "merge_contain": 0.75,    # ...or when one box is mostly inside another
+    "merge_gap": 12,          # px: same-role boxes this close are ONE end split in two (0 = off)
+    "cross_role_contain": 0.5,  # a head/tail box this much inside the other role's box is dropped (0 = off)
     "gray": True,             # feed the model grayscale (it was trained on grayscale)
     "stride": 1,              # 1 = every frame
     "min_frames": 5,          # sightings before an end is confirmed and counted
@@ -153,8 +155,33 @@ def box_overlap(a, b):
     return inter / (aa + ab - inter), inter / min(aa, ab)
 
 
+def box_gap(a, b):
+    """Pixels of empty space between two boxes (0 if they touch or overlap)."""
+    dx = max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
+    dy = max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
+    return max(dx, dy)
+
+
+def _det(role, conf, box):
+    return {"role": role, "conf": conf, "xyxy": box,
+            "center": ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)}
+
+
 def merge_duplicates(dets, cfg):
-    """The same end seen in two overlapping tiles -> keep the most confident box."""
+    """Clean up one frame's raw detections, in three steps:
+
+    1. Same end seen twice (overlapping tiles, or the model firing twice on
+       one object): same role and IoU >= merge_iou or one box mostly inside
+       the other (>= merge_contain) -> keep the most confident box.
+    2. One end split into side-by-side pieces (e.g. a head reported as a left
+       half and a right half): same role and at most merge_gap px apart ->
+       replaced by ONE box around both. merge_gap = 0 turns this off. Keep it
+       smaller than the real distance between two separate ends.
+    3. Wrong-role box on top of another end (a TAIL box sitting on a HEAD):
+       different role and one box >= cross_role_contain inside the other ->
+       keep only the more confident one. cross_role_contain = 0 turns this off.
+    """
+    # 1. duplicates
     kept = []
     for d in sorted(dets, key=lambda d: d["conf"], reverse=True):
         dup = False
@@ -167,6 +194,35 @@ def merge_duplicates(dets, cfg):
                 break
         if not dup:
             kept.append(d)
+
+    # 2. split pieces -> union box (repeat until nothing changes)
+    if cfg.merge_gap and cfg.merge_gap > 0:
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(kept)):
+                for j in range(i + 1, len(kept)):
+                    a, b = kept[i], kept[j]
+                    if a["role"] == b["role"] and box_gap(a["xyxy"], b["xyxy"]) <= cfg.merge_gap:
+                        box = [min(a["xyxy"][0], b["xyxy"][0]), min(a["xyxy"][1], b["xyxy"][1]),
+                               max(a["xyxy"][2], b["xyxy"][2]), max(a["xyxy"][3], b["xyxy"][3])]
+                        kept[i] = _det(a["role"], max(a["conf"], b["conf"]), box)
+                        del kept[j]
+                        changed = True
+                        break
+                if changed:
+                    break
+
+    # 3. wrong-role box on top of another end
+    if cfg.cross_role_contain and cfg.cross_role_contain > 0:
+        final = []
+        for d in sorted(kept, key=lambda d: d["conf"], reverse=True):
+            if any(k["role"] != d["role"] and
+                   box_overlap(k["xyxy"], d["xyxy"])[1] >= cfg.cross_role_contain
+                   for k in final):
+                continue
+            final.append(d)
+        kept = final
     return kept
 
 
@@ -448,7 +504,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Count heads and tails per video frame.",
         epilog="Any flag overrides the same setting in the config file.")
-    ap.add_argument("--config", default="config.yaml", help="config.yaml (paths inside it are relative to its folder)")
+    ap.add_argument("--config", help="config.yaml (paths inside it are relative to its folder)")
     ap.add_argument("--video", help="video file, or 0 for webcam")
     ap.add_argument("--model", help="trained YOLO11-seg weights (.pt)")
     ap.add_argument("--output", help="annotated video, e.g. out.mp4")

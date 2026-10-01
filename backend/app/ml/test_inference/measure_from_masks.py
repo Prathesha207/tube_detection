@@ -26,7 +26,11 @@ import cv2
 import numpy as np
 from skimage.morphology import skeletonize
 
-from .tube_ends import measure_width, transparency_score, colour_score
+try:
+    from .tube_ends import measure_width, transparency_score, colour_score
+except ImportError:          # run directly as a script, not as part of the package
+    from tube_ends import measure_width, transparency_score, colour_score
+
 
 # Fallback class list, used ONLY for --labels (hand-drawn CVAT .txt export),
 # which carries no embedded names - it must match your data.yaml order exactly.

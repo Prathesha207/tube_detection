@@ -342,8 +342,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-
-from .measure_from_masks import NAMES, ROLE, analyse, masks_from_model, build_class_map, pair_ends
+try:
+    from .measure_from_masks import NAMES, ROLE, analyse, masks_from_model, build_class_map, pair_ends
+except ImportError:
+    from measure_from_masks import NAMES, ROLE, analyse, masks_from_model, build_class_map, pair_ends
 
 PANEL_BG = (22, 22, 28)
 COL = {"HEAD": (255, 160, 0), "TAIL": (0, 200, 255)}

@@ -57,6 +57,7 @@ import numpy as np
 try:
     import torch
     if torch.cuda.is_available():
+
         torch.backends.cudnn.benchmark = True
 except Exception:
     torch = None

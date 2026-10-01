@@ -384,6 +384,24 @@ class InferenceStartBody(BaseModel):
 @router.post("/inference/start/{session_id}")
 async def start_inference(session_id: str, body: InferenceStartBody = InferenceStartBody()):
     try:
+        # If camera device is not running and offline is False, auto-start camera
+        if not body.offline and not oak_camera_service._is_running:
+            try:
+                from app.core.database import SessionLocal
+                from app.services import camera_service
+                db = SessionLocal()
+                cam = None
+                try:
+                    cam = camera_service.get_camera_config(db)
+                except Exception:
+                    pass
+                finally:
+                    db.close()
+                logger.info(f"[INFERENCE] Auto-starting camera before inference (config={cam})")
+                await oak_camera_service.start(cam)
+            except Exception as e:
+                logger.warning(f"[INFERENCE] Auto-start camera for inference failed: {e}")
+
         loop = asyncio.get_running_loop()
         # Resolve legacy videoId field as videoPath so old frontend builds still work
         resolved_video_path = body.videoPath or body.videoId or None

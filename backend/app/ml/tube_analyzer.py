@@ -340,7 +340,7 @@ class TubeAnalyzer:
         if rvf is None:
             raise RuntimeError(
                 f"The head-tail-analyzer wheel could not be imported: {_WHEEL_ERROR}. "
-                "Install the wheel: pip install head_tail_analyzer-0.1.2-py3-none-any.whl"
+                "Install the wheel: pip install backend/app/ml/whl/head_tail_analyzer-0.1.3-py3-none-any.whl"
             )
 
         path = model_path or MODEL_PATH

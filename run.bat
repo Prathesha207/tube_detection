@@ -9,19 +9,37 @@ echo.
 
 cd /d "%~dp0"
 
-if not exist "%~dp0vision-ai-backend\.venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found!
+set "BACKEND_DIR="
+if exist "%~dp0backend\.venv\Scripts\python.exe" (
+    set "BACKEND_DIR=%~dp0backend"
+) else if exist "%~dp0vision-ai-backend\.venv\Scripts\python.exe" (
+    set "BACKEND_DIR=%~dp0vision-ai-backend"
+) else if exist "%~dp0backend" (
+    set "BACKEND_DIR=%~dp0backend"
+) else (
+    set "BACKEND_DIR=%~dp0vision-ai-backend"
+)
+
+if not exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
+    echo [ERROR] Virtual environment not found in !BACKEND_DIR!\.venv!
     echo Please run setup.bat first to configure the environment.
     echo.
     pause
     exit /b 1
 )
 
+set "FRONTEND_DIR="
+if exist "%~dp0frontend\package.json" (
+    set "FRONTEND_DIR=%~dp0frontend"
+) else (
+    set "FRONTEND_DIR=%~dp0vision-ai-frontend"
+)
+
 echo [1/2] Starting Vision Monitor Backend API (Port 8000)...
-start "Vision Monitor - Backend API" /d "%~dp0vision-ai-backend" cmd /c ".venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000"
+start "Vision Monitor - Backend API" /d "!BACKEND_DIR!" cmd /c ".venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000"
 
 echo [2/2] Starting Vision Monitor Frontend UI (Port 5173)...
-start "Vision Monitor - Frontend UI" /d "%~dp0vision-ai-frontend" cmd /c "npm run dev"
+start "Vision Monitor - Frontend UI" /d "!FRONTEND_DIR!" cmd /c "npm run dev"
 
 echo.
 echo =======================================================

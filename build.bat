@@ -2,7 +2,11 @@
 echo =======================================================
 echo     Vision Monitor Build (Windows Desktop App)
 echo =======================================================
-cd /d "%~dp0vision-ai-backend"
+if exist "%~dp0backend\build_windows_desktop.ps1" (
+    cd /d "%~dp0backend"
+) else (
+    cd /d "%~dp0vision-ai-backend"
+)
 powershell -ExecutionPolicy Bypass -File build_windows_desktop.ps1
 if %ERRORLEVEL% NEQ 0 (
     echo.

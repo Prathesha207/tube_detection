@@ -9,7 +9,12 @@ param(
 # 64-bit Windows machine: PyInstaller and PyTorch must be built natively.
 $ErrorActionPreference = 'Stop'
 $BackendDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$FrontendDir = Join-Path (Split-Path -Parent $BackendDir) 'vision-ai-frontend'
+$ProjectRoot = Split-Path -Parent $BackendDir
+$FrontendDir = if (Test-Path (Join-Path $ProjectRoot 'frontend')) {
+  Join-Path $ProjectRoot 'frontend'
+} else {
+  Join-Path $ProjectRoot 'vision-ai-frontend'
+}
 $ReleaseVenv = if (Test-Path (Join-Path $BackendDir '.venv')) {
   Join-Path $BackendDir '.venv'
 } else {
@@ -23,7 +28,7 @@ if (-not $PythonCmd) { throw 'Python was not found in PATH. Please install Pytho
 $Python = $PythonCmd.Source
 
 if (-not [Environment]::Is64BitOperatingSystem) { throw 'A 64-bit Windows host is required.' }
-if (-not (Test-Path (Join-Path $FrontendDir 'package.json'))) { throw 'vision-ai-frontend must be beside vision-ai-backend.' }
+if (-not (Test-Path (Join-Path $FrontendDir 'package.json'))) { throw 'frontend directory with package.json must be beside backend.' }
 
 if (-not (Test-Path $ReleaseVenv)) {
   & $Python -m venv $ReleaseVenv
@@ -117,8 +122,20 @@ if ($Acceleration -eq 'cuda') {
 
 & $VenvPython -m pip install --prefer-binary -r (Join-Path $BackendDir 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install backend requirements.' }
-& $VenvPython -m pip install --prefer-binary -r (Join-Path $BackendDir 'app\ml\tube\requirements.txt')
-if ($LASTEXITCODE -ne 0) { throw 'Failed to install tube inference requirements.' }
+$MlReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
+if (Test-Path $MlReqFile) {
+  & $VenvPython -m pip install --prefer-binary -r $MlReqFile
+}
+# Install latest head_tail_analyzer wheel
+$WhlDir = Join-Path $BackendDir 'app\ml\whl'
+if (Test-Path $WhlDir) {
+  $WhlFile = Get-ChildItem -Path $WhlDir -Filter 'head_tail_analyzer*.whl' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+  if ($WhlFile) {
+    Write-Host "Installing latest ML wheel ($($WhlFile.Name))..."
+    & $VenvPython -m pip install --force-reinstall --no-deps $WhlFile.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install ML wheel $($WhlFile.Name)." }
+  }
+}
 if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backend\backend.exe'))) {
   Push-Location $BackendDir
   try {
@@ -139,7 +156,8 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',
       '--collect-all', 'ultralytics', '--collect-all', 'segmentation_models_pytorch', '--collect-all', 'depthai',
       '--collect-all', 'av', '--collect-all', 'mediapipe',
-      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg'
+      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg',
+      '--collect-all', 'head_tail_analyzer'
     )
     & $VenvPython -m PyInstaller @PyInstallerArgs
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }

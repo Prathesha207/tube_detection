@@ -22,7 +22,11 @@ $BackendDir = if ($MyInvocation.MyCommand.Path) {
     Get-Location
 }
 $ProjectRoot = Split-Path -Parent $BackendDir
-$FrontendDir = Join-Path $ProjectRoot 'vision-ai-frontend'
+$FrontendDir = if (Test-Path (Join-Path $ProjectRoot 'frontend')) {
+    Join-Path $ProjectRoot 'frontend'
+} else {
+    Join-Path $ProjectRoot 'vision-ai-frontend'
+}
 
 Write-Host "[SETUP] Backend Directory : $BackendDir"
 Write-Host "[SETUP] Frontend Directory: $FrontendDir"
@@ -299,15 +303,33 @@ if ($TorchVisionVerify -ne 'VERIFIED') {
 }
 
 # ------------------------------------------------------------------------------
-# 5. Verify tube inference dependencies
+# 5. Verify tube inference dependencies & ML wheel
 # ------------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[5/7] Verifying tube inference packages..." -ForegroundColor Yellow
+Write-Host "[5/7] Verifying tube inference packages and ML wheel..." -ForegroundColor Yellow
 $TubeCheck = & $VenvPython -c "from ultralytics import YOLO; import cv2, numpy, torch, torchvision, skimage; print('INSTALLED')" 2>$null
 if ($TubeCheck -ne 'INSTALLED') {
     $TubeReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
-    & $VenvPython -m pip install --prefer-binary -r $TubeReqFile
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install tube requirements from $TubeReqFile." }
+    if (Test-Path $TubeReqFile) {
+        & $VenvPython -m pip install --prefer-binary -r $TubeReqFile
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install tube requirements from $TubeReqFile." }
+    }
+}
+
+# Automatically install / update head_tail_analyzer wheel from backend/app/ml/whl
+$WhlDir = Join-Path $BackendDir 'app\ml\whl'
+if (Test-Path $WhlDir) {
+    $WhlFile = Get-ChildItem -Path $WhlDir -Filter 'head_tail_analyzer*.whl' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    if ($WhlFile) {
+        Write-Host "Installing latest ML wheel ($($WhlFile.Name))..." -ForegroundColor Cyan
+        & $VenvPython -m pip install --force-reinstall --no-deps $WhlFile.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install ML wheel $($WhlFile.Name)."
+        }
+        Write-Host "[OK] ML wheel $($WhlFile.Name) installed successfully." -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] No head_tail_analyzer wheel found in $WhlDir." -ForegroundColor Yellow
+    }
 }
 
 # ------------------------------------------------------------------------------
@@ -346,19 +368,27 @@ if ((Test-Path $NodeModulesDir) -and (Test-Path $DistHtml)) {
 # 7. End-to-End Pre-Flight Smoke Test (Model & Inference Readiness)
 # ------------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[7/7] Verifying inference engine and model components..." -ForegroundColor Yellow
+Write-Host "[7/7] Verifying inference engine, ML wheel, and model weights..." -ForegroundColor Yellow
 
+$BackendDirEscaped = $BackendDir.Replace('\', '/')
+$ModelPathEscaped = (Join-Path $BackendDir 'app\ml\model\best.pt').Replace('\', '/')
 $SmokeTestCode = @"
-import sys
-sys.path.insert(0, r'$BackendDir')
+import sys, os
+sys.path.insert(0, '$BackendDirEscaped')
 try:
     import torch
     import torchvision
     import importlib.metadata
     tv = importlib.metadata.version('torchvision')
     from ultralytics import YOLO
+    from head_tail_analyzer import run_video_frames as rvf
+    import head_tail_analyzer
+    whl_ver = getattr(head_tail_analyzer, '__version__', 'installed')
     from app.ml.tube_analyzer import TubeAnalyzer
-    print(f'PASS|{torch.__version__}|{tv}')
+    if not os.path.isfile('$ModelPathEscaped'):
+        print('FAIL|Model weights best.pt not found at $ModelPathEscaped')
+        sys.exit(1)
+    print(f'PASS|torch={torch.__version__}|torchvision={tv}|wheel={whl_ver}|model=best.pt')
 except Exception as e:
     print(f'FAIL|{e}')
     sys.exit(1)
@@ -369,7 +399,7 @@ $SmokeTestResult = & $VenvPython -c $SmokeTestCode 2>&1
 if ($LASTEXITCODE -ne 0 -or -not ($SmokeTestResult -match 'PASS\|')) {
     throw "Pre-flight inference verification failed: $SmokeTestResult. Inference would fail at runtime."
 }
-Write-Host "[OK] Pre-flight inference smoke test PASSED! (tube inference and torchvision ready)." -ForegroundColor Green
+Write-Host "[OK] Pre-flight inference smoke test PASSED! (tube inference, ML wheel, and model ready)." -ForegroundColor Green
 
 # ------------------------------------------------------------------------------
 # Completion Summary

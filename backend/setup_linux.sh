@@ -4,12 +4,16 @@
 set -euo pipefail
 
 BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FRONTEND_DIR="$(cd "$BACKEND_DIR/../vision-ai-frontend" && pwd)"
+if [[ -d "$BACKEND_DIR/../frontend" ]]; then
+  FRONTEND_DIR="$(cd "$BACKEND_DIR/../frontend" && pwd)"
+else
+  FRONTEND_DIR="$(cd "$BACKEND_DIR/../vision-ai-frontend" && pwd)"
+fi
 VENV_DIR="$BACKEND_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
-  echo "vision-ai-frontend must be beside vision-ai-backend."
+  echo "Frontend folder with package.json must be beside backend folder."
   exit 1
 fi
 
@@ -25,7 +29,19 @@ fi
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
-python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
+if [[ -f "$BACKEND_DIR/app/ml/tube/requirements.txt" ]]; then
+  python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
+fi
+
+# Automatically install latest head_tail_analyzer wheel
+WHL_DIR="$BACKEND_DIR/app/ml/whl"
+if [[ -d "$WHL_DIR" ]]; then
+  LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
+  if [[ -n "$LATEST_WHL" ]]; then
+    echo "Installing ML wheel: $(basename "$LATEST_WHL")..."
+    python -m pip install --force-reinstall --no-deps "$LATEST_WHL"
+  fi
+fi
 
 # The base requirements remain portable. Replace generic torch with CUDA torch
 # only when this Linux machine has an NVIDIA driver and GPU.

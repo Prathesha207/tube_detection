@@ -3,7 +3,11 @@
 set -euo pipefail
 
 BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FRONTEND_DIR="$(cd "$BACKEND_DIR/../vision-ai-frontend" && pwd)"
+if [[ -d "$BACKEND_DIR/../frontend" ]]; then
+  FRONTEND_DIR="$(cd "$BACKEND_DIR/../frontend" && pwd)"
+else
+  FRONTEND_DIR="$(cd "$BACKEND_DIR/../vision-ai-frontend" && pwd)"
+fi
 
 if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
   echo "Backend environment is missing. Creating environment and running setup..."
@@ -16,8 +20,21 @@ if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, ya
   "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
 fi
 
-if ! "$BACKEND_DIR/.venv/bin/python" -c "import ultralytics, cv2, numpy, torch, torchvision" 2>/dev/null; then
-  "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
+if [[ -f "$BACKEND_DIR/app/ml/tube/requirements.txt" ]]; then
+  if ! "$BACKEND_DIR/.venv/bin/python" -c "import ultralytics, cv2, numpy, torch, torchvision" 2>/dev/null; then
+    "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
+  fi
+fi
+
+if ! "$BACKEND_DIR/.venv/bin/python" -c "import head_tail_analyzer" 2>/dev/null; then
+  WHL_DIR="$BACKEND_DIR/app/ml/whl"
+  if [[ -d "$WHL_DIR" ]]; then
+    LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
+    if [[ -n "$LATEST_WHL" ]]; then
+      echo "Installing ML wheel: $(basename "$LATEST_WHL")..."
+      "$BACKEND_DIR/.venv/bin/python" -m pip install --force-reinstall --no-deps "$LATEST_WHL"
+    fi
+  fi
 fi
 
 if [[ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]]; then

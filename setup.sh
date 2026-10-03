@@ -7,7 +7,11 @@ echo "======================================================="
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-cd "$SCRIPT_DIR/vision-ai-backend"
+if [[ -d "$SCRIPT_DIR/backend" ]]; then
+  cd "$SCRIPT_DIR/backend"
+else
+  cd "$SCRIPT_DIR/vision-ai-backend"
+fi
 chmod +x setup_linux.sh
 ./setup_linux.sh
 

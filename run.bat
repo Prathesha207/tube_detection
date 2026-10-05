@@ -21,11 +21,18 @@ if exist "%~dp0backend\.venv\Scripts\python.exe" (
 )
 
 if not exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found in !BACKEND_DIR!\.venv!
-    echo Please run setup.bat first to configure the environment.
+    echo =======================================================
+    echo [INFO] First-time setup detected: .venv is missing.
+    echo Running automated setup to configure Python, CUDA, and dependencies...
+    echo =======================================================
     echo.
-    pause
-    exit /b 1
+    call "%~dp0setup.bat"
+    if !ERRORLEVEL! NEQ 0 (
+        echo.
+        echo [ERROR] Setup failed. Please check the logs above.
+        pause
+        exit /b 1
+    )
 )
 
 set "FRONTEND_DIR="
@@ -33,6 +40,15 @@ if exist "%~dp0frontend\package.json" (
     set "FRONTEND_DIR=%~dp0frontend"
 ) else (
     set "FRONTEND_DIR=%~dp0vision-ai-frontend"
+)
+
+if not exist "!FRONTEND_DIR!\node_modules" (
+    echo =======================================================
+    echo [INFO] Frontend node_modules missing. Installing dependencies...
+    echo =======================================================
+    pushd "!FRONTEND_DIR!"
+    call npm install --include=optional
+    popd
 )
 
 echo [1/2] Starting Vision Monitor Backend API (Port 8000)...

@@ -1,4 +1,0 @@
-[console_scripts]
-measure_from_masks = head_tail_analyzer.measure_from_masks:main
-run_video_frames = head_tail_analyzer.run_video_frames:main
-video_ends = head_tail_analyzer.video_ends:main

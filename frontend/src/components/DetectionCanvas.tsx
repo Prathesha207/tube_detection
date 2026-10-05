@@ -189,26 +189,13 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   // Active session id (video or camera)
   const activeSessionId = videoSessionId || cameraRecordSessionId || (isCameraSource ? 'camera' : undefined);
 
-  // Fetch saved ROI on mount or whenever active session changes.
-  // Only populate savedRoiPoints — roiPoints stays empty until the user opens
-  // the editor, so the passive dashed outline never appears on its own.
+  // Pure per-session ROI: Every start of inference or new session starts with a full frame (no ROI).
+  // Never restore old ROIs from disk.
   useEffect(() => {
-    let isMounted = true;
-    roiService.getRoi(activeSessionId, effectiveFw, effectiveFh).then((res) => {
-      if (!isMounted) return;
-      if (res && Array.isArray(res.points) && res.points.length > 0) {
-        // Don't push into roiPoints here: the user hasn't drawn anything yet.
-        // savedRoiPoints drives the passive outline; roiPoints starts blank.
-        setSavedRoiPoints(res.points);
-        if (res.frame_width && res.frame_height) {
-          setRoiFrameSize({ width: Number(res.frame_width), height: Number(res.frame_height) });
-        }
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, [activeSessionId]);
+    setRoiPoints([]);
+    setSavedRoiPoints([]);
+    setIsRoiActive(false);
+  }, [activeSessionId, isRunning]);
 
   const hasRoiChanges = useMemo(() => {
     if (roiPoints.length !== savedRoiPoints.length) return true;

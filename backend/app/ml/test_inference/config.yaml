@@ -3,7 +3,7 @@
 # folder (config + model + roi.json) to another machine as-is.
 # Any setting can be overridden on the command line, e.g. --video, --output.
 
-model_path: tube_pt/best_1280.pt
+model_path: tube_pt/best_640_2classes_named.pt
 video: C:\Users\EmageVision\Videos\session_2026-09-29_20-09-53.mp4      # set here or pass --video (a file, or 0 for webcam)
 device: "0"          # "0" = first GPU, "cpu" = CPU
 

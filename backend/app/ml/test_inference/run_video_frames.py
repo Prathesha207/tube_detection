@@ -406,6 +406,55 @@ def print_diagnosis(tracks, min_frames):
           "(raise max_dist or max_missed)")
 
 
+def _convert_to_playable_h264(video_path):
+    """Convert OpenCV mp4v video into standard H.264 (yuv420p) so that Windows Media Player,
+    Movies & TV, Edge, Chrome, and iOS/Android can play it directly without codec errors."""
+    if not video_path:
+        return
+    p = Path(video_path)
+    if not p.exists() or p.stat().st_size == 0:
+        return
+
+    import shutil
+    ffmpeg_exe = shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            pass
+
+    if not ffmpeg_exe:
+        print("[video] notice: ffmpeg not found, video saved in mp4v format (use VLC to view)")
+        return
+
+    import subprocess
+    tmp_path = p.with_name(f"{p.stem}_raw_mp4v.mp4")
+    try:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        p.replace(tmp_path)
+        cmd = [
+            ffmpeg_exe, "-y", "-loglevel", "error",
+            "-i", str(tmp_path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            str(p)
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode == 0 and p.exists() and p.stat().st_size > 0:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            print(f"[video] encoded to playable H.264: {p}")
+        else:
+            if tmp_path.exists() and not p.exists():
+                tmp_path.replace(p)
+    except Exception as err:
+        print(f"[video] warning during H.264 encoding: {err}")
+        if tmp_path.exists() and not p.exists():
+            tmp_path.replace(p)
+
+
 # ------------------------------------------------------------------------ run
 def run(cfg):
     """Process the video described by `cfg` (from load_config). Yields one result
@@ -491,6 +540,8 @@ def run(cfg):
         cap.release()
         if writer:
             writer.release()
+            if cfg.output_video:
+                _convert_to_playable_h264(cfg.output_video)
         if preview:
             try:
                 cv2.destroyAllWindows()

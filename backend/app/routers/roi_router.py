@@ -31,69 +31,40 @@ class RoiPayload(BaseModel):
 
 
 @router.get("")
-@router.get("/")
 def get_roi_config(
     session_id: Optional[str] = None,
     stream_width: Optional[int] = Query(None, alias="stream_width"),
     stream_height: Optional[int] = Query(None, alias="stream_height"),
 ):
-    """Return currently saved ROI polygon and dimensions.
-    Handles missing file, empty points, and legacy files without frame dimensions
-    by falling back to the active stream/session size.
+    """Return in-memory ROI polygon and dimensions for the active session.
+    Every new session starts with no ROI (full frame, points: []).
     """
-    roi_file = Path(ROI_JSON)
-    if not roi_file.exists():
-        return {"points": [], "frame_width": None, "frame_height": None}
+    points: List[Any] = []
+    fw = stream_width
+    fh = stream_height
 
-    try:
-        data = json.loads(roi_file.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.warning(f"Failed to read roi.json: {e}")
-        return {"points": [], "frame_width": None, "frame_height": None}
+    # Retrieve in-memory ROI for the target session if drawn by the user
+    if session_id:
+        with video_inference_service._sessions_lock:
+            vs = video_inference_service.sessions.get(session_id)
+            if vs:
+                points = vs.get("roi_points") or []
+                if vs.get("roi_frame_size"):
+                    fw, fh = vs["roi_frame_size"]
+                elif vs.get("stats"):
+                    fw = vs["stats"].get("video_width") or fw
+                    fh = vs["stats"].get("video_height") or fh
 
-    points = data.get("points") or []
-    fw = data.get("frame_width")
-    fh = data.get("frame_height")
-
-    # Fallback to stream / session size if legacy file has no frame dimensions
-    if (fw is None or fh is None) and points:
-        fallback_w = stream_width
-        fallback_h = stream_height
-
-        # Try session_id lookup
-        if (not fallback_w or not fallback_h) and session_id:
-            with video_inference_service._sessions_lock:
-                vs = video_inference_service.sessions.get(session_id)
-                if vs and vs.get("stats"):
-                    fallback_w = vs["stats"].get("video_width") or fallback_w
-                    fallback_h = vs["stats"].get("video_height") or fallback_h
-            if not fallback_w or not fallback_h:
-                with camera_sessions_lock:
-                    cs = camera_sessions.get(session_id)
-                    if cs and cs.get("last_stats"):
-                        fallback_w = cs["last_stats"].get("video_width") or fallback_w
-                        fallback_h = cs["last_stats"].get("video_height") or fallback_h
-
-        # Fallback to any active session if still unknown
-        if not fallback_w or not fallback_h:
+        if not points:
             with camera_sessions_lock:
-                for s in camera_sessions.values():
-                    ls = s.get("last_stats")
-                    if ls and ls.get("video_width"):
-                        fallback_w = ls.get("video_width")
-                        fallback_h = ls.get("video_height")
-                        break
-        if not fallback_w or not fallback_h:
-            with video_inference_service._sessions_lock:
-                for s in video_inference_service.sessions.values():
-                    st = s.get("stats")
-                    if st and st.get("video_width"):
-                        fallback_w = st.get("video_width")
-                        fallback_h = st.get("video_height")
-                        break
-
-        fw = fallback_w
-        fh = fallback_h
+                cs = camera_sessions.get(session_id)
+                if cs:
+                    points = cs.get("roi_points") or []
+                    if cs.get("roi_frame_size"):
+                        fw, fh = cs["roi_frame_size"]
+                    elif cs.get("last_stats"):
+                        fw = cs["last_stats"].get("video_width") or fw
+                        fh = cs["last_stats"].get("video_height") or fh
 
     return {
         "points": points,
@@ -103,7 +74,6 @@ def get_roi_config(
 
 
 @router.post("")
-@router.post("/")
 def save_roi_config(payload: RoiPayload):
     """Validate, save, and hot-swap the ROI for camera and/or video inference."""
     frame_size = None

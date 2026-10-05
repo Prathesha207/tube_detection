@@ -134,6 +134,13 @@ class VideoInferenceService:
         )
         return analyzer, True
 
+    def _get_or_create_analyzer(self) -> TubeAnalyzer:
+        """Return an analyzer for one-off frame processing (e.g. frame 0 preview on upload)."""
+        if self._shared_analyzer is not None:
+            return self._shared_analyzer
+        analyzer, _ = self._acquire_analyzer()
+        return analyzer
+
     # ------------------------------------------------------------- sessions
     def stop_all_sessions(self):
         with self._sessions_lock:
@@ -258,6 +265,8 @@ class VideoInferenceService:
         session["queue"] = asyncio.Queue(maxsize=2)
         session["stop_event"] = threading.Event()
         session["last_frame_bytes"] = None
+        session["roi_points"] = []
+        session["roi_frame_size"] = None
         session["status"] = "processing"
         session["stats"].update({
             **new_stats(),
@@ -387,6 +396,8 @@ class VideoInferenceService:
                         with inference_context():
                             t_start = time.perf_counter()
                             last_analysis = analyzer.analyze_frame(frame, frame_number)
+                            if is_cuda_operational():
+                                torch.cuda.synchronize()
                             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
                         inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
                     except Exception as frame_err:
@@ -470,17 +481,18 @@ def is_cuda_operational() -> bool:
 
 
 def set_video_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
-    """Validate and save ROI to roi.json atomically, then hot-swap active video session analyzer."""
-    save_roi(points, _ROI_PATH, frame_size)
+    """Hot-swap active video session analyzer in-memory (per-session ROI, no disk persistence)."""
     with video_inference_service._sessions_lock:
         if session_id and session_id in video_inference_service.sessions:
             targets = [video_inference_service.sessions[session_id]]
         else:
             targets = list(video_inference_service.sessions.values())
-    for s in targets:
-        analyzer = s.get("analyzer")
-        if analyzer is not None:
-            analyzer.set_roi(points, frame_size)
+        for s in targets:
+            s["roi_points"] = points or []
+            s["roi_frame_size"] = frame_size
+            analyzer = s.get("analyzer")
+            if analyzer is not None:
+                analyzer.set_roi(points, frame_size)
 
 
 def _set_shared_analyzer(analyzer):

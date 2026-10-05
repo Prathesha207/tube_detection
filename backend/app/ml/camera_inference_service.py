@@ -111,6 +111,8 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             "inference_lock": threading.Lock(),
             "last_stats": new_stats(session_id=session_id, status="processing"),
             "last_annotated_frame": None,
+            "roi_points": [],
+            "roi_frame_size": None,
         }
         _sessions[session_id] = session
         _start_idle_sweeper_once()
@@ -198,6 +200,8 @@ def analyze_camera_frame(
                 analyzer.warm_up(frame.shape)          # no-op after the first frame of this size; not timed
                 t_start = time.perf_counter()
                 analysis = analyzer.analyze_frame(frame, frame_number)
+                if torch is not None and torch.cuda.is_available():
+                    torch.cuda.synchronize()
                 frame_time_ms = (time.perf_counter() - t_start) * 1000.0
             session["frames_processed"] = frame_number   # only count frames that succeeded
         except Exception as e:
@@ -233,17 +237,18 @@ reset_session_for_next_video = close_camera_session
 
 
 def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
-    """Validate and save ROI to roi.json atomically, then hot-swap active camera session analyzer."""
-    save_roi(points, _ROI_PATH, frame_size)
+    """Hot-swap active camera session analyzer in-memory (per-session ROI, no disk persistence)."""
     with _sessions_lock:
         if session_id and session_id in _sessions:
             targets = [_sessions[session_id]]
         else:
             targets = list(_sessions.values())
-    for s in targets:
-        analyzer = s.get("analyzer")
-        if analyzer is not None:
-            analyzer.set_roi(points, frame_size)
+        for s in targets:
+            s["roi_points"] = points or []
+            s["roi_frame_size"] = frame_size
+            analyzer = s.get("analyzer")
+            if analyzer is not None:
+                analyzer.set_roi(points, frame_size)
 
 
 def _set_camera_analyzer(analyzer):

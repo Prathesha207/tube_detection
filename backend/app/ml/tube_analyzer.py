@@ -368,7 +368,9 @@ class TubeAnalyzer:
         logger.info(f"TubeAnalyzer ready: model={path} classes={self.model.names} "
                     f"using={self.role_ids} device={self.cfg.device} tile={self.cfg.tile or 'off'}")
 
-        self.roi = load_roi(self.roi_path)
+        # Per-session ROI: start with full frame (no ROI). ROI is only
+        # applied when the user explicitly draws one via set_roi().
+        self.roi: Optional[np.ndarray] = None
         self._pending_roi: Optional[Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]] = None
         self.tracks: list = []
         self.next_id = 1
@@ -402,11 +404,13 @@ class TubeAnalyzer:
             logger.debug(f"TubeAnalyzer warm-up skipped: {e}")
 
     def reset_tracking(self) -> None:
-        """Forget all tracks (call before a new video / stream) and re-read the ROI file."""
+        """Forget all tracks (call before a new video / stream).
+        ROI is cleared back to None (full frame). The user must draw a new
+        ROI for it to take effect again."""
         self.tracks = []
         self.next_id = 1
         self._last_analysis = None
-        self.roi = load_roi(self.roi_path)
+        self.roi = None
 
     reset = reset_tracking   # old name, still works
 

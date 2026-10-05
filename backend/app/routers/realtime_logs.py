@@ -6,9 +6,8 @@ logger = logging.getLogger("realtime-logs")
 router = APIRouter(prefix="/logs", tags=["Realtime Logs"])
 
 
-@router.get("")
-@router.get("/")
 @router.get("/{category}")
+@router.get("")
 def get_logs(category: str = "system"):
     try:
         return {

@@ -258,6 +258,7 @@ async def upload_video(
                         frame0_bytes = buf0.tobytes()
                         for k, v in res0.items():
                             session["stats"][k] = v
+                        analyzer.reset_tracking()
                     except Exception as e:
                         logger.warning(f"Could not pre-annotate frame 0 on upload: {e}")
                 session["last_frame_bytes"] = frame0_bytes
@@ -767,6 +768,7 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                         _, buf = cv2.imencode(".jpg", clean0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         for k, v in res0.items():
                             session["stats"][k] = v
+                        analyzer.reset_tracking()
                     except Exception:
                         _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     session["last_frame_bytes"] = buf.tobytes()

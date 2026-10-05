@@ -15,12 +15,16 @@ else
   exit 1
 fi
 
-if [[ -d "$BACKEND_DIR/../vision-ai-frontend" ]]; then
+if [[ -d "$BACKEND_DIR/../frontend" ]]; then
+  FRONTEND_DIR="$(cd "$BACKEND_DIR/../frontend" && pwd -P)"
+elif [[ -d "$BACKEND_DIR/../vision-ai-frontend" ]]; then
   FRONTEND_DIR="$(cd "$BACKEND_DIR/../vision-ai-frontend" && pwd -P)"
+elif [[ -d "$PWD/frontend" ]]; then
+  FRONTEND_DIR="$(cd "$PWD/frontend" && pwd -P)"
 elif [[ -d "$PWD/vision-ai-frontend" ]]; then
   FRONTEND_DIR="$(cd "$PWD/vision-ai-frontend" && pwd -P)"
 else
-  echo "Error: Cannot locate vision-ai-frontend directory."
+  echo "Error: Cannot locate frontend directory."
   exit 1
 fi
 
@@ -80,11 +84,11 @@ pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
   --collect-all torch \
   --collect-all torchvision \
   --collect-all ultralytics \
-  --collect-all lap \
-  --collect-all segmentation_models_pytorch \
   --collect-all depthai \
   --collect-all av \
-  --collect-all mediapipe
+  --collect-all scipy \
+  --collect-all imageio_ffmpeg \
+  --collect-all head_tail_analyzer
 
 # Strip non-runtime development files directly in dist/backend
 chmod +x "$BACKEND_DIR/dist/backend/backend"

@@ -15,7 +15,7 @@ if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
 fi
 
 # Fast pre-flight check (<0.05s): installs backend requirements if anything is missing
-if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, yaml, lap" 2>/dev/null; then
+if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, yaml" 2>/dev/null; then
   echo "Configuring backend environment (one-time silent setup)..."
   "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
 fi

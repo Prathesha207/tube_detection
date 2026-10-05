@@ -150,9 +150,8 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
       '--copy-metadata', 'ultralytics',
       '--collect-all', 'app', '--collect-all', 'fastapi', '--collect-all', 'starlette', '--collect-all', 'uvicorn',
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',
-      '--collect-all', 'ultralytics', '--collect-all', 'segmentation_models_pytorch', '--collect-all', 'depthai',
-      '--collect-all', 'av', '--collect-all', 'mediapipe',
-      '--collect-all', 'scipy', '--collect-all', 'lap', '--collect-all', 'imageio_ffmpeg',
+      '--collect-all', 'ultralytics', '--collect-all', 'depthai',
+      '--collect-all', 'av', '--collect-all', 'scipy', '--collect-all', 'imageio_ffmpeg',
       '--collect-all', 'head_tail_analyzer'
     )
     & $VenvPython -m PyInstaller @PyInstallerArgs

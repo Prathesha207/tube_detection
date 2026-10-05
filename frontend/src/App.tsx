@@ -968,9 +968,29 @@ export default function App() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         config={camera.effectiveCameraConfig}
+        isRecording={recording.isRecording}
         onSaveConfig={async (cfg) => {
+          const currentConfig = camera.effectiveCameraConfig;
+          if (recording.isRecording && (cfg.resolution !== currentConfig.resolution || cfg.targetFps !== currentConfig.targetFps)) {
+            showToast('error', 'Resolution and FPS cannot be changed during a recording');
+            return;
+          }
           camera.setCameraConfig(cfg);
           try {
+            if (cfg.connected) {
+              const liveResult = await cameraService.updateLiveControls(cfg.id, {
+                exposure: cfg.exposure,
+                gain: cfg.iso ?? cfg.gain,
+                focus: cfg.focus,
+                brightness: cfg.brightness,
+                contrast: cfg.contrast,
+                auto_focus: cfg.autoFocus,
+                auto_exposure: cfg.autoExposure ?? true,
+              });
+              if (liveResult?.status === 'error') {
+                throw new Error(liveResult.message || 'Failed to apply camera controls');
+              }
+            }
             const payload = {
               name: cfg.sourceName || 'OAK Camera', ip_address: cfg.ipAddress || undefined,
               resolution: cfg.resolution, fps: cfg.targetFps,

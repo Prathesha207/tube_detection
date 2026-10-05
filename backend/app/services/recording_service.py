@@ -20,6 +20,7 @@ import queue
 import threading
 import time
 import logging
+import json
 from datetime import datetime
 from app.core.app_paths import get_desktop_dir
 
@@ -38,6 +39,7 @@ class RecordingSession:
         fps: float = 30.0,           # kept for API compatibility; not used for timestamps
         root_path: str = None,
         recording_format: str = "MP4",
+        camera_settings: dict | None = None,
     ):
         now = datetime.now()
         if not root_path:
@@ -99,6 +101,9 @@ class RecordingSession:
         self._last_bgr = None       # last frame received, used for pad-frame on stop
         self._last_pts_ms: int = 0  # PTS of that frame
         self.thread = None
+        self.metadata_path = os.path.splitext(self.video_path)[0] + ".json"
+        self.camera_settings = camera_settings or {}
+        self.settings_history = [{"elapsed_seconds": 0.0, "settings": self.camera_settings.copy()}]
 
         try:
             container_options = {}
@@ -189,6 +194,14 @@ class RecordingSession:
             except Exception:
                 pass
 
+    def add_settings_event(self, settings: dict) -> None:
+        elapsed = round(time.monotonic() - self._start_mono, 3)
+        event = {"elapsed_seconds": elapsed, "settings": settings.copy()}
+        self.camera_settings = settings.copy()
+        if self.settings_history and self.settings_history[-1]["settings"] == settings:
+            return
+        self.settings_history.append(event)
+
     def stop(self) -> dict:
         # Compute the actual wall-clock recording duration right now.
         # The last real frame arrived some time ago (depends on camera fps).
@@ -225,6 +238,18 @@ class RecordingSession:
             )
         # Container is already closed by the worker's finally block
         duration = time.monotonic() - self._start_mono
+        try:
+            with open(self.metadata_path, "w", encoding="utf-8") as metadata_file:
+                json.dump({
+                    "video_file": self.filename,
+                    "duration_seconds": round(duration, 3),
+                    "width": self.width,
+                    "height": self.height,
+                    "format": self.fmt,
+                    "settings_history": self.settings_history,
+                }, metadata_file, indent=2)
+        except Exception as e:
+            logger.warning(f"[RECORD] Could not write settings metadata: {e}")
         return {
             "recording_path": self.video_path,
             "filename": self.filename,
@@ -233,6 +258,7 @@ class RecordingSession:
             "format": self.fmt,
             "width": self.width,
             "height": self.height,
+            "metadata_path": self.metadata_path,
         }
 
 
@@ -275,6 +301,7 @@ def start_recording(
     fps: float = 30.0,
     root_path: str = None,
     recording_format: str = "MP4",
+    camera_settings: dict | None = None,
 ) -> str:
     logger.info(f"[RECORD] Creating session: {session_id} | format={recording_format}")
     if session_id in active_recordings:
@@ -282,7 +309,7 @@ def start_recording(
         return active_recordings[session_id].video_path
 
     root_path = _resolve_recording_path(root_path)
-    session = RecordingSession(session_id, width, height, fps, root_path, recording_format)
+    session = RecordingSession(session_id, width, height, fps, root_path, recording_format, camera_settings)
 
     # BUGFIX: if av.open() failed inside RecordingSession.__init__, it logs
     # and returns early, leaving is_running=False and thread=None -- but this

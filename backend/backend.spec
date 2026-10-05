@@ -2,44 +2,42 @@
 from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import copy_metadata
 
-datas = [('app/ml/model', 'app/ml/model'), ('app/ml/config', 'app/ml/config'), ('app/ml/torch_hub', 'app/ml/torch_hub'), ('alembic', 'alembic')]
+datas = [
+    ('app/ml/model', 'app/ml/model'),
+    ('app/ml/config', 'app/ml/config'),
+    ('alembic', 'alembic'),
+]
 binaries = []
-hiddenimports = []
+hiddenimports = [
+    'pydantic',
+    'pydantic_settings',
+    'pydantic_core',
+    'skimage',
+    'skimage.morphology',
+    'yaml',
+    'multipart',
+    'aiofiles',
+]
+
 datas += copy_metadata('torchvision')
 datas += copy_metadata('ultralytics')
-tmp_ret = collect_all('app')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('fastapi')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('starlette')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('uvicorn')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('sqlalchemy')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('cv2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('torch')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('torchvision')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('ultralytics')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('segmentation_models_pytorch')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('depthai')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('av')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('mediapipe')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('scipy')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('lap')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('imageio_ffmpeg')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+try:
+    datas += copy_metadata('head_tail_analyzer')
+except Exception:
+    pass
 
+for pkg in [
+    'app', 'fastapi', 'starlette', 'uvicorn', 'sqlalchemy',
+    'cv2', 'torch', 'torchvision', 'ultralytics', 'depthai',
+    'av', 'scipy', 'imageio_ffmpeg', 'head_tail_analyzer'
+]:
+    try:
+        tmp_ret = collect_all(pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except Exception:
+        pass
 
 a = Analysis(
     ['run.py'],
@@ -50,7 +48,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter', 'PyQt5', 'PyQt6', 'wx'],
     noarchive=False,
     optimize=0,
 )

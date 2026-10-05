@@ -743,8 +743,8 @@ class OakCameraService:
                 self._latest_bgr_seq += 1
 
                 if self._active_recording is not None:
-                    # Feed the authentic, unmodified camera stream frame to the recording
-                    self._active_recording.add_frame(raw_bgr)
+                    # Save the same adjusted image shown in the live stream.
+                    self._active_recording.add_frame(display_bgr)
                     record_frames += 1
 
                 frames += 1
@@ -902,6 +902,9 @@ class OakCameraService:
         self.auto_focus_enabled = False
         self.control_mode = "auto"
 
+        if self._active_recording is not None:
+            self._active_recording.add_settings_event(self._recording_settings_snapshot())
+
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return {"status": "ok", "message": "Controls reset to default steady stream"}
 
@@ -1047,6 +1050,9 @@ class OakCameraService:
                     self._on_device_lost("Control queue closed")
                 else:
                     logger.warning(f"[CONTROL] Device send failed: {e}")
+
+        if self._active_recording is not None:
+            self._active_recording.add_settings_event(self._recording_settings_snapshot())
 
     # ==================== Inference ====================
 
@@ -1831,6 +1837,7 @@ class OakCameraService:
         fps: float,
         root_path: str | None = None,
         recording_format: str | None = None,
+        camera_settings: dict | None = None,
     ) -> str:
         from app.services.recording_service import start_recording as _start, active_recordings
 
@@ -1872,7 +1879,7 @@ class OakCameraService:
         else:
             logger.info("[RECORD] Capture threads already running (AE limit already applied at stream start)")
 
-        path = _start(session_id, width, height, fps, root_path, rec_fmt)
+        path = _start(session_id, width, height, fps, root_path, rec_fmt, camera_settings)
         self._active_recording = active_recordings.get(session_id)
 
         if self._active_recording is None:
@@ -1881,6 +1888,20 @@ class OakCameraService:
             logger.info(f"[RECORD] Session active — frames will be fed from _convert_loop → path: {path}")
 
         return path
+
+    def _recording_settings_snapshot(self) -> dict:
+        return {
+            "resolution": f"{self._pipeline_width}x{self._pipeline_height}",
+            "fps": self._configured_fps,
+            "exposure_us": self.current_exposure_us,
+            "gain": self.current_gain,
+            "focus": self.current_focus,
+            "brightness": self.current_brightness,
+            "contrast": self.current_contrast,
+            "auto_exposure": self.auto_exposure_enabled,
+            "auto_focus": self.auto_focus_enabled,
+            "control_mode": self.control_mode,
+        }
 
     def stop_recording(self, session_id: str) -> dict:
         from app.services.recording_service import stop_recording as _stop

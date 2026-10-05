@@ -21,7 +21,6 @@ APP_PACKAGE    = "app"                  # root Python package folder
 DATA_FOLDERS = [
     "app/ml/model",
     "app/ml/config",
-    "storage",
     "alembic",
 ]
 # Extra pip packages that PyInstaller commonly misses
@@ -67,9 +66,8 @@ ALWAYS_HIDDEN = [
 
     # ── Pydantic ──────────────────────────────────────
     "pydantic",
-    "pydantic.v1",
+    "pydantic_settings",
     "pydantic_core",
-    "pydantic.deprecated",
 
     # ── Alembic ───────────────────────────────────────
     "alembic",
@@ -77,29 +75,25 @@ ALWAYS_HIDDEN = [
     "alembic.runtime.migration",
     "alembic.operations",
 
-    # ── Auth / Security ───────────────────────────────
-    "passlib",
-    "passlib.handlers",
-    "passlib.handlers.bcrypt",
-    "jose",
-    "jose.jwt",
-    "jose.exceptions",
-
-    # ── Other common ─────────────────────────────────────
+    # ── Core Libraries ────────────────────────────────
     "aiofiles",
     "multipart",
-    "email_validator",
     "PIL",
     "cv2",
     "numpy",
-    # ── ByteTrack / tracker dependency ────────────────────
-    "lap",                     # ultralytics bytetrack solver
+    "yaml",
+    "scipy",
     "scipy.optimize",
     "scipy.spatial",
     "scipy.ndimage",
-    # ── Video frame-count fallback ────────────────────────
+    "skimage",
+    "skimage.morphology",
     "imageio",
-    "imageio_ffmpeg",          # used when cv2 can't read PROP_FRAME_COUNT
+    "imageio_ffmpeg",
+    "depthai",
+    "av",
+    "ultralytics",
+    "head_tail_analyzer",
 ]
 
 
@@ -157,14 +151,16 @@ def write_spec(
 
     COLLECT_PACKAGES = [
         "app", "fastapi", "starlette", "uvicorn", "sqlalchemy", "cv2",
-        "torch", "torchvision", "ultralytics", "segmentation_models_pytorch",
-        "depthai", "av", "mediapipe", "matplotlib",
-        "scipy", "lap", "imageio_ffmpeg",
+        "torch", "torchvision", "ultralytics", "depthai", "av",
+        "scipy", "imageio_ffmpeg", "head_tail_analyzer",
     ]
 
     collect_blocks = "\n".join(
-        f"tmp_ret = collect_all('{pkg}')\n"
-        f"datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]"
+        f"try:\n"
+        f"    tmp_ret = collect_all('{pkg}')\n"
+        f"    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]\n"
+        f"except Exception:\n"
+        f"    pass"
         for pkg in COLLECT_PACKAGES
     )
 
@@ -173,7 +169,7 @@ def write_spec(
 
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 block_cipher = None
 
@@ -184,6 +180,12 @@ binaries = []
 hiddenimports = [
     {hi_repr}
 ]
+
+for meta_pkg in ['torchvision', 'ultralytics', 'head_tail_analyzer']:
+    try:
+        datas += copy_metadata(meta_pkg)
+    except Exception:
+        pass
 
 {collect_blocks}
 

@@ -38,6 +38,7 @@ def start_recording(data: StartRecordingRequest, db: Session = Depends(get_db)):
             height=height,
             fps=float(camera_config.fps or 30),
             recording_format=data.recording_format,
+            camera_settings=oak_camera_service._recording_settings_snapshot(),
         )
         return {
             "status": "recording",

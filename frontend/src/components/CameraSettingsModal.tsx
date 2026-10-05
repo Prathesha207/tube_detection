@@ -21,6 +21,7 @@ interface CameraSettingsModalProps {
   config: CameraConfig;
   onSaveConfig: (newConfig: CameraConfig) => void;
   onReconnect: (configToConnect?: CameraConfig) => Promise<void> | void;
+  isRecording?: boolean;
 }
 
 interface SavedCameraRow {
@@ -47,6 +48,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
   config,
   onSaveConfig,
   onReconnect,
+  isRecording = false,
 }) => {
   const [localConfig, setLocalConfig] = useState<CameraConfig>({ ...config });
   const [activeTab, setActiveTab] = useState<'stream' | 'image' | 'oak'>('stream');
@@ -119,6 +121,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
   // Connect to a SAVED camera row
   const handleConnectSaved = async (row: SavedCameraRow) => {
+    if (isRecording) {
+      setErrorMessage('Stop the active recording before reconnecting or switching cameras.');
+      return;
+    }
     setConnectingId(row.id);
     setErrorMessage(null);
     setErrorCameraId(null);
@@ -175,6 +181,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
   // Create + connect new camera
   const handleAddAndConnect = async () => {
+    if (isRecording) {
+      setErrorMessage('Stop the active recording before connecting a camera.');
+      return;
+    }
     const ipAddress = newType === 'usb' ? (detectedUsb?.ip_or_id || 'usb') : newIp.trim();
     const name = newName.trim() || (newType === 'usb' ? (detectedUsb?.name || 'USB OAK Camera') : `IP Camera (${newIp.trim()})`);
 
@@ -293,6 +303,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                           onClick={() => {
                             setLocalConfig({ ...localConfig, resolution: res });
                           }}
+                          disabled={isRecording}
                           className={`flex-1 py-1 px-2 rounded-md text-[11px] font-bold transition-all cursor-pointer text-center whitespace-nowrap ${isSelected
                             ? 'bg-[var(--accent-pond)] text-white shadow-xs'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -321,11 +332,18 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                       step={1}
                       value={localConfig.targetFps}
                       onChange={(e) => setLocalConfig({ ...localConfig, targetFps: parseInt(e.target.value, 10) })}
+                      disabled={isRecording}
                       style={getSliderStyle(localConfig.targetFps, 1, 60)}
                       className="w-full h-1.5 rounded cursor-pointer transition-all"
                     />
                   </div>
                 </div>
+
+                {isRecording && (
+                  <div className="sm:col-span-2 text-[10px] text-amber-500">
+                    Resolution and FPS are locked during recording because applying them restarts the camera pipeline.
+                  </div>
+                )}
 
                 {/* Recording Video Format */}
                 <div className="sm:col-span-2 space-y-1 pt-1.5 border-t border-[var(--border-color)]/60">
@@ -504,6 +522,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   variant="primary"
                   size="sm"
                   disabled={
+                    isRecording ||
                     connectingId === 'new' ||
                     (newType === 'usb' && !detectedUsb) ||
                     (newType === 'ip' && !newIp.trim())
@@ -609,7 +628,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                           <Button
                             variant={isActive ? 'secondary' : 'primary'}
                             size="sm"
-                            disabled={isConnecting}
+                            disabled={isConnecting || isRecording}
                             onClick={() => handleConnectSaved(row)}
                             className="h-6 text-[11px] px-2.5 font-bold"
                           >

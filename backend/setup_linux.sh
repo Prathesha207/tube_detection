@@ -17,6 +17,11 @@ if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
   exit 1
 fi
 
+if [[ "${1:-}" == "--clean" || "${1:-}" == "-c" ]]; then
+  echo "Clean setup requested. Removing existing .venv..."
+  rm -rf "$VENV_DIR"
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR" || {
     echo "ERROR: Failed to create Python virtual environment."

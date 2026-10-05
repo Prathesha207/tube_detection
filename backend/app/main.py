@@ -152,7 +152,19 @@ def _preload_model_background():
             # Determine device
             try:
                 from app.ml.video_inference_service import is_cuda_operational
-                device_val = "0" if is_cuda_operational() else "cpu"
+                cuda_active = is_cuda_operational()
+                device_val = "0" if cuda_active else "cpu"
+                if cuda_active:
+                    import torch
+                    gpu_name = torch.cuda.get_device_name(0)
+                    logger.info(f"[HARDWARE] ML Inference: GPU ACCELERATED (cuda:0 - {gpu_name}) | PyTorch {torch.__version__}")
+                else:
+                    try:
+                        import torch
+                        torch_ver = torch.__version__
+                    except Exception:
+                        torch_ver = "N/A"
+                    logger.info(f"[HARDWARE] ML Inference: CPU Mode | PyTorch {torch_ver}")
             except Exception:
                 device_val = "cpu"
 
@@ -164,7 +176,7 @@ def _preload_model_background():
                 import numpy as np
                 dummy = np.zeros((640, 640, 3), dtype=np.uint8)
                 _analyzer.process_frame(dummy)
-                logger.info(f"[STARTUP] ML model warm-up complete — GPU kernels compiled (device={device_val}).")
+                logger.info(f"[STARTUP] ML model warm-up complete — kernels compiled (device={device_val}).")
             except Exception as warm_err:
                 logger.warning(f"[STARTUP] Warm-up inference failed (non-fatal): {warm_err}")
 

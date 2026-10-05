@@ -450,6 +450,8 @@ class TubeAnalyzer:
         self._last_analysis = analysis
         return analysis
 
+    process_frame = analyze_frame   # backward compatibility alias
+
     def set_roi(self, points: Any, frame_size: Optional[Tuple[int, int]] = None) -> None:
         """Queue an ROI swap between frames (thread-safe for both camera and video).
         Validates in the caller's thread and applies at the start of the next frame.

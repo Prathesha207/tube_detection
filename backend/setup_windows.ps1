@@ -130,9 +130,22 @@ Write-Host "[3/7] Setting up Python virtual environment..." -ForegroundColor Yel
 $VenvDir = Join-Path $BackendDir '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 
-if ($Clean -and (Test-Path $VenvDir)) {
-    Write-Host "[CLEAN] Clean setup requested. Removing existing virtual environment..." -ForegroundColor Yellow
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($Clean) {
+    Write-Host "[CLEAN] Clean setup requested. Terminating any running backend processes..." -ForegroundColor Yellow
+    Get-Process -Name "python", "uvicorn" -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -like "*$BackendDir*"
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+
+    if (Test-Path $VenvDir) {
+        Write-Host "[CLEAN] Removing existing virtual environment at $VenvDir..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $FrontendDist = Join-Path $FrontendDir 'dist'
+    if (Test-Path $FrontendDist) {
+        Write-Host "[CLEAN] Removing existing frontend build artifacts at $FrontendDist..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $FrontendDist -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not (Test-Path $VenvPython)) {
@@ -269,7 +282,7 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
     if ($ComputeCap -ge 12.0) {
         $TargetCuda = 'cu126'
         $CudaIndex = 'https://download.pytorch.org/whl/cu126'
-    } elseif ($ComputeCap -ge 8.9 -or $ComputeCap -eq 0.0) {
+    } elseif ($ComputeCap -ge 8.9) {
         $TargetCuda = 'cu124'
         $CudaIndex = 'https://download.pytorch.org/whl/cu124'
     } else {
@@ -279,10 +292,10 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
     if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
     Write-Host "[GPU INFO] Targeting CUDA $TargetCuda for maximum compatibility/performance." -ForegroundColor Cyan
     Write-Host "Fetching CUDA wheels from $CudaIndex..."
-    & $VenvPython -m pip install --upgrade --force-reinstall --index-url $CudaIndex torch torchvision
+    & $VenvPython -m pip install --upgrade --force-reinstall --extra-index-url $CudaIndex torch torchvision
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu121 fallback..." -ForegroundColor Yellow
-        & $VenvPython -m pip install --upgrade --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch torchvision
+        & $VenvPython -m pip install --upgrade --force-reinstall --extra-index-url https://download.pytorch.org/whl/cu121 torch torchvision
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install CUDA PyTorch and torchvision."
         }
@@ -300,8 +313,8 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
 # Strict verification: verify that torchvision metadata is functional right now
 $TorchVisionVerify = try {
     & $VenvPython -c "
+import torch, torchvision, importlib.metadata
 try:
-    import torch, torchvision, importlib.metadata
     _ = importlib.metadata.version('torchvision')
     print('VERIFIED')
 except Exception:
@@ -310,6 +323,26 @@ except Exception:
 } catch { 'FAILED' }
 if ($TorchVisionVerify -ne 'VERIFIED') {
     throw "PyTorch / torchvision verification failed: 'torchvision' package metadata is missing or corrupted."
+}
+
+# Confirm GPU hardware acceleration status
+$CudaFinalCheck = try {
+    & $VenvPython -c "
+import torch
+if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    print('CUDA_ACTIVE:' + torch.cuda.get_device_name(0))
+else:
+    print('CPU_ONLY')
+" 2>$null
+} catch { 'UNKNOWN' }
+
+if ($CudaFinalCheck -like 'CUDA_ACTIVE:*') {
+    $activeGpu = $CudaFinalCheck.Substring(12)
+    Write-Host "[GPU SUCCESS] Hardware Acceleration Confirmed: $activeGpu is ready for ML inference!" -ForegroundColor Green
+} elseif ($HasNvidia) {
+    Write-Host "[WARNING] NVIDIA GPU hardware was detected on this PC, but PyTorch is in CPU mode. Please verify NVIDIA driver is installed." -ForegroundColor Yellow
+} else {
+    Write-Host "[INFO] ML Inference configured for CPU mode." -ForegroundColor Cyan
 }
 
 # ------------------------------------------------------------------------------

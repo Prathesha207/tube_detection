@@ -22,15 +22,25 @@ if exist "%~dp0backend\.venv\Scripts\python.exe" (
 
 set "VENV_READY=0"
 if exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
-    "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import uvicorn, fastapi" >nul 2>&1
+    "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import uvicorn, fastapi, ultralytics, torch, cv2" >nul 2>&1
     if !ERRORLEVEL! EQU 0 (
         set "VENV_READY=1"
+        REM If NVIDIA GPU is detected, ensure PyTorch has CUDA enabled
+        where nvidia-smi >nul 2>&1
+        if !ERRORLEVEL! EQU 0 (
+            "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+            if !ERRORLEVEL! NEQ 0 (
+                echo [INFO] NVIDIA GPU detected, but current environment has CPU-only PyTorch.
+                echo Triggering automated setup to configure GPU acceleration...
+                set "VENV_READY=0"
+            )
+        )
     )
 )
 
 if "!VENV_READY!"=="0" (
     echo =======================================================
-    echo [INFO] Python environment is missing or incomplete (uvicorn/fastapi not found).
+    echo [INFO] Python environment is missing or needs GPU/dependency setup.
     echo Running automated setup to configure Python, CUDA, and dependencies...
     echo =======================================================
     echo.

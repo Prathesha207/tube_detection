@@ -29,9 +29,6 @@ fi
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
-if [[ -f "$BACKEND_DIR/app/ml/tube/requirements.txt" ]]; then
-  python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
-fi
 
 # Automatically install latest head_tail_analyzer wheel
 WHL_DIR="$BACKEND_DIR/app/ml/whl"

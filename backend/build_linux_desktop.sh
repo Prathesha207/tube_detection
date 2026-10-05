@@ -42,7 +42,6 @@ python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
-python -m pip install -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
 
 if [[ "${USE_CUDA:-0}" == "1" || ( "${USE_CUDA:-auto}" == "auto" && -n "$(command -v nvidia-smi 2>/dev/null || true)" ) ]]; then
   echo "NVIDIA GPU detected/requested; installing CUDA-enabled PyTorch..."

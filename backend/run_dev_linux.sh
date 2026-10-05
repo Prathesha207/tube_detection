@@ -20,12 +20,6 @@ if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, ya
   "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
 fi
 
-if [[ -f "$BACKEND_DIR/app/ml/tube/requirements.txt" ]]; then
-  if ! "$BACKEND_DIR/.venv/bin/python" -c "import ultralytics, cv2, numpy, torch, torchvision" 2>/dev/null; then
-    "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/app/ml/tube/requirements.txt"
-  fi
-fi
-
 if ! "$BACKEND_DIR/.venv/bin/python" -c "import head_tail_analyzer" 2>/dev/null; then
   WHL_DIR="$BACKEND_DIR/app/ml/whl"
   if [[ -d "$WHL_DIR" ]]; then

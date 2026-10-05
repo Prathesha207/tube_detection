@@ -48,7 +48,6 @@ FailedFrames/
 # =========================
 *.pt
 !app/ml/model/best.pt
-!app/ml/tube/model/best.pt
 !app/ml/test_inference/tube_pt/*.pt
 !app/ml/test_inference/tube_pt/bad_pt/*.pt
 *.pth

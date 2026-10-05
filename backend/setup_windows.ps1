@@ -170,14 +170,6 @@ if ($BackendCheck -eq 'INSTALLED') {
             throw "Failed to install Python requirements from $ReqFile."
         }
     }
-    $MlReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
-    if (Test-Path $MlReqFile) {
-        Write-Host "Installing ML requirements from $MlReqFile..."
-        & $VenvPython -m pip install --prefer-binary -r $MlReqFile
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install ML requirements from $MlReqFile."
-        }
-    }
 }
 
 # ------------------------------------------------------------------------------
@@ -336,11 +328,8 @@ else:
 " 2>$null
 } catch { 'MISSING' }
 if ($TubeCheck -ne 'INSTALLED') {
-    $TubeReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
-    if (Test-Path $TubeReqFile) {
-        & $VenvPython -m pip install --prefer-binary -r $TubeReqFile
-        if ($LASTEXITCODE -ne 0) { throw "Failed to install tube requirements from $TubeReqFile." }
-    }
+    & $VenvPython -m pip install --prefer-binary -r $ReqFile
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install tube requirements from $ReqFile." }
 }
 
 # Automatically install / update head_tail_analyzer wheel from backend/app/ml/whl

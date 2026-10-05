@@ -122,10 +122,6 @@ if ($Acceleration -eq 'cuda') {
 
 & $VenvPython -m pip install --prefer-binary -r (Join-Path $BackendDir 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install backend requirements.' }
-$MlReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
-if (Test-Path $MlReqFile) {
-  & $VenvPython -m pip install --prefer-binary -r $MlReqFile
-}
 # Install latest head_tail_analyzer wheel
 $WhlDir = Join-Path $BackendDir 'app\ml\whl'
 if (Test-Path $WhlDir) {

@@ -67,7 +67,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onToggleRoi,
 }) => {
   const latencyMs = useInferenceStore((state) => state.stats.latency_ms ?? state.stats.frame_time_ms);
-  const isMediaActive = isRunning || hasActiveVideo || (isCameraSource && isStreaming);
+  const isMediaActive = isRunning || hasActiveVideo || Boolean(hasCameraRecording) || (isCameraSource && isStreaming);
   if (!isMediaActive) return null;
 
   const hasInferenceResult = framesProcessed > 0 || (anomalyStatus.headsCount ?? 0) > 0 || (anomalyStatus.tailsCount ?? 0) > 0;

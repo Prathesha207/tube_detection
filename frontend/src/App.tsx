@@ -469,7 +469,15 @@ export default function App() {
     if (video.cameraRecordSessionId || isRunning) return;
     if (recording.isRecording) {
       const res = await recording.stopRecording();
-      if (res && res.filename) {
+      if (res && res.session_id) {
+        video.setCameraRecordSessionId(res.session_id);
+        if (res.filename) video.setCameraRecordName(res.filename);
+        if (res.recording_path || res.stream_url) {
+          video.setCameraRecordUrl(res.recording_path || res.stream_url);
+        }
+        showToast('success', `Recording saved: ${res.filename} • Ready for review & inference`);
+        addLog(`Camera recording saved: ${res.filename} (${res.duration ?? 0}s, ${res.frames ?? 0} frames) • Loaded for review & inference.`, 'success');
+      } else if (res && res.filename) {
         showToast('success', `Recording saved: ${res.filename}`);
       }
     } else {
@@ -569,10 +577,27 @@ export default function App() {
   };
 
   const handleClearCameraRecord = () => {
+    const sid = video.cameraRecordSessionId;
+    setIsRunning(false);
+    setSelectedTubeId(null);
+    setTubes([]);
+    useInferenceStore.getState().resetStats();
+    resetBBoxCache();
+    inference.setFramesProcessed(0);
+    inference.setFps(0);
+    inference.setUptimeSeconds(0);
+    sourceStateCache.current.camera = null;
+    setLastCameraFrame(undefined);
     video.clearCameraRecording();
     camera.setCameraStartingState('ready');
     camera.setIsStreaming(false);
+    if (sid) {
+      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
+      fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
+    }
     cameraService.stopStream().catch(() => { });
+    showToast('info', 'Recorded clip cleared. Switched back to live camera.');
+    addLog('Recorded clip cleared • Switched back to live camera view.', 'info');
   };
 
   const handleResetVideo = async () => {

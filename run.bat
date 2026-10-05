@@ -20,9 +20,17 @@ if exist "%~dp0backend\.venv\Scripts\python.exe" (
     set "BACKEND_DIR=%~dp0vision-ai-backend"
 )
 
-if not exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
+set "VENV_READY=0"
+if exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
+    "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import uvicorn, fastapi" >nul 2>&1
+    if !ERRORLEVEL! EQU 0 (
+        set "VENV_READY=1"
+    )
+)
+
+if "!VENV_READY!"=="0" (
     echo =======================================================
-    echo [INFO] First-time setup detected: .venv is missing.
+    echo [INFO] Python environment is missing or incomplete (uvicorn/fastapi not found).
     echo Running automated setup to configure Python, CUDA, and dependencies...
     echo =======================================================
     echo.
@@ -52,10 +60,10 @@ if not exist "!FRONTEND_DIR!\node_modules" (
 )
 
 echo [1/2] Starting Vision Monitor Backend API (Port 8000)...
-start "Vision Monitor - Backend API" /d "!BACKEND_DIR!" cmd /c ".venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000"
+start "Vision Monitor - Backend API" /d "!BACKEND_DIR!" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000"
 
 echo [2/2] Starting Vision Monitor Frontend UI (Port 5173)...
-start "Vision Monitor - Frontend UI" /d "!FRONTEND_DIR!" cmd /c "npm run dev"
+start "Vision Monitor - Frontend UI" /d "!FRONTEND_DIR!" cmd /k "npm run dev"
 
 echo.
 echo =======================================================

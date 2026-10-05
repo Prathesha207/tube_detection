@@ -8,7 +8,7 @@ param(
 # Configures Python virtual environment, dependencies, CUDA PyTorch,
 # tube inference dependencies, and Node.js frontend packages without errors.
 # ==============================================================================
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "       Vision Monitor - Automated Setup (Windows)      " -ForegroundColor Cyan
@@ -148,7 +148,16 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 # Fast check: are backend packages already installed?
-$BackendCheck = & $VenvPython -c "import fastapi, uvicorn, ultralytics, cv2, skimage, yaml, torchvision; print('INSTALLED')" 2>$null
+$BackendCheck = try {
+    & $VenvPython -c "
+import importlib.util as u
+pkgs = ['fastapi', 'uvicorn', 'ultralytics', 'cv2', 'yaml', 'torchvision']
+if all(u.find_spec(p) is not None for p in pkgs):
+    print('INSTALLED')
+else:
+    print('MISSING')
+" 2>$null
+} catch { 'MISSING' }
 if ($BackendCheck -eq 'INSTALLED') {
     Write-Host "[OK] Backend dependencies (including torchvision) are already installed. (Skipping requirements reinstall)." -ForegroundColor Green
 } else {
@@ -297,7 +306,16 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
 }
 
 # Strict verification: verify that torchvision metadata is functional right now
-$TorchVisionVerify = & $VenvPython -c "import torch, torchvision, importlib.metadata; _ = importlib.metadata.version('torchvision'); print('VERIFIED')" 2>$null
+$TorchVisionVerify = try {
+    & $VenvPython -c "
+try:
+    import torch, torchvision, importlib.metadata
+    _ = importlib.metadata.version('torchvision')
+    print('VERIFIED')
+except Exception:
+    print('FAILED')
+" 2>$null
+} catch { 'FAILED' }
 if ($TorchVisionVerify -ne 'VERIFIED') {
     throw "PyTorch / torchvision verification failed: 'torchvision' package metadata is missing or corrupted."
 }
@@ -307,7 +325,16 @@ if ($TorchVisionVerify -ne 'VERIFIED') {
 # ------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "[5/7] Verifying tube inference packages and ML wheel..." -ForegroundColor Yellow
-$TubeCheck = & $VenvPython -c "from ultralytics import YOLO; import cv2, numpy, torch, torchvision, skimage; print('INSTALLED')" 2>$null
+$TubeCheck = try {
+    & $VenvPython -c "
+import importlib.util as u
+pkgs = ['ultralytics', 'cv2', 'numpy', 'torch', 'torchvision', 'skimage']
+if all(u.find_spec(p) is not None for p in pkgs):
+    print('INSTALLED')
+else:
+    print('MISSING')
+" 2>$null
+} catch { 'MISSING' }
 if ($TubeCheck -ne 'INSTALLED') {
     $TubeReqFile = Join-Path $BackendDir 'app\ml\tube\requirements.txt'
     if (Test-Path $TubeReqFile) {

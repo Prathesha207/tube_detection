@@ -32,8 +32,8 @@ PyYAML>=6.0.0
 
 # --- PyTorch Note ---
 # The generic lines below allow CPU installation by default.
-# For CUDA acceleration, setup_windows.ps1 / setup_linux.sh automatically install
-# the optimal CUDA wheels (e.g. cu121 / cu124) from https://download.pytorch.org/whl
+# For CUDA acceleration, setup scripts select compatible wheels from
+# https://download.pytorch.org/whl (Windows Blackwell GPUs use cu130).
 torch>=2.2.0
 torchvision>=0.17.0
 

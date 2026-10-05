@@ -392,6 +392,7 @@ class VideoInferenceService:
 
                 # Run the model on this frame, or (stride) reuse the last detections.
                 if last_analysis is None or frame_number % stride == 0:
+                    previous_analysis = last_analysis
                     try:
                         with inference_context():
                             t_start = time.perf_counter()
@@ -401,8 +402,18 @@ class VideoInferenceService:
                             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
                         inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
                     except Exception as frame_err:
-                        logger.warning(f"Session {session_id}: frame {frame_number} inference failed: {frame_err}")
-                        frame_time_ms, inference_fps = None, 0.0
+                        if not analyzer._retry_on_cpu_after_cuda_error(frame_err):
+                            raise RuntimeError(
+                                f"Inference failed on frame {frame_number}: {frame_err}"
+                            ) from frame_err
+                        if last_analysis is previous_analysis:
+                            with inference_context():
+                                t_start = time.perf_counter()
+                                last_analysis = analyzer.analyze_frame(frame, frame_number)
+                                frame_time_ms = (time.perf_counter() - t_start) * 1000.0
+                        else:
+                            frame_time_ms = (time.perf_counter() - t_start) * 1000.0
+                        inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
 
                 # Stats for the frontend (one update() so readers never see a half-written frame).
                 update = build_frontend_stats(last_analysis.result) if last_analysis else {}
@@ -475,9 +486,8 @@ ml_inference_service = video_inference_service
 
 
 def is_cuda_operational() -> bool:
-    if torch is None:
-        return False
-    return torch.cuda.is_available() and torch.cuda.device_count() > 0
+    from .tube_analyzer import cuda_is_available
+    return cuda_is_available()
 
 
 def set_video_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:

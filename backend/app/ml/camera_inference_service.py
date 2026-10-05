@@ -29,6 +29,7 @@ from app.core.logger import setup_logger
 from .tube_analyzer import (
     TubeAnalyzer,
     build_frontend_stats,
+    cuda_is_available,
     default_device,
     inference_context,
     new_stats,
@@ -200,7 +201,7 @@ def analyze_camera_frame(
                 analyzer.warm_up(frame.shape)          # no-op after the first frame of this size; not timed
                 t_start = time.perf_counter()
                 analysis = analyzer.analyze_frame(frame, frame_number)
-                if torch is not None and torch.cuda.is_available():
+                if cuda_is_available():
                     torch.cuda.synchronize()
                 frame_time_ms = (time.perf_counter() - t_start) * 1000.0
             session["frames_processed"] = frame_number   # only count frames that succeeded

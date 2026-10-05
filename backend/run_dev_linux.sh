@@ -31,6 +31,14 @@ if ! "$BACKEND_DIR/.venv/bin/python" -c "import head_tail_analyzer" 2>/dev/null;
   fi
 fi
 
+# Repair an incompatible CUDA wheel automatically. Device visibility alone is
+# insufficient: old PyTorch builds can see a GPU but lack kernels for its arch.
+if command -v nvidia-smi >/dev/null 2>&1 && \
+   ! "$BACKEND_DIR/.venv/bin/python" -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
+  echo "NVIDIA GPU detected, but installed PyTorch cannot execute its CUDA kernels. Running setup..."
+  bash "$BACKEND_DIR/setup_linux.sh"
+fi
+
 if [[ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]]; then
   echo "Frontend dependencies are missing. Installing node_modules..."
   cd "$FRONTEND_DIR" && npm install --include=optional

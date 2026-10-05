@@ -50,16 +50,24 @@ fi
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "NVIDIA GPU detected; verifying CUDA-enabled PyTorch..."
   if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
-    if python -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    if python -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
       echo "ARM64 vendor PyTorch with CUDA is already installed; keeping it."
     else
       echo "ARM64 detected, but vendor CUDA PyTorch is not installed. Continuing with CPU PyTorch."
       echo "Install the NVIDIA/platform ARM64 PyTorch package later for GPU inference."
     fi
   else
-    if ! python -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-      echo "Installing CUDA-enabled PyTorch..."
-      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu121}"
+    if ! python -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
+      echo "Installing CUDA-enabled PyTorch compatible with this GPU..."
+      GPU_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+      if awk -v cc="${GPU_CC:-0}" 'BEGIN {exit !(cc >= 12.0)}'; then
+        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu130"
+      elif awk -v cc="${GPU_CC:-0}" 'BEGIN {exit !(cc >= 8.9)}'; then
+        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu128"
+      else
+        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu121"
+      fi
+      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-$DEFAULT_CUDA_INDEX}"
       if ! python -m pip install --force-reinstall \
         --index-url "$PYTORCH_CUDA_INDEX" \
         torch torchvision; then
@@ -68,7 +76,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         exit 1
       fi
     else
-      echo "CUDA PyTorch is already installed and operational."
+      echo "CUDA kernels ran successfully; GPU inference is available."
     fi
   fi
 else

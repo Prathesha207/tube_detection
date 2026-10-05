@@ -62,6 +62,8 @@ try:
 except Exception:
     torch = None
 
+_CUDA_KERNELS_USABLE: Optional[bool] = None
+
 try:
     from head_tail_analyzer import run_video_frames as rvf
     _WHEEL_ERROR = None
@@ -79,7 +81,32 @@ ROI_JSON = str(_ML_DIR / "config" / "roi.json")
 
 # --------------------------------------------------------------- small helpers
 def cuda_is_available() -> bool:
-    return bool(torch is not None and torch.cuda.is_available())
+    """Return true only when this PyTorch build can execute kernels on the GPU.
+
+    ``torch.cuda.is_available()`` only reports that a CUDA device/driver exists;
+    it does not detect an unsupported GPU architecture (for example sm_120 with
+    an older wheel). Probe once so inference selects CPU instead of silently
+    failing on every frame.
+    """
+    global _CUDA_KERNELS_USABLE
+    if _CUDA_KERNELS_USABLE is not None:
+        return _CUDA_KERNELS_USABLE
+    if torch is None:
+        _CUDA_KERNELS_USABLE = False
+        return False
+    try:
+        if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+            _CUDA_KERNELS_USABLE = False
+            return False
+        probe = torch.ones((1,), device="cuda:0")
+        _ = probe + 1
+        torch.cuda.synchronize(0)
+        del probe
+        _CUDA_KERNELS_USABLE = True
+    except Exception as e:
+        logger.warning("CUDA is visible but this PyTorch build cannot run GPU kernels; using CPU: %s", e)
+        _CUDA_KERNELS_USABLE = False
+    return _CUDA_KERNELS_USABLE
 
 
 def default_device() -> str:
@@ -414,6 +441,29 @@ class TubeAnalyzer:
 
     reset = reset_tracking   # old name, still works
 
+    def _retry_on_cpu_after_cuda_error(self, error: Exception) -> bool:
+        """Reload the detector on CPU after a CUDA-specific model failure."""
+        global _CUDA_KERNELS_USABLE
+        message = str(error).lower()
+        cuda_failure = any(token in message for token in (
+            "cuda", "gpu", "no kernel image", "invalid device function",
+            "not implemented for", "could not run", "cudnn",
+        ))
+        if self.cfg.device == "cpu" or not cuda_failure:
+            return False
+
+        logger.warning("CUDA inference failed (%s); reloading the detector on CPU and retrying this frame", error)
+        _CUDA_KERNELS_USABLE = False
+        self.cfg.device = "cpu"
+        self.model = _load_yolo_model(self.cfg.model_path)
+        self._warmed_shapes.clear()
+        if torch is not None:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        return True
+
     # ------------------------------------------------------------ per frame
     def analyze_frame(self, frame: np.ndarray, frame_number: int = 0) -> FrameAnalysis:
         """Detect -> track -> ROI filter -> result for ONE BGR frame.
@@ -437,7 +487,12 @@ class TubeAnalyzer:
             for t in self.tracks:
                 t.in_roi_ever = False
 
-        detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
+        try:
+            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
+        except Exception as error:
+            if not self._retry_on_cpu_after_cuda_error(error):
+                raise
+            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
         self.next_id = rvf.update_tracks(self.tracks, detections, frame_number, self.next_id, self.cfg)
         self._drop_stale_tracks(frame_number)
 

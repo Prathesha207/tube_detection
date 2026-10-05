@@ -149,6 +149,11 @@ export function useInferenceLoop({
 
         if (data.status === 'error' || data.status === 'stopped' || data.done) {
           setIsRunning(false);
+          if (data.status === 'error') {
+            const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Video inference failed';
+            showToast('error', `Inference failed: ${errDetail}`);
+            addLog(`Inference failed: ${errDetail}`, 'anomaly');
+          }
           return;
         }
 
@@ -171,12 +176,6 @@ export function useInferenceLoop({
             addLog('Video inference processing completed.', 'success');
             return;
           }
-        } else if (data.status === 'error') {
-          console.error('[VisionAI] Inference error:', data.reasons);
-          setIsRunning(false);
-          showToast('error', `Inference failed: ${data.reasons?.join(', ') || 'Unknown error'}`);
-          addLog(`Inference failed: ${data.reasons?.join(', ') || 'Unknown error'}`, 'anomaly');
-          return;
         }
 
         const pollInterval = Math.max(120, Math.min(250, Math.floor(1000 / (data?.fps || 15))));

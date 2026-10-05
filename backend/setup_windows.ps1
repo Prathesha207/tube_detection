@@ -253,6 +253,7 @@ try:
         torch.cuda.init()
         t = torch.zeros((1, 1), device='cuda:0')
         _ = t + 1.0
+        torch.cuda.synchronize(0)
         del t
         print('CUDA_OPERATIONAL:' + torch.cuda.get_device_name(0))
     else:
@@ -280,8 +281,11 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
 } elseif ($HasNvidia) {
     Write-Host "[INFO] NVIDIA GPU detected ($GpuName). Installing CUDA-accelerated PyTorch and torchvision..." -ForegroundColor Cyan
     if ($ComputeCap -ge 12.0) {
-        $TargetCuda = 'cu126'
-        $CudaIndex = 'https://download.pytorch.org/whl/cu126'
+        # Blackwell GPUs (sm_120), including RTX 50-series, need a wheel
+        # containing compatible kernels. The old cu126 selection could see
+        # the device but fail at the first model operation.
+        $TargetCuda = 'cu130'
+        $CudaIndex = 'https://download.pytorch.org/whl/cu130'
     } elseif ($ComputeCap -ge 8.9) {
         $TargetCuda = 'cu124'
         $CudaIndex = 'https://download.pytorch.org/whl/cu124'
@@ -292,10 +296,10 @@ if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
     if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
     Write-Host "[GPU INFO] Targeting CUDA $TargetCuda for maximum compatibility/performance." -ForegroundColor Cyan
     Write-Host "Fetching CUDA wheels from $CudaIndex..."
-    & $VenvPython -m pip install --upgrade --force-reinstall --extra-index-url $CudaIndex torch torchvision
+    & $VenvPython -m pip install --upgrade --force-reinstall --index-url $CudaIndex torch torchvision
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu121 fallback..." -ForegroundColor Yellow
-        & $VenvPython -m pip install --upgrade --force-reinstall --extra-index-url https://download.pytorch.org/whl/cu121 torch torchvision
+        Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu128 fallback..." -ForegroundColor Yellow
+        & $VenvPython -m pip install --upgrade --force-reinstall --index-url https://download.pytorch.org/whl/cu128 torch torchvision
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install CUDA PyTorch and torchvision."
         }

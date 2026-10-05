@@ -28,9 +28,9 @@ if exist "!BACKEND_DIR!\.venv\Scripts\python.exe" (
         REM If NVIDIA GPU is detected, ensure PyTorch has CUDA enabled
         where nvidia-smi >nul 2>&1
         if !ERRORLEVEL! EQU 0 (
-            "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+            "!BACKEND_DIR!\.venv\Scripts\python.exe" -c "import torch; exit(0 if torch.cuda.is_available() and (torch.ones((1,), device='cuda:0') + 1).item() == 2 else 1)" >nul 2>&1
             if !ERRORLEVEL! NEQ 0 (
-                echo [INFO] NVIDIA GPU detected, but current environment has CPU-only PyTorch.
+                echo [INFO] NVIDIA GPU detected, but current PyTorch cannot run CUDA kernels on it.
                 echo Triggering automated setup to configure GPU acceleration...
                 set "VENV_READY=0"
             )

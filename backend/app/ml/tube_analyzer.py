@@ -418,7 +418,7 @@ class TubeAnalyzer:
             return
         side = self.cfg.tile or 640
         height, width = (int(frame_shape[0]), int(frame_shape[1])) if frame_shape is not None else (side, side)
-        if (height, width) in self._warmed_shapes:
+        if (height, width) in self._warmed_shapes or len(self._warmed_shapes) > 0:
             return
         try:
             dummy = np.zeros((height, width, 3), dtype=np.uint8)

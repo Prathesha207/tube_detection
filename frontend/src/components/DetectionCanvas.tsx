@@ -285,6 +285,24 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
   const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;
 
+  // Promptly clear the loading overlay as soon as frames are processed or stream status is active
+  useEffect(() => {
+    if (effectiveFramesProcessed > 0 || (backendStats?.status === 'processing' && effectiveFramesProcessed > 0)) {
+      setIsFirstFrameLoaded(true);
+    }
+  }, [effectiveFramesProcessed, backendStats?.status]);
+
+  // Safety fallback: Dismiss the overlay after a short grace period (1.2s) once running
+  // so the user is never stuck with a spinner if Chromium delays the MJPEG img onLoad event
+  useEffect(() => {
+    if (isRunning && !isFirstFrameLoaded) {
+      const timer = setTimeout(() => {
+        setIsFirstFrameLoaded(true);
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [isRunning, isFirstFrameLoaded]);
+
   const isOverlayShowing =
     Boolean(isStarting) ||
     Boolean(isCameraSource && !hasCameraRecording && isCameraConnected && cameraStartingState !== 'ready') ||

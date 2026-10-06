@@ -250,17 +250,6 @@ async def upload_video(
             session["status"] = "ready"
             session["stats"]["status"] = "ready"
             if frame0_bytes:
-                if frame0 is not None:
-                    try:
-                        analyzer = ml_inference_service._get_or_create_analyzer()
-                        res0, vis0, clean0 = analyzer.process_frame(frame0.copy(), 0, return_clean=True)
-                        _, buf0 = cv2.imencode(".jpg", clean0, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        frame0_bytes = buf0.tobytes()
-                        for k, v in res0.items():
-                            session["stats"][k] = v
-                        analyzer.reset_tracking()
-                    except Exception as e:
-                        logger.warning(f"Could not pre-annotate frame 0 on upload: {e}")
                 session["last_frame_bytes"] = frame0_bytes
                 try:
                     with open(os.path.join(session_dir, "last_frame.jpg"), "wb") as f:

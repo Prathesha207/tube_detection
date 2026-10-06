@@ -285,20 +285,40 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
   const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;
 
-  // Promptly clear the loading overlay as soon as frames are processed or stream status is active
-  useEffect(() => {
-    if (effectiveFramesProcessed > 0 || (backendStats?.status === 'processing' && effectiveFramesProcessed > 0)) {
-      setIsFirstFrameLoaded(true);
-    }
-  }, [effectiveFramesProcessed, backendStats?.status]);
+  const hasDetections = Boolean(
+    tubes.length > 0 ||
+    (backendStats?.detections && backendStats.detections.length > 0) ||
+    ((backendStats?.heads_count || 0) > 0) ||
+    ((backendStats?.tails_count || 0) > 0) ||
+    ((backendStats?.heads_total || 0) > 0) ||
+    ((backendStats?.tails_total || 0) > 0)
+  );
 
-  // Safety fallback: Dismiss the overlay after a short grace period (1.2s) once running
-  // so the user is never stuck with a spinner if Chromium delays the MJPEG img onLoad event
+  // Reset overlay state whenever inference stops so new runs start with the overlay
+  useEffect(() => {
+    if (!isRunning) {
+      setIsFirstFrameLoaded(false);
+    }
+  }, [isRunning, videoSessionId, cameraRecordSessionId]);
+
+  // Keep "Inference is Running..." visible until initial detections arrive, then reveal the frame!
+  useEffect(() => {
+    if (isRunning && !isFirstFrameLoaded) {
+      if (hasDetections) {
+        setIsFirstFrameLoaded(true);
+      } else if (effectiveFramesProcessed >= 15) {
+        // Fallback: If 15 frames processed without detections (e.g. empty background), reveal frame
+        setIsFirstFrameLoaded(true);
+      }
+    }
+  }, [isRunning, isFirstFrameLoaded, hasDetections, effectiveFramesProcessed]);
+
+  // Safety fallback: if no tubes exist in the scene, reveal video after 3.5s
   useEffect(() => {
     if (isRunning && !isFirstFrameLoaded) {
       const timer = setTimeout(() => {
         setIsFirstFrameLoaded(true);
-      }, 1200);
+      }, 3500);
       return () => clearTimeout(timer);
     }
   }, [isRunning, isFirstFrameLoaded]);
@@ -570,7 +590,9 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                     setVideoAspect((prev) => (prev !== aspect ? aspect : prev));
                   }
                   setStreamError(false);
-                  setIsFirstFrameLoaded((prev) => (!prev ? true : prev));
+                  if (hasDetections || effectiveFramesProcessed >= 15 || !isRunning) {
+                    setIsFirstFrameLoaded(true);
+                  }
                   if (!isRunning && effectiveFramesProcessed > 0) {
                     captureFrame();
                   }

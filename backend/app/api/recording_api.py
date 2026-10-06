@@ -69,44 +69,16 @@ def stop_recording(data: StopRecordingRequest):
         filename = result.get("filename", os.path.basename(video_path))
         logger.info(f"[RECORD] Successfully finalized {filename} at {video_path}")
 
-        # Register into ML inference service so frontend can review/run immediately
-        ml_session_id = ml_inference_service.create_session(
-            original_filename=filename,
-        )
-
-        frame0_bytes = None
-        w, h = result.get("width", 1920), result.get("height", 1080)
-        try:
-            cap = cv2.VideoCapture(video_path)
-            ret, frame0 = cap.read()
-            if ret and frame0 is not None:
-                h, w = frame0.shape[:2]
-                _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                frame0_bytes = buf.tobytes()
-            cap.release()
-        except Exception as e:
-            logger.warning(f"[RECORD] Could not read preview frame: {e}")
-
-        session = ml_inference_service.sessions.get(ml_session_id)
-        if session:
-            session["inference_video_path"] = video_path
-            session["browser_video_path"] = video_path
-            session["status"] = "ready"
-            session["stats"]["status"] = "ready"
-            session["stats"]["video_width"] = w
-            session["stats"]["video_height"] = h
-            if frame0_bytes:
-                session["last_frame_bytes"] = frame0_bytes
-
         return {
             "status": "done",
-            "session_id": ml_session_id,
             "recording_session_id": data.session_id,
             "recording_path": video_path,
             "filename": filename,
             "duration": result.get("duration", 0),
             "frames": result.get("frames_written", 0),
-            "stream_url": f"/video/stream/{ml_session_id}",
+            "width": result.get("width", 1920),
+            "height": result.get("height", 1080),
+            "metadata_path": result.get("metadata_path"),
         }
     except HTTPException:
         raise
@@ -114,6 +86,7 @@ def stop_recording(data: StopRecordingRequest):
         logger.error(f"[API ERROR] POST /recording/stop failed: {e}", exc_info=True)
         realtime_log_service.add_log("record", "CRASH", f"Stop recording failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Internal error stopping recording: {e}")
+
 
 
 @router.get("/status")

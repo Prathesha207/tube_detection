@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SlidersHorizontal, RotateCcw, Focus, Sun, Zap, CheckCircle2 } from 'lucide-react';
+import { SlidersHorizontal, RotateCcw, Focus, Sun, Zap, CheckCircle2, RefreshCw } from 'lucide-react';
 import { CameraConfig } from '../types';
 import { cameraService } from './service/cameraService';
 
@@ -19,12 +19,15 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   // Auto (Stream) is a fixed preset; Manual enables the same sliders.
   const [mode, setMode] = useState<'auto' | 'manual'>(config?.controlMode === 'manual' ? 'manual' : 'auto');
 
-  const [exposure, setExposure] = useState<number>(config?.exposure ?? 16);
+  const [exposure, setExposure] = useState<number>(config?.exposure ?? 8);
   const [gain, setGain] = useState<number>(config?.gain ?? 400);
-  const [focus, setFocus] = useState<number>(config?.focus ?? 120);
+  const [focus, setFocus] = useState<number>(config?.focus ?? 0);
   const [brightness, setBrightness] = useState<number>(config?.brightness ?? 0);
   const [contrast, setContrast] = useState<number>(config?.contrast ?? 50);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'adjusting'>('synced');
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const presetRef = useRef({ exposure: config?.exposure ?? 8, gain: config?.gain ?? 400, focus: config?.focus, brightness: config?.brightness ?? 0, contrast: config?.contrast ?? 50 });
 
   // Network queuing & pacing refs for ultra-smooth responsiveness
   const inFlightRef = useRef(false);
@@ -36,11 +39,12 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   useEffect(() => {
     if (config) {
       if (config.controlMode !== 'manual') {
-        setExposure(16);
-        setGain(400);
-        setFocus(120);
-        setBrightness(0);
-        setContrast(50);
+        presetRef.current = { exposure: config.exposure ?? 8, gain: config.gain ?? 400, focus: config.focus, brightness: config.brightness ?? 0, contrast: config.contrast ?? 50 };
+        if (typeof config.exposure === 'number') setExposure(config.exposure);
+        if (typeof config.gain === 'number') setGain(config.gain);
+        if (typeof config.focus === 'number') setFocus(config.focus);
+        if (typeof config.brightness === 'number') setBrightness(config.brightness);
+        if (typeof config.contrast === 'number') setContrast(config.contrast);
         setMode('auto');
       } else {
         if (typeof config.exposure === 'number') setExposure(config.exposure);
@@ -112,47 +116,11 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     onUpdateConfig?.({ controlMode: newMode });
 
     if (newMode === 'auto') {
-      // Return to calibrated steady stream settings
-      const defaultExp = 16;
-      const defaultGain = 400;
-      const defaultFocus = 120;
-      const defaultB = 0;
-      const defaultC = 50;
-
-      setExposure(defaultExp);
-      setGain(defaultGain);
-      setFocus(defaultFocus);
-      setBrightness(defaultB);
-      setContrast(defaultC);
-
-      onUpdateConfig?.({
-        controlMode: 'auto',
-        exposure: defaultExp,
-        gain: defaultGain,
-        focus: defaultFocus,
-        brightness: defaultB,
-        contrast: defaultC,
-        autoExposure: false,
-        autoFocus: false,
+      onUpdateConfig?.({ controlMode: 'auto', exposure, gain, focus, brightness, contrast, autoExposure: false, autoFocus: false });
+      scheduleDispatch({
+        control_mode: 'auto', exposure, gain, focus: config?.focus ?? focus,
+        brightness, contrast, auto_exposure: false, auto_focus: false,
       });
-
-      setSyncStatus('adjusting');
-      try {
-        await cameraService.resetCameraControls();
-        setSyncStatus('synced');
-      } catch {
-        scheduleDispatch({
-          control_mode: 'auto',
-          reset: true,
-          exposure: defaultExp,
-          gain: defaultGain,
-          focus: defaultFocus,
-          brightness: defaultB,
-          contrast: defaultC,
-          auto_exposure: false,
-          auto_focus: false,
-        });
-      }
     } else {
       scheduleDispatch({
         control_mode: 'manual',
@@ -249,11 +217,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
 
   // Reset to Calibrated Default Values
   const handleResetDefaults = () => {
-    const defaultExp = 16;
-    const defaultGain = 400;
-    const defaultFocus = 120;
-    const defaultB = 0;
-    const defaultC = 50;
+    const { exposure: defaultExp, gain: defaultGain, focus: defaultFocus, brightness: defaultB, contrast: defaultC } = presetRef.current;
 
     setExposure(defaultExp);
     setGain(defaultGain);
@@ -282,6 +246,35 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       auto_exposure: false,
       auto_focus: false,
     });
+  };
+
+  const handleCalibrate = async () => {
+    setCalibrating(true);
+    setCalibrationError(null);
+    setSyncStatus('adjusting');
+    try {
+      const settings = await cameraService.recalibrateControls();
+      presetRef.current = { exposure: settings.exposure, gain: settings.gain, focus: settings.focus ?? undefined, brightness: settings.brightness ?? 0, contrast: settings.contrast ?? 50 };
+      setExposure(settings.exposure);
+      setGain(settings.gain);
+      setFocus(settings.focus ?? 0);
+      setBrightness(settings.brightness ?? 0);
+      setContrast(settings.contrast ?? 50);
+      setMode('auto');
+      onUpdateConfig?.({
+        controlMode: 'auto', exposure: settings.exposure, gain: settings.gain,
+        iso: settings.gain, focus: settings.focus ?? undefined,
+        focusAvailable: Boolean(settings.focus_available), brightness: settings.brightness ?? 0,
+        contrast: settings.contrast ?? 50, autoExposure: false, autoFocus: false,
+      });
+      setSyncStatus('synced');
+    } catch (err: any) {
+      const message = err?.response?.data?.detail || err?.message || 'Calibration failed';
+      setCalibrationError(message);
+      setSyncStatus('synced');
+    } finally {
+      setCalibrating(false);
+    }
   };
 
   const getSliderStyle = (val: number, min: number, max: number) => {
@@ -375,8 +368,13 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
               </span>
             </div>
             <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
-              Focus &amp; exposure are calibrated to factory standard. Continuous autofocus hunting and exposure flicker are disabled so moving tubes won&apos;t cause blur.
+              The displayed preset values are locked. Calibrate briefly lets the camera choose exposure and focus, then saves and locks those readings.
             </p>
+            <button type="button" onClick={handleCalibrate} disabled={calibrating || !isLive} className="mt-1 inline-flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-[11px] font-semibold disabled:opacity-50">
+              <RefreshCw className={`w-3 h-3 ${calibrating ? 'animate-spin' : ''}`} />
+              {calibrating ? 'Calibrating...' : 'Calibrate'}
+            </button>
+            {calibrationError && <p className="text-[11px] text-red-500">{calibrationError}</p>}
           </div>
         </div>
       )}
@@ -418,7 +416,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
                 <span className="text-xs font-bold text-[var(--text-primary)]">Focus Lens</span>
               </div>
               <span className="font-mono text-xs font-bold text-blue-500 bg-blue-500/10 px-1.5 py-0.5 rounded">
-                {focus} / 255
+                {config?.focusAvailable === false ? 'Unavailable' : `${focus} / 255`}
               </span>
             </div>
             <input
@@ -427,13 +425,14 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
               max={255}
               step={1}
               value={focus}
+              disabled={config?.focusAvailable === false}
               onChange={(e) => handleFocusChange(parseInt(e.target.value, 10))}
               style={getSliderStyle(focus, 0, 255)}
               className="w-full h-1.5 rounded cursor-pointer transition-all"
             />
             <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
               <span>0 (Far)</span>
-              <span>120 (Standard)</span>
+              <span>Preset value</span>
               <span>255 (Macro)</span>
             </div>
           </div>
@@ -461,7 +460,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
             />
             <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
               <span>1 ms (Fast / Low Blur)</span>
-              <span>16 ms (Standard)</span>
+              <span>Preset value</span>
               <span>33 ms (Max Light)</span>
             </div>
           </div>

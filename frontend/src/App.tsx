@@ -479,6 +479,7 @@ export default function App() {
         addLog(`Camera recording saved: ${res.filename} (${res.duration ?? 0}s, ${res.frames ?? 0} frames) • Loaded for review & inference.`, 'success');
       } else if (res && res.filename) {
         showToast('success', `Recording saved: ${res.filename}`);
+        addLog(`Camera recording saved: ${res.filename} (${res.duration ?? 0}s, ${res.frames ?? 0} frames).`, 'success');
       }
     } else {
       if (!camera.isStreaming && camera.startCameraStream) {

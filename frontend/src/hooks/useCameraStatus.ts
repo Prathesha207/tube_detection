@@ -68,7 +68,23 @@ export function useCameraStatus(
           const data = await res.json();
           if (isMounted) {
             const isOnline = Boolean(data.connected || data.running || data.streaming);
-            setCameraConfig((prev) => (prev.connected !== isOnline ? { ...prev, connected: isOnline } : prev));
+            const settings = data.camera_settings;
+            setCameraConfig((prev) => ({
+              ...prev,
+              connected: isOnline,
+              ...(settings ? {
+                controlMode: settings.control_mode,
+                exposure: settings.exposure,
+                gain: settings.gain,
+                iso: settings.gain,
+                focus: settings.focus ?? undefined,
+                focusAvailable: Boolean(settings.focus_available),
+                brightness: settings.brightness,
+                contrast: settings.contrast,
+                autoFocus: false,
+                autoExposure: false,
+              } : {}),
+            }));
             setIsCameraDeviceActive(isOnline);
             setCameraConnected(isOnline);
             if (data.last_error) {
@@ -79,6 +95,8 @@ export function useCameraStatus(
             // Only force false if the hardware is completely offline
             if (!isOnline) {
               setIsStreaming(false);
+              // Reset starting state so UI doesn't stay stuck on "WAKING CAMERA" / "WARMING UP"
+              setCameraStartingState((prev) => prev !== 'idle' && prev !== 'ready' ? 'idle' : prev);
             }
           }
         } else {
@@ -87,6 +105,7 @@ export function useCameraStatus(
             setIsCameraDeviceActive(false);
             setCameraConnected(false);
             setIsStreaming(false);
+            setCameraStartingState((prev) => prev !== 'idle' && prev !== 'ready' ? 'idle' : prev);
           }
         }
       } catch {
@@ -95,6 +114,7 @@ export function useCameraStatus(
           setIsCameraDeviceActive(false);
           setCameraConnected(false);
           setIsStreaming(false);
+          setCameraStartingState((prev) => prev !== 'idle' && prev !== 'ready' ? 'idle' : prev);
         }
       }
     }

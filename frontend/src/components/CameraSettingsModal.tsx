@@ -203,9 +203,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         resolution: localConfig.resolution || '1920x1080',
         fps: localConfig.targetFps || 30,
         control_mode: localConfig.controlMode || 'auto',
-        exposure: localConfig.exposure ?? 16,
+        exposure: localConfig.exposure ?? 8,
         gain: localConfig.gain ?? localConfig.iso ?? 400,
-        focus: localConfig.focus ?? 120,
+        focus: localConfig.focus ?? 0,
         brightness: localConfig.brightness ?? 0,
         contrast: localConfig.contrast ?? 50,
         auto_focus: false,
@@ -724,7 +724,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                     MANUAL
                   </span>
                   <span className="font-mono text-xs font-bold text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded">
-                    {localConfig.focus ?? 120} / 255
+                    {localConfig.focusAvailable === false ? 'Unavailable' : `${localConfig.focus ?? 0} / 255`}
                   </span>
                 </div>
               </div>
@@ -733,16 +733,17 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 min={0}
                 max={255}
                 step={1}
-                value={localConfig.focus ?? 120}
+                value={localConfig.focus ?? 0}
+                disabled={localConfig.focusAvailable === false}
                 onChange={(e) => {
                   setLocalConfig({ ...localConfig, focus: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
-                style={getSliderStyle(localConfig.focus ?? 120, 0, 255)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all"
+                style={getSliderStyle(localConfig.focus ?? 0, 0, 255)}
+                className="w-full h-1.5 rounded cursor-pointer transition-all disabled:cursor-not-allowed"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
                 <span>0 (Far / Infinity)</span>
-                <span>120 (Standard)</span>
+                <span>Preset value</span>
                 <span>255 (Macro / Close)</span>
               </div>
             </div>
@@ -759,7 +760,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                     MANUAL
                   </span>
                   <span className="font-mono text-xs font-bold text-[var(--accent-pond)] bg-[var(--accent-pond-subtle)] px-2 py-0.5 rounded">
-                    {localConfig.exposure ?? 16} ms
+                    {localConfig.exposure ?? 8} ms
                   </span>
                 </div>
               </div>
@@ -768,16 +769,16 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 min={1}
                 max={33}
                 step={1}
-                value={localConfig.exposure ?? 16}
+                value={localConfig.exposure ?? 8}
                 onChange={(e) => {
                   setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
-                style={getSliderStyle(localConfig.exposure ?? 16, 1, 33)}
+                style={getSliderStyle(localConfig.exposure ?? 8, 1, 33)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
                 <span>1 ms (Fast)</span>
-                <span>16 ms (Mid)</span>
+                <span>Preset value</span>
                 <span>33 ms (Max Light)</span>
               </div>
             </div>

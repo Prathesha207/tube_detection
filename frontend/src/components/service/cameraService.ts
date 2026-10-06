@@ -116,6 +116,11 @@ export const cameraService = {
     }
   },
 
+  async recalibrateControls() {
+    const res = await api.post("/oak/controls/calibrate");
+    return res.data;
+  },
+
    async updateInferenceMode(mode: "testing" | "production") {
     const res = await api.patch("/camera/inference-mode", { mode });
     return res.data;

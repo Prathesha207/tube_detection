@@ -3,6 +3,7 @@ import base64
 import os
 import threading
 import time
+from collections import deque
 from queue import Queue, Empty
 
 import cv2
@@ -45,6 +46,10 @@ class OakCameraService:
         self._is_running: bool = False
         self._pipeline_lock = threading.Lock()
         self._lifecycle_lock = asyncio.Lock()
+        self._camera_calibration_lock = threading.Lock()
+        self._calibrating = False
+        self._active_camera_id: int | None = None
+        self._legacy_preset_migration = False
 
         # ---- DAI queues ----
         self._mjpeg_dai_queue = None
@@ -87,12 +92,12 @@ class OakCameraService:
         self.current_contrast: int = 50
         self.current_fps: float = 0.0
         self._configured_fps: int = 30
-        self._ae_limit_us: int | None = None  # None = manual mode
-        self.current_exposure_us: int = 16000 # Default 16ms fixed shutter
-        self.current_gain: int = 400          # Default ISO 400 fixed gain
-        self.current_focus: int = 120         # Default lens position (0-255)
-        # This app only supports fixed/manual sensor controls. The UI's
-        # "Auto (Stream)" mode is a calibrated preset, not camera AE/AF.
+        self.current_exposure_us: int = 8000  # Starter preset; tune/calibrate on the installed setup.
+        self._ae_limit_us = 10000
+        self.current_gain: int = 400
+        self.current_focus: int | None = None
+        self.focus_available: bool = False
+        # AE/AF may run only during the explicit calibration action.
         self.auto_exposure_enabled: bool = False
         self.auto_focus_enabled: bool = False
 
@@ -131,7 +136,20 @@ class OakCameraService:
         for attempt in range(2):
             try:
                 logger.info(f"[DEVICE] Connecting to {ip} (attempt {attempt + 1}/2)")
-                device_info = self._resolve_device_info(ip)
+                try:
+                    device_info = self._resolve_device_info(ip)
+                except RuntimeError as resolve_err:
+                    # No OAK device found at all — don't retry, just report cleanly
+                    err_msg = str(resolve_err)
+                    logger.warning(f"[DEVICE] Connection failed: {err_msg}")
+                    self._last_connection_error = err_msg
+                    self.is_connected = False
+                    realtime_log_service.add_log(
+                        "camera", "CAMERA",
+                        f"No OAK device found ({ip})",
+                        "error"
+                    )
+                    return False
                 logger.info(f"[DEVICE] Resolved connection target: {device_info}")
                 self.device = await loop.run_in_executor(None, dai.Device, device_info)
                 self.device.setLogLevel(dai.LogLevel.WARN)
@@ -197,6 +215,7 @@ class OakCameraService:
                 return False
         self._last_connection_error = self._last_connection_error or "Failed after retries"
         return False
+
 
     @staticmethod
     def _resolve_device_info(identifier: str):
@@ -320,50 +339,35 @@ class OakCameraService:
                     logger.error(f"[PIPELINE] ColorCamera fallback also failed: {color_err}")
                     raise cam_err
 
-            if control_mode == "auto":
-                # For standard inspection stream: Do NOT run CONTINUOUS_VIDEO autofocus (causes focus hunting on moving tubes).
-                # Keep autofocus OFF and lock to calibrated standard focus (120) and standard exposure (16ms, 400 ISO)
-                # so the image remains perfectly steady and never hunts or flickers when tubes move.
-                self._ae_limit_us = None
-                exposure, gain, focus = 16000, 400, 120
-                self.current_exposure_us = exposure
-                self.current_gain = gain
-                self.current_focus = focus
-                self.current_brightness = 0
-                self.current_contrast = 50
-                self.auto_exposure_enabled = False
-                self.auto_focus_enabled = False
-                init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                init_ctrl.setManualFocus(focus)
-                init_ctrl.setManualExposure(exposure, gain)
-                logger.info("[PIPELINE] Auto mode: calibrated steady stream (Focus=120, Exp=16ms, Gain=400 ISO, continuous AF hunting disabled)")
-            else:
-                self._ae_limit_us = None
-                try:
-                    exposure = int(config.exposure)
-                    # UI and persisted settings use milliseconds; DepthAI
-                    # expects microseconds. Accept legacy microsecond values too.
-                    if exposure <= 1000:
-                        exposure *= 1000
-                    gain = int(config.gain)
-                    focus = int(config.focus)
-                except Exception:
-                    logger.warning("[PIPELINE] Invalid manual values — using defaults")
-                    exposure, gain, focus = 16000, 400, 120
+            try:
+                exposure = int(config.exposure if config.exposure is not None else 8)
+                exposure = exposure * 1000 if exposure <= 1000 else exposure
+                gain = max(100, min(1600, int(config.gain if config.gain is not None else 400)))
+                focus = int(config.focus) if config.focus is not None else None
+                if control_mode == "auto" and exposure == 16000 and gain == 400 and focus == 120:
+                    # These were forced by the previous implementation, not a user-tuned calibration.
+                    exposure, focus = 8000, None
+                    self._legacy_preset_migration = True
+            except (TypeError, ValueError):
+                logger.warning("[PIPELINE] Invalid saved camera values; using 8ms/ISO400 preset")
+                exposure, gain, focus = 8000, 400, None
 
-                self.current_exposure_us = exposure
-                self.current_gain = gain
-                self.current_focus = focus
-                self.auto_exposure_enabled = False
-                self.auto_focus_enabled = False
-                init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                init_ctrl.setManualExposure(exposure, gain)
+            self.current_exposure_us = max(100, min(33000, exposure))
+            self.current_gain = gain
+            self.current_focus = focus
+            self.focus_available = focus is not None
+            self.current_brightness = int(config.brightness or 0)
+            self.current_contrast = int(config.contrast if config.contrast is not None else 50)
+            self.auto_exposure_enabled = self.auto_focus_enabled = False
+            init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            if focus is not None:
                 init_ctrl.setManualFocus(focus)
-                hw_b = max(-10, min(10, int(round(int(config.brightness or 0) / 5.0))))
-                hw_c = max(-10, min(10, int(round((int(config.contrast or 50) - 50) / 5.0))))
-                init_ctrl.setBrightness(hw_b)
-                init_ctrl.setContrast(hw_c)
-                logger.info(f"[PIPELINE] Manual: exp={exposure}, gain={gain}, focus={focus}")
+            init_ctrl.setManualExposure(self.current_exposure_us, gain)
+            hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
+            hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
+            init_ctrl.setBrightness(hw_b)
+            init_ctrl.setContrast(hw_c)
+            logger.info(f"[PIPELINE] {control_mode} fixed preset: exp={self.current_exposure_us}us, gain={gain}, focus={focus}")
 
             is_usb2 = False
             if self.device is not None:
@@ -909,150 +913,188 @@ class OakCameraService:
     # ==================== Camera Controls ====================
 
     def reset_controls(self) -> dict:
-        """Resets physical camera controls to calibrated standard stream defaults (Focus=120, Exp=16ms, Gain=400).
-        Disables continuous AF hunting and AE fluctuations so tube movement does not cause blur or flicker.
-        """
+        """Reapply the saved fixed preset without enabling camera automation."""
         self.current_brightness = 0
         self.current_contrast = 50
-        self.current_gain = 400
-        self.current_focus = 120
-        self.current_exposure_us = 16000
-        self.auto_exposure_enabled = False
-        self.auto_focus_enabled = False
+        self.auto_exposure_enabled = self.auto_focus_enabled = False
         self.control_mode = "auto"
-
-        if self._active_recording is not None:
-            self._active_recording.add_settings_event(self._recording_settings_snapshot())
-
-        if not self._is_running or not self.is_connected or self._control_queue is None:
-            return {"status": "ok", "message": "Controls reset to default steady stream"}
-
         ctrl = dai.CameraControl()
+        ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+        if self.current_focus is not None:
+            ctrl.setManualFocus(self.current_focus)
+        ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
         try:
-            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-            ctrl.setManualFocus(120)
-            ctrl.setManualExposure(16000, 400)
-            try:
-                ctrl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.AUTO)
-                ctrl.setAutoWhiteBalanceLock(False)
-            except Exception:
-                pass
             ctrl.setBrightness(0)
             ctrl.setContrast(0)
-
-            self._control_queue.send(ctrl)
-            logger.info("[CONTROL] 🔄 Camera reset to standard steady stream (Focus=120, Exp=16ms, Gain=400, AF hunting OFF)")
-            return {"status": "ok", "message": "Camera hardware reset to steady stream defaults"}
+            if self._control_queue is not None and self._is_running and self.is_connected:
+                self._control_queue.send(ctrl)
         except Exception as e:
-            logger.warning(f"[CONTROL] Factory reset send failed: {e}")
+            logger.warning(f"[CONTROL] Preset apply failed: {e}")
             return {"status": "error", "message": str(e)}
+        return {"status": "ok", **self._camera_settings()}
 
     def update_controls(
-        self,
-        exposure: int | None = None,
-        gain: int | None = None,
-        focus: int | None = None,
-        brightness: int | None = None,
-        contrast: int | None = None,
-        auto_focus: bool | None = None,
-        auto_exposure: bool | None = None,
-        control_mode: str | None = None,
+        self, exposure: int | None = None, gain: int | None = None,
+        focus: int | None = None, brightness: int | None = None,
+        contrast: int | None = None, auto_focus: bool | None = None,
+        auto_exposure: bool | None = None, control_mode: str | None = None,
         reset: bool | None = None,
     ) -> None:
-        """Update hardware camera controls (Exposure, Gain, Focus, Brightness, Contrast)."""
+        """Apply fixed user or saved preset values. Legacy AE/AF flags are ignored."""
         if reset:
             self.reset_controls()
             return
-        # The only supported modes are a fixed preset and user-set manual
-        # values. Legacy auto_focus/auto_exposure request fields are ignored.
         requested_mode = (control_mode or "").lower()
-        if requested_mode == "auto":
-            self.control_mode = "auto"
-            self.current_exposure_us = 16000
-            self.current_gain = 400
-            self.current_focus = 120
-            self.current_brightness = 0
-            self.current_contrast = 50
-        elif requested_mode == "manual":
+        if requested_mode in {"auto", "manual"}:
+            self.control_mode = requested_mode
+        if requested_mode == "manual" or (not requested_mode and any(v is not None for v in (exposure, gain, focus))):
             self.control_mode = "manual"
-
-        # 1. Update internal state (UI exposure values are milliseconds).
-        if brightness is not None and requested_mode != "auto":
+        if brightness is not None:
             self.current_brightness = max(-50, min(50, int(brightness)))
-
-        if contrast is not None and requested_mode != "auto":
+        if contrast is not None:
             self.current_contrast = max(0, min(100, int(contrast)))
-
-        if gain is not None and requested_mode != "auto":
+        if gain is not None:
             self.current_gain = max(100, min(1600, int(gain)))
-
-        if focus is not None and requested_mode != "auto":
+        if focus is not None:
             self.current_focus = max(0, min(255, int(focus)))
-
-        if exposure is not None and requested_mode != "auto":
-            val = int(exposure)
-            exp_us = val * 1000 if val < 1000 else val
-            max_period_us = max(1000, int(1_000_000 / max(self._configured_fps, 1)))
-            self.current_exposure_us = max(100, min(max_period_us, exp_us))
-
-        if requested_mode != "auto" and any(value is not None for value in (exposure, gain, focus)):
-            self.control_mode = "manual"
-
-        # Do not allow legacy API clients or stale saved settings to enable AE/AF.
-        self.auto_exposure_enabled = False
-        self.auto_focus_enabled = False
-
+            self.focus_available = True
+        if exposure is not None:
+            value = int(exposure)
+            exp_us = value * 1000 if value <= 1000 else value
+            max_us = max(1000, int(1_000_000 / max(self._configured_fps, 1)))
+            self.current_exposure_us = max(100, min(max_us, exp_us))
+        self.auto_exposure_enabled = self.auto_focus_enabled = False
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return
-
         ctrl = dai.CameraControl()
-        should_send = False
-
-        # Every mode sends fixed camera controls. Auto (Stream) picks its
-        # calibrated values; Manual keeps the slider values.
-        try:
-            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+        ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+        if self.current_focus is not None:
             ctrl.setManualFocus(self.current_focus)
-            ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
-            should_send = True
-        except Exception as e:
-            logger.warning(f"[CONTROL] Manual focus/exposure setup failed: {e}")
-
-        # 4. Hardware Brightness (-10 to 10)
-        if brightness is not None:
-            try:
-                hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
-                ctrl.setBrightness(hw_b)
-                should_send = True
-            except Exception as e:
-                logger.debug(f"[CONTROL] setBrightness failed: {e}")
-
-        # 5. Hardware Contrast (-10 to 10)
-        if contrast is not None:
-            try:
-                hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
-                ctrl.setContrast(hw_c)
-                should_send = True
-            except Exception as e:
-                logger.debug(f"[CONTROL] setContrast failed: {e}")
-
-        # 6. Send to device
-        if should_send:
-            try:
-                self._control_queue.send(ctrl)
-                logger.info(
-                    f"[CONTROL] Dispatched -> exp={self.current_exposure_us}µs, "
-                    f"gain={self.current_gain} ISO, focus={self.current_focus}, "
-                    f"auto_exp={self.auto_exposure_enabled}, auto_focus={self.auto_focus_enabled}"
-                )
-            except Exception as e:
-                if "closed" in str(e).lower() or "xlink" in str(e).lower():
-                    self._on_device_lost("Control queue closed")
-                else:
-                    logger.warning(f"[CONTROL] Device send failed: {e}")
-
+        ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
+        ctrl.setBrightness(max(-10, min(10, int(round(self.current_brightness / 5.0)))))
+        ctrl.setContrast(max(-10, min(10, int(round((self.current_contrast - 50) / 5.0)))))
+        self._control_queue.send(ctrl)
         if self._active_recording is not None:
             self._active_recording.add_settings_event(self._recording_settings_snapshot())
+
+    def _camera_settings(self) -> dict:
+        return {
+            "control_mode": self.control_mode,
+            "exposure": round(self.current_exposure_us / 1000, 3),
+            "gain": self.current_gain,
+            "focus": self.current_focus,
+            "focus_available": self.focus_available,
+            "brightness": self.current_brightness,
+            "contrast": self.current_contrast,
+            "auto_exposure": False,
+            "auto_focus": False,
+            "calibrating": self._calibrating,
+        }
+
+    def calibrate_auto_controls(self) -> dict:
+        """Use a short AE/one-shot AF phase, then freeze the measured metadata."""
+        if not self._is_running or not self.is_connected or self._raw_dai_queue is None or self._control_queue is None:
+            raise RuntimeError("Start the OAK camera before calibrating")
+        if self._active_recording is not None:
+            raise RuntimeError("Stop recording before calibrating")
+        if not self._camera_calibration_lock.acquire(blocking=False):
+            raise RuntimeError("Camera calibration is already running")
+        was_capturing = any(t and t.is_alive() for t in (self._mjpeg_thread, self._hires_thread, self._convert_thread))
+        self._calibrating = True
+        locked = False
+        try:
+            if was_capturing:
+                self._stop_capture_threads()
+            self._drain_hires_packet_queue()
+            settle = dai.CameraControl()
+            settle.setAutoExposureEnable()
+            settle.setAutoExposureLimit(min(10000, max(1000, int(1_000_000 / max(self._configured_fps, 1)))))
+            try:
+                settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.AUTO)
+                settle.setAutoFocusTrigger()
+            except Exception as e:
+                logger.info(f"[CALIBRATION] Autofocus unavailable; exposure only: {e}")
+            self._control_queue.send(settle)
+            samples = deque(maxlen=6)
+            latest = None
+            start = time.monotonic()
+            deadline = start + 4.0
+            while time.monotonic() < deadline:
+                pkt = self._raw_dai_queue.tryGet()
+                if pkt is None:
+                    time.sleep(0.01)
+                    continue
+                try:
+                    exp = int(pkt.getExposureTime().total_seconds() * 1_000_000)
+                    iso = int(pkt.getSensitivity())
+                    lens = int(pkt.getLensPosition())
+                except Exception:
+                    continue
+                if exp <= 0 or iso <= 0:
+                    continue
+                latest = (exp, iso, lens if 0 <= lens <= 255 else None)
+                samples.append(latest)
+                if time.monotonic() >= start + 1.0 and len(samples) == samples.maxlen:
+                    es, gs = [x[0] for x in samples], [x[1] for x in samples]
+                    lenses = [x[2] for x in samples]
+                    lens_stable = all(value is None for value in lenses) or (
+                        all(value is not None for value in lenses) and len(set(lenses)) == 1
+                    )
+                    if (max(es)-min(es) <= max(200, int(sum(es)/len(es)*.02))
+                            and max(gs)-min(gs) <= max(25, int(sum(gs)/len(gs)*.05))
+                            and lens_stable):
+                        break
+            if latest is None:
+                raise RuntimeError("No exposure and gain metadata arrived during calibration")
+            exp_us, iso, lens = latest
+            lock = dai.CameraControl()
+            lock.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            if lens is not None:
+                lock.setManualFocus(lens)
+            lock.setManualExposure(exp_us, iso)
+            self._control_queue.send(lock)
+            locked = True
+            self.current_exposure_us = exp_us
+            self.current_gain = max(100, min(1600, iso))
+            self.current_focus = lens
+            self.focus_available = lens is not None
+            self.control_mode = "auto"
+            self.current_brightness, self.current_contrast = 0, 50
+            self.auto_exposure_enabled = self.auto_focus_enabled = False
+            self._save_calibrated_preset()
+            return {"status": "ok", **self._camera_settings()}
+        finally:
+            if not locked and self._control_queue is not None and self._is_running:
+                try:
+                    restore = dai.CameraControl()
+                    restore.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                    if self.current_focus is not None:
+                        restore.setManualFocus(self.current_focus)
+                    restore.setManualExposure(self.current_exposure_us, self.current_gain)
+                    self._control_queue.send(restore)
+                except Exception as restore_error:
+                    logger.error(f"[CALIBRATION] Failed to restore fixed controls after calibration error: {restore_error}")
+            self._calibrating = False
+            self._camera_calibration_lock.release()
+            if was_capturing and self._is_running:
+                self._start_capture_threads()
+
+    def _save_calibrated_preset(self) -> None:
+        from app.core.database import SessionLocal
+        from app.models.camera_model import Camera
+        db = SessionLocal()
+        try:
+            camera = db.query(Camera).filter(Camera.id == self._active_camera_id).first() if self._active_camera_id else None
+            camera = camera or db.query(Camera).first()
+            if camera:
+                camera.control_mode = "auto"
+                camera.exposure = round(self.current_exposure_us / 1000, 3)
+                camera.gain, camera.focus = self.current_gain, self.current_focus
+                camera.brightness, camera.contrast = self.current_brightness, self.current_contrast
+                camera.auto_exposure = camera.auto_focus = False
+                db.commit()
+        finally:
+            db.close()
 
     # ==================== Inference ====================
 
@@ -1940,6 +1982,7 @@ class OakCameraService:
                 return {"status": "already_running"}
 
             try:
+                self._active_camera_id = getattr(config, "id", None)
                 if not self.is_connected:
                     if not await self.connect(config.ip_address):
                         # If device is already in use by another process, do NOT attempt USB fallback
@@ -1949,6 +1992,14 @@ class OakCameraService:
                                 "status": "error",
                                 "message": self._last_connection_error or "Device is already used by another application/process. Make sure to close all applications/processes using the device before starting a new one.",
                                 "error_code": "DEVICE_IN_USE",
+                            }
+
+                        # If no OAK device was found at all, USB fallback won't help
+                        if "no oak device found" in (self._last_connection_error or "").lower():
+                            return {
+                                "status": "error",
+                                "message": self._last_connection_error or "No OAK device found over USB or network",
+                                "error_code": "NO_DEVICE",
                             }
 
                         # Older databases may select a locked/unavailable
@@ -1975,6 +2026,10 @@ class OakCameraService:
 
                 self._pipeline.start()
                 self._is_running = True
+
+                if self._legacy_preset_migration:
+                    self._save_calibrated_preset()
+                    self._legacy_preset_migration = False
 
                 # Re-apply the fixed controls after pipeline startup so they take
                 # effect before capture or recording begins.
@@ -2036,7 +2091,8 @@ class OakCameraService:
         try:
             ctrl = dai.CameraControl()
             ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-            ctrl.setManualFocus(self.current_focus)
+            if self.current_focus is not None:
+                ctrl.setManualFocus(self.current_focus)
             ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
             self._control_queue.send(ctrl)
             logger.info("[CONTROL] Fixed focus and exposure sent after pipeline startup")
@@ -2110,6 +2166,7 @@ class OakCameraService:
             "inference_watchdog_thread": bool(self._inference_watchdog_thread and self._inference_watchdog_thread.is_alive()),
             "streaming": self._is_streaming,
             "fps": round(self.current_fps, 1),
+            "camera_settings": self._camera_settings() if self._is_running or self.is_connected else None,
             "last_error": getattr(self, "_last_connection_error", None),
         }
 

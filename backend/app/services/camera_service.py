@@ -25,15 +25,8 @@ def create_camera(db: Session, data: CameraCreate):
 
         camera = Camera(**data.model_dump())
 
-        # Apply control mode rules
-        if camera.control_mode == "auto":
-            camera.exposure = 16
-            camera.gain = 400
-            camera.focus = 120
-        else:
-            camera.exposure = camera.exposure if camera.exposure is not None else 16
-            camera.gain = camera.gain if camera.gain is not None else 400
-            camera.focus = camera.focus if camera.focus is not None else 120
+        camera.exposure = camera.exposure if camera.exposure is not None else 8
+        camera.gain = camera.gain if camera.gain is not None else 400
         camera.auto_exposure = False
         camera.auto_focus = False
 
@@ -78,17 +71,8 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
         for key, value in update_data.items():
             setattr(camera, key, value)
 
-        # Apply control mode AFTER update
-        if camera.control_mode == "auto":
-            camera.exposure = 16
-            camera.gain = 400
-            camera.focus = 120
-        elif camera.control_mode == "manual":
-            camera.exposure = camera.exposure if camera.exposure is not None else 16
-            camera.gain = camera.gain if camera.gain is not None else 400
-            camera.focus = camera.focus if camera.focus is not None else 120
-        elif camera.exposure is not None or camera.gain is not None or camera.focus is not None:
-            camera.control_mode = "manual"
+        camera.exposure = camera.exposure if camera.exposure is not None else 8
+        camera.gain = camera.gain if camera.gain is not None else 400
         camera.auto_exposure = False
         camera.auto_focus = False
 
@@ -290,15 +274,8 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
                 for key, value in cam_data.items():
                     setattr(camera, key, value)
 
-        # Apply control mode AFTER update/create
-        if camera.control_mode == "auto":
-            camera.exposure = 16
-            camera.gain = 400
-            camera.focus = 120
-        elif camera.control_mode == "manual":
-            camera.exposure = camera.exposure if camera.exposure is not None else 16
-            camera.gain = camera.gain if camera.gain is not None else 400
-            camera.focus = camera.focus if camera.focus is not None else 120
+        camera.exposure = camera.exposure if camera.exposure is not None else 8
+        camera.gain = camera.gain if camera.gain is not None else 400
         camera.auto_exposure = False
         camera.auto_focus = False
 

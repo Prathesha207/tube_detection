@@ -120,20 +120,27 @@ async def stream(request: Request, session_id: Optional[str] = None):
     """
     if not oak_camera_service._is_running:
         # Auto-start camera from database if configured
-        try:
-            from app.core.database import SessionLocal
-            db = SessionLocal()
+        # Cooldown prevents spamming connection attempts when camera is unavailable
+        _last_auto_start_attempt = getattr(stream, "_last_auto_start_attempt", 0)
+        if time.time() - _last_auto_start_attempt > 15:
+            stream._last_auto_start_attempt = time.time()
             try:
-                cam = camera_service.get_camera_config(db)
-                if cam:
-                    logger.info(f"[STREAM] Auto-starting camera ID {cam.id} ({cam.ip_address}) for stream")
-                    await oak_camera_service.start(cam)
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"[STREAM] Auto-start camera failed: {e}")
+                from app.core.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    cam = camera_service.get_camera_config(db)
+                    if cam:
+                        logger.info(f"[STREAM] Auto-starting camera ID {cam.id} ({cam.ip_address}) for stream")
+                        await oak_camera_service.start(cam)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.warning(f"[STREAM] Auto-start camera failed: {e}")
+        else:
+            logger.debug("[STREAM] Skipping auto-start — cooldown active")
 
     if not oak_camera_service._is_running:
+
         return Response(
             content=b"Camera not started",
             status_code=503,
@@ -303,6 +310,16 @@ async def get_available_devices():
 
 
 # ==================== Camera Controls ====================
+
+@router.post("/controls/calibrate")
+def calibrate_camera_controls():
+    try:
+        return oak_camera_service.calibrate_auto_controls()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.exception("Camera calibration failed")
+        raise HTTPException(status_code=500, detail=f"Camera calibration failed: {e}")
 
 class CameraControlsRequest(BaseModel):
     control_mode: Optional[str] = None

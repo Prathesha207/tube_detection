@@ -110,6 +110,7 @@ export interface CameraConfig {
   exposure: number; // 0 - 100
   gain?: number;
   focus?: number;
+  focusAvailable?: boolean;
   brightness: number; // -50 to +50
   contrast: number; // 0 to 100
   iso: number;

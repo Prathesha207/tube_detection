@@ -90,9 +90,9 @@ export type BasicConfig = {
 /* ================= DEFAULTS ================= */
 
 const DEFAULT_CONTROLS = {
-    exposure: 16,
+    exposure: 8,
     gain: 400,
-    focus: 120,
+    focus: 0,
     brightness: 0,
     contrast: 50,
 };

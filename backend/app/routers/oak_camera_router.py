@@ -454,8 +454,8 @@ def stop_inference():
 @router.get("/inference/status/{session_id}")
 async def get_camera_inference_status(session_id: str):
     try:
-        from app.ml.camera_inference_service import get_session_status
-        status = get_session_status(session_id)
+        from app.ml.camera_inference_service import get_camera_session_stats
+        status = get_camera_session_stats(session_id)
         if not status:
             return {"status": "idle", "session_id": session_id}
         return status

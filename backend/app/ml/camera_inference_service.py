@@ -90,33 +90,45 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             active_kind = app_state.get_active_inference_kind()
             raise RuntimeError(f"GPU is currently in use by {active_kind or 'another process'} -- try again shortly")
 
-        try:
-            logger.info(f"Creating TubeAnalyzer for camera session {session_id}")
-            analyzer = TubeAnalyzer(
-                model_path=model_path or _DEFAULT_MODEL_PATH,
-                config_path=_CONFIG_PATH,
-                roi_path=_ROI_PATH,
-                device=default_device(),
-                draw_overlay=False,
-            )
-        except Exception as e:
-            logger.error(f"Failed to create camera analyzer: {e}", exc_info=True)
-            app_state.exit_inference("camera")      # never leak the claim
-            raise
-
         session = {
-            "analyzer": analyzer,
+            "analyzer": "LOADING",
             "frames_processed": 0,
             "last_active": time.time(),
             "inference_claimed": True,
             "inference_lock": threading.Lock(),
-            "last_stats": new_stats(session_id=session_id, status="processing"),
+            "last_stats": new_stats(session_id=session_id, status="LOADING_MODEL"),
             "last_annotated_frame": None,
             "roi_points": [],
             "roi_frame_size": None,
+            "load_error": None,
         }
         _sessions[session_id] = session
         _start_idle_sweeper_once()
+
+        def _load_model():
+            try:
+                logger.info(f"Creating TubeAnalyzer asynchronously for camera session {session_id}")
+                analyzer = TubeAnalyzer(
+                    model_path=model_path or _DEFAULT_MODEL_PATH,
+                    config_path=_CONFIG_PATH,
+                    roi_path=_ROI_PATH,
+                    device=default_device(),
+                    draw_overlay=False,
+                )
+                with session["inference_lock"]:
+                    if session.get("analyzer") == "LOADING":
+                        session["analyzer"] = analyzer
+                        logger.info(f"TubeAnalyzer loaded successfully for session {session_id}")
+            except Exception as e:
+                logger.error(f"Failed to load camera analyzer asynchronously: {e}", exc_info=True)
+                with session["inference_lock"]:
+                    session["analyzer"] = None  # Clear loading state to prevent infinite loops
+                    session["load_error"] = str(e)
+                    if session.get("inference_claimed"):
+                        app_state.exit_inference("camera")
+                        session["inference_claimed"] = False
+
+        threading.Thread(target=_load_model, name=f"load-model-{session_id}", daemon=True).start()
         return session
 
 
@@ -163,6 +175,7 @@ def analyze_camera_frame(
     model_path: Optional[str] = None,
     video_name: Optional[str] = None,      # accepted for old callers, not used
     annotate: bool = False,
+    wait_for_model: bool = False,
     **kwargs,
 ) -> Tuple[Dict[str, Any], Any]:
     """Run the model on one camera frame. Returns (stats, clean_frame).
@@ -189,9 +202,23 @@ def analyze_camera_frame(
 
     session["last_active"] = time.time()
 
+    if wait_for_model:
+        while True:
+            with _sessions_lock:
+                s = _sessions.get(session_id)
+            if s is None or s.get("analyzer") != "LOADING":
+                break
+            time.sleep(0.1)
+
     # One frame at a time per session: the analyzer's tracker state is not thread-safe.
     with session["inference_lock"]:
         analyzer = session["analyzer"]
+        if analyzer == "LOADING":
+            stats = new_stats(session_id=session_id, status="LOADING_MODEL")
+            session["last_stats"] = stats
+            return stats, frame
+        if session.get("load_error"):
+            return _error_stats(session_id, session["load_error"], session["frames_processed"]), frame
         if analyzer is None:        # session was closed while this frame waited for the lock
             return _error_stats(session_id, "Camera session was closed", session["frames_processed"]), frame
 
@@ -229,14 +256,6 @@ def analyze_camera_frame(
     return stats, clean_frame
 
 
-# ------------------------------------------------- old names (same behaviour)
-run_inference = analyze_camera_frame
-get_session_status = get_camera_session_stats
-clear_session = close_camera_session
-cleanup_stale_sessions = evict_idle_camera_sessions
-reset_session_for_next_video = close_camera_session
-
-
 def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
     """Hot-swap active camera session analyzer in-memory (per-session ROI, no disk persistence)."""
     with _sessions_lock:
@@ -250,7 +269,3 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
             analyzer = s.get("analyzer")
             if analyzer is not None:
                 analyzer.set_roi(points, frame_size)
-
-
-def _set_camera_analyzer(analyzer):
-    pass

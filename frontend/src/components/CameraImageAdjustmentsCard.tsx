@@ -370,10 +370,13 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
             <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
               The displayed preset values are locked. Calibrate briefly lets the camera choose exposure and focus, then saves and locks those readings.
             </p>
-            <button type="button" onClick={handleCalibrate} disabled={calibrating || !isLive} className="mt-1 inline-flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-[11px] font-semibold disabled:opacity-50">
-              <RefreshCw className={`w-3 h-3 ${calibrating ? 'animate-spin' : ''}`} />
-              {calibrating ? 'Calibrating...' : 'Calibrate'}
-            </button>
+            <div className="flex items-center gap-2 mt-1">
+              <button type="button" onClick={handleCalibrate} disabled={calibrating || !isLive} className="inline-flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-[11px] font-semibold disabled:opacity-50">
+                <RefreshCw className={`w-3 h-3 ${calibrating ? 'animate-spin' : ''}`} />
+                {calibrating ? 'Calibrating...' : 'Calibrate'}
+              </button>
+              <span className="text-[10px] text-[var(--text-muted)] italic">Focus may be off? Press Calibrate</span>
+            </div>
             {calibrationError && <p className="text-[11px] text-red-500">{calibrationError}</p>}
           </div>
         </div>

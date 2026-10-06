@@ -28,7 +28,7 @@ Lifecycle
 ---------
   1. InferenceRecorder(status="PENDING") is created when recording starts.
      Writers open under PENDING/.
-  2. write(frame, result) is called by run_inference() for EVERY frame.
+  2. write(frame, result) is called by analyze_camera_frame() for EVERY frame.
      This is the only write point; the WebSocket handler
      must NOT call recorder.write() separately.
   3. update_status("NORMAL" | "ANOMALY") is called when inference resolves.

@@ -1,3 +1,4 @@
+from app.ml.camera_inference_service import close_camera_session
 import asyncio
 import base64
 import os
@@ -121,7 +122,7 @@ class OakCameraService:
         self._total_videos: int = 1
         self._current_video_idx: int = 0
         self._current_video_name: str = ""
-
+        self._latest_metadata: tuple[int, int, int | None] | None = None
 
         # GPU sampler — runs independently, never blocks inference
         self._gpu_usage: float = -1.0
@@ -133,9 +134,10 @@ class OakCameraService:
     async def connect(self, ip: str) -> bool:
         loop = asyncio.get_running_loop()
         self._last_connection_error = None
-        for attempt in range(2):
+        max_attempts = 4
+        for attempt in range(max_attempts):
             try:
-                logger.info(f"[DEVICE] Connecting to {ip} (attempt {attempt + 1}/2)")
+                logger.info(f"[DEVICE] Connecting to {ip} (attempt {attempt + 1}/{max_attempts})")
                 try:
                     device_info = self._resolve_device_info(ip)
                 except RuntimeError as resolve_err:
@@ -188,12 +190,12 @@ class OakCameraService:
                 if "already used" in err_str.lower() or "in use" in err_str.lower():
                     clean_msg = "Device is already used by another application/process. Make sure to close all applications/processes using the device before starting a new one."
                     self._last_connection_error = clean_msg
-                    if attempt == 0:
-                        logger.warning(f"[DEVICE] Device is reported in use, waiting 1.5s to retry: {clean_msg}")
-                        await asyncio.sleep(1.5)
+                    if attempt < max_attempts - 1:
+                        logger.warning(f"[DEVICE] Device is reported in use, waiting 2.0s to retry (attempt {attempt + 1}/{max_attempts})...")
+                        await asyncio.sleep(2.0)
                         continue
                     else:
-                        logger.warning(f"[DEVICE] Connection failed: {clean_msg}")
+                        logger.warning(f"[DEVICE] Connection failed after {max_attempts} attempts: {clean_msg}")
                         realtime_log_service.add_log(
                             "camera",
                             "CAMERA",
@@ -708,6 +710,14 @@ class OakCameraService:
                     continue
 
                 try:
+                    exp = int(pkt.getExposureTime().total_seconds() * 1_000_000)
+                    iso = int(pkt.getSensitivity())
+                    lens = int(pkt.getLensPosition())
+                    self._latest_metadata = (exp, iso, lens if 0 <= lens <= 255 else None)
+                except Exception:
+                    pass
+
+                try:
                     self._hires_packet_queue.put_nowait(pkt)
                 except Exception:
                     # Queue full — drop oldest, put new
@@ -761,6 +771,11 @@ class OakCameraService:
                     display_bgr = self._apply_adjustments(raw_bgr)
                 else:
                     display_bgr = raw_bgr
+
+                if self.control_mode == "auto" and not self._calibrating:
+                    self._run_monitor(display_bgr)
+                elif self.control_mode == "manual":
+                    self._monitor_baseline_sharpness = None
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
                 self._latest_bgr_seq += 1
@@ -910,6 +925,52 @@ class OakCameraService:
 
         return cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
 
+    # ==================== Auto-calibration Monitor ====================
+
+    def _safe_calibrate(self) -> None:
+        try:
+            logger.info("[MONITOR] Starting automatic calibration")
+            self.calibrate_auto_controls()
+        except Exception as e:
+            logger.error(f"[MONITOR] Auto-calibration failed: {e}")
+
+    def _run_monitor(self, frame: np.ndarray) -> None:
+        now = time.time()
+        if now - self._monitor_last_calib_time < 5.0:
+            return
+
+        # crop center for speed and relevance (50% of center)
+        h, w = frame.shape[:2]
+        crop = frame[h//4:3*h//4, w//4:3*w//4]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+        brightness = gray.mean()
+
+        if self._monitor_baseline_sharpness is None:
+            self._monitor_baseline_sharpness = sharpness
+            self._monitor_baseline_brightness = brightness
+            self._monitor_bad_start_time = None
+            logger.info(f"[MONITOR] Baseline set - Sharpness: {sharpness:.1f}, Brightness: {brightness:.1f}")
+            return
+
+        # Check thresholds
+        sharpness_drop = sharpness < (self._monitor_baseline_sharpness * 0.5)
+        # 30.0 shift in brightness out of 255 (about 12%)
+        brightness_shift = abs(brightness - self._monitor_baseline_brightness) > 30.0
+
+        if sharpness_drop or brightness_shift:
+            if self._monitor_bad_start_time is None:
+                self._monitor_bad_start_time = now
+            elif now - self._monitor_bad_start_time > 1.0:
+                logger.info(f"[MONITOR] Triggering auto-calibration. Sharpness: {sharpness:.1f} (baseline: {self._monitor_baseline_sharpness:.1f}), Brightness: {brightness:.1f} (baseline: {self._monitor_baseline_brightness:.1f})")
+                self._monitor_last_calib_time = now
+                self._monitor_baseline_sharpness = None
+                self._monitor_bad_start_time = None
+                threading.Thread(target=self._safe_calibrate, name="oak-monitor-calib", daemon=True).start()
+        else:
+            self._monitor_bad_start_time = None
+
     # ==================== Camera Controls ====================
 
     def reset_controls(self) -> dict:
@@ -918,6 +979,7 @@ class OakCameraService:
         self.current_contrast = 50
         self.auto_exposure_enabled = self.auto_focus_enabled = False
         self.control_mode = "auto"
+        self._monitor_baseline_sharpness = None
         ctrl = dai.CameraControl()
         ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
         if self.current_focus is not None:
@@ -964,6 +1026,7 @@ class OakCameraService:
             max_us = max(1000, int(1_000_000 / max(self._configured_fps, 1)))
             self.current_exposure_us = max(100, min(max_us, exp_us))
         self.auto_exposure_enabled = self.auto_focus_enabled = False
+        self._monitor_baseline_sharpness = None
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return
         ctrl = dai.CameraControl()
@@ -993,60 +1056,38 @@ class OakCameraService:
 
     def calibrate_auto_controls(self) -> dict:
         """Use a short AE/one-shot AF phase, then freeze the measured metadata."""
-        if not self._is_running or not self.is_connected or self._raw_dai_queue is None or self._control_queue is None:
+        if not self._is_running or not self.is_connected or self._control_queue is None:
             raise RuntimeError("Start the OAK camera before calibrating")
         if self._active_recording is not None:
             raise RuntimeError("Stop recording before calibrating")
         if not self._camera_calibration_lock.acquire(blocking=False):
             raise RuntimeError("Camera calibration is already running")
-        was_capturing = any(t and t.is_alive() for t in (self._mjpeg_thread, self._hires_thread, self._convert_thread))
+        
         self._calibrating = True
         locked = False
+        prev_exposure = self.current_exposure_us
+        prev_gain = self.current_gain
+        prev_focus = self.current_focus
+        
         try:
-            if was_capturing:
-                self._stop_capture_threads()
-            self._drain_hires_packet_queue()
             settle = dai.CameraControl()
             settle.setAutoExposureEnable()
-            settle.setAutoExposureLimit(min(10000, max(1000, int(1_000_000 / max(self._configured_fps, 1)))))
+            settle.setAutoExposureLimit(10000)
             try:
                 settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.AUTO)
                 settle.setAutoFocusTrigger()
             except Exception as e:
                 logger.info(f"[CALIBRATION] Autofocus unavailable; exposure only: {e}")
             self._control_queue.send(settle)
-            samples = deque(maxlen=6)
-            latest = None
-            start = time.monotonic()
-            deadline = start + 4.0
-            while time.monotonic() < deadline:
-                pkt = self._raw_dai_queue.tryGet()
-                if pkt is None:
-                    time.sleep(0.01)
-                    continue
-                try:
-                    exp = int(pkt.getExposureTime().total_seconds() * 1_000_000)
-                    iso = int(pkt.getSensitivity())
-                    lens = int(pkt.getLensPosition())
-                except Exception:
-                    continue
-                if exp <= 0 or iso <= 0:
-                    continue
-                latest = (exp, iso, lens if 0 <= lens <= 255 else None)
-                samples.append(latest)
-                if time.monotonic() >= start + 1.0 and len(samples) == samples.maxlen:
-                    es, gs = [x[0] for x in samples], [x[1] for x in samples]
-                    lenses = [x[2] for x in samples]
-                    lens_stable = all(value is None for value in lenses) or (
-                        all(value is not None for value in lenses) and len(set(lenses)) == 1
-                    )
-                    if (max(es)-min(es) <= max(200, int(sum(es)/len(es)*.02))
-                            and max(gs)-min(gs) <= max(25, int(sum(gs)/len(gs)*.05))
-                            and lens_stable):
-                        break
+            
+            # Wait 1.5s for frames to arrive and settle while background threads keep running
+            time.sleep(1.5)
+            
+            latest = self._latest_metadata
             if latest is None:
                 raise RuntimeError("No exposure and gain metadata arrived during calibration")
             exp_us, iso, lens = latest
+            
             lock = dai.CameraControl()
             lock.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             if lens is not None:
@@ -1054,6 +1095,7 @@ class OakCameraService:
             lock.setManualExposure(exp_us, iso)
             self._control_queue.send(lock)
             locked = True
+            
             self.current_exposure_us = exp_us
             self.current_gain = max(100, min(1600, iso))
             self.current_focus = lens
@@ -1063,21 +1105,21 @@ class OakCameraService:
             self.auto_exposure_enabled = self.auto_focus_enabled = False
             self._save_calibrated_preset()
             return {"status": "ok", **self._camera_settings()}
+        except Exception as e:
+            logger.error(f"[CALIBRATION] Calibration failed: {e}")
+            try:
+                restore = dai.CameraControl()
+                restore.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                if prev_focus is not None:
+                    restore.setManualFocus(prev_focus)
+                restore.setManualExposure(prev_exposure, prev_gain)
+                self._control_queue.send(restore)
+            except Exception as restore_error:
+                logger.error(f"[CALIBRATION] Failed to restore fixed controls after calibration error: {restore_error}")
+            raise RuntimeError(str(e)) from e
         finally:
-            if not locked and self._control_queue is not None and self._is_running:
-                try:
-                    restore = dai.CameraControl()
-                    restore.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                    if self.current_focus is not None:
-                        restore.setManualFocus(self.current_focus)
-                    restore.setManualExposure(self.current_exposure_us, self.current_gain)
-                    self._control_queue.send(restore)
-                except Exception as restore_error:
-                    logger.error(f"[CALIBRATION] Failed to restore fixed controls after calibration error: {restore_error}")
             self._calibrating = False
             self._camera_calibration_lock.release()
-            if was_capturing and self._is_running:
-                self._start_capture_threads()
 
     def _save_calibrated_preset(self) -> None:
         from app.core.database import SessionLocal
@@ -1098,124 +1140,13 @@ class OakCameraService:
 
     # ==================== Inference ====================
 
-    # def _inference_worker(self, session_id: str) -> None:
-    #     """Reads latest BGR frame, runs inference, pushes result to WebSocket queue.
-    #     Also auto-manages processed video recording based on result['record'] flag.
-    #     No frame skipping — inference itself is slow enough that _latest_bgr is always fresh.
-    #     """
-    #     from app.ml.camera_inference_service import run_inference
-    #     from app.services.inference_recording_service import InferenceRecorder, draw_overlay
-    #     from app.services import inference_config_service
-    #     from app.core.database import SessionLocal
-
-    #     logger.info(f"[INFERENCE] Thread running — session: {session_id}")
-
-    #     # Load config once for recorder settings (processed_video / raw_video flags)
-    #     db = SessionLocal()
-    #     try:
-    #         config = inference_config_service.get_config(db)
-    #     finally:
-    #         db.close()
-
-    #     recorder: InferenceRecorder | None = None
-    #     recording_active = False
-
-    #     try:
-    #         while not self._inference_stop.is_set():
-    #             frame = self._latest_bgr
-    #             if frame is None:
-    #                 time.sleep(0.01)
-    #                 continue
-
-    #             result = run_inference(frame.copy(), session_id)
-    #             if result is None:
-    #                 logger.warning("❌ [INFERENCE] run_inference returned None")
-    #                 continue
-
-    #             # ===== TEST ONLY — remove before production =====
-    #             # result = {
-    #             #     "status": "WAITING_MODEL1",
-    #             #     "record": False,
-    #             #     "model1_detected": True,
-    #             #     "detections": [{"bbox": [100, 100, 300, 300], "confidence": 0.92, "centroid": [200, 200], "contour": [[100,100],[300,100],[300,300],[100,300]], "model": "model1"}],
-    #             #     "detections_model2": [],
-    #             #     "mask_polygons": [],
-    #             #     "lenA1": None,
-    #             #     "lenA2": None,
-    #             #     "model3_classes": [],
-    #             # }
-    #             # ===== END TEST =====
-
-    #             logger.debug(f"[INFERENCE] status={result.get('status')} record={result.get('record')}")
-
-    #             # Attach base64 frame for offline mode (UI has no MJPEG stream)
-    #             if self._inference_offline:
-    #                 try:
-    #                     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    #                     result["frame"] = "data:image/jpeg;base64," + base64.b64encode(buf).decode()
-    #                 except Exception as e:
-    #                     logger.warning(f"[INFERENCE] Frame encode failed: {e}")
-
-    #             # Push result to WebSocket queue
-    #             if self._inference_result_queue is not None and self._inference_loop is not None:
-    #                 asyncio.run_coroutine_threadsafe(
-    #                     self._async_inference_push(result),
-    #                     self._inference_loop
-    #                 )
-
-    #             # Auto inference recording based on record flag
-    #             record_flag = result.get("record", False)
-    #             should_record = (
-    #                 record_flag
-    #                 and config is not None
-    #                 and (config.processed_video or config.raw_video)
-    #             )
-
-
-    #             if should_record and not recording_active:
-    #                 h, w = frame.shape[:2]
-    #                 recorder = InferenceRecorder(
-    #                     session_id=f"{session_id}_{int(time.time())}",
-    #                     config=config,
-    #                     width=w,
-    #                     height=h,
-    #                     fps=25,
-    #                 )
-    #                 recording_active = True
-    #                 logger.info("[INFERENCE] Processed recording started")
-
-    #             elif not should_record and recording_active:
-    #                 if recorder:
-    #                     recorder.stop()
-    #                 recorder = None
-    #                 recording_active = False
-    #                 logger.info("[INFERENCE] Processed recording stopped")
-
-    #             if recording_active and recorder:
-    #                 overlay = draw_overlay(
-    #                     frame,
-    #                     result.get("detections", []),
-    #                     result.get("detections_model2", []),
-    #                     result.get("mask_polygons", []),
-    #                     result.get("status", ""),
-    #                 )
-    #                 recorder.write(frame, overlay)
-
-    #     except Exception as e:
-    #         logger.error(f"[INFERENCE] Thread error: {e}", exc_info=True)
-    #     finally:
-    #         if recorder:
-    #             logger.info("[INFERENCE] Stopping recorder on thread exit")
-    #             recorder.stop()
-    #         logger.info(f"[INFERENCE] Thread ended — session: {session_id}")
-
     # ─────────────────────────────────────────────────────────────────────────────
     # Tube Analyzer Worker
     # This worker runs continuous TubeAnalyzer inference.
     # ─────────────────────────────────────────────────────────────────────────────
 
     def _inference_worker(self, session_id: str) -> None:
-        from app.ml.camera_inference_service import run_inference
+        from app.ml.camera_inference_service import analyze_camera_frame
         from app.services.inference_recording_service import InferenceRecorder, draw_overlay
         import base64
 
@@ -1263,8 +1194,8 @@ class OakCameraService:
                             _got_eof = True
                             break
                         elif item is _VIDEO_BOUNDARY:
-                            from app.ml.camera_inference_service import reset_session_for_next_video
-                            reset_session_for_next_video(session_id)
+                            from app.ml.camera_inference_service import close_camera_session
+                            close_camera_session(session_id)
                             logger.info("[INFERENCE] Video boundary — session reset, cycle counter carried forward")
                             _got_boundary = True
                             break
@@ -1313,15 +1244,16 @@ class OakCameraService:
 
                 # ── Run inference + measure latency ───────────────────────────
                 t_start = time.perf_counter()
-                infer_res = run_inference(
+                infer_res = analyze_camera_frame(
                     frame.copy(),
                     session_id,
                     video_name=self._current_video_name,
+                    wait_for_model=self._inference_offline,
                 )
                 latency_ms = (time.perf_counter() - t_start) * 1000
 
                 if infer_res is None:
-                    logger.warning("❌ [INFERENCE] run_inference returned None")
+                    logger.warning("❌ [INFERENCE] analyze_camera_frame returned None")
                     continue
 
                 if isinstance(infer_res, tuple):
@@ -1330,7 +1262,7 @@ class OakCameraService:
                     result, annotated_frame = infer_res, frame
 
                 if not isinstance(result, dict):
-                    logger.warning("❌ [INFERENCE] run_inference result is not a dict")
+                    logger.warning("❌ [INFERENCE] analyze_camera_frame result is not a dict")
                     continue
 
                 # ── FPS calculation (rolling 2-second window) ─────────────────
@@ -1805,7 +1737,7 @@ class OakCameraService:
         # ── Clean up inference session (only if the thread is actually gone) ──
         if thread_confirmed_dead and self._inference_session_id:
             logger.info(f"[INFERENCE] Clearing session: {self._inference_session_id}")
-            clear_session(self._inference_session_id)
+            close_camera_session(self._inference_session_id)
 
         # Only forget the thread reference once it's confirmed dead -- otherwise
         # start_inference()'s already_running guard must keep seeing it so a

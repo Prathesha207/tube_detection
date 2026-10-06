@@ -22,6 +22,8 @@ export interface InferenceStats {
   // Tube ML fields from TubeAnalyzer / run_video_frames:
   heads_count: number;
   tails_count: number;
+  heads_total?: number;
+  tails_total?: number;
   detections: TubeDetection[];
   bigger_tube: TubeDetection | null;
   smaller_tube: TubeDetection | null;

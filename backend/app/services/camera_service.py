@@ -27,14 +27,15 @@ def create_camera(db: Session, data: CameraCreate):
 
         # Apply control mode rules
         if camera.control_mode == "auto":
-            camera.exposure = None
-            camera.gain = None
-            camera.focus = None
-            camera.auto_exposure = True
-            camera.auto_focus = True
+            camera.exposure = 16
+            camera.gain = 400
+            camera.focus = 120
         else:
-            camera.auto_exposure = False
-            camera.auto_focus = False
+            camera.exposure = camera.exposure if camera.exposure is not None else 16
+            camera.gain = camera.gain if camera.gain is not None else 400
+            camera.focus = camera.focus if camera.focus is not None else 120
+        camera.auto_exposure = False
+        camera.auto_focus = False
 
         db.add(camera)
         db.commit()
@@ -79,20 +80,17 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
 
         # Apply control mode AFTER update
         if camera.control_mode == "auto":
-            camera.exposure = None
-            camera.gain = None
-            camera.focus = None
-            camera.auto_exposure = True
-            camera.auto_focus = True
+            camera.exposure = 16
+            camera.gain = 400
+            camera.focus = 120
         elif camera.control_mode == "manual":
-            camera.auto_exposure = False
-            camera.auto_focus = False
+            camera.exposure = camera.exposure if camera.exposure is not None else 16
+            camera.gain = camera.gain if camera.gain is not None else 400
+            camera.focus = camera.focus if camera.focus is not None else 120
         elif camera.exposure is not None or camera.gain is not None or camera.focus is not None:
             camera.control_mode = "manual"
-            if camera.auto_exposure is None:
-                camera.auto_exposure = False
-            if camera.auto_focus is None:
-                camera.auto_focus = False
+        camera.auto_exposure = False
+        camera.auto_focus = False
 
         db.commit()
         db.refresh(camera)
@@ -107,8 +105,7 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
                     focus=camera.focus,
                     brightness=camera.brightness,
                     contrast=camera.contrast,
-                    auto_focus=camera.auto_focus,
-                    auto_exposure=camera.auto_exposure,
+                    control_mode=camera.control_mode,
                 )
         except Exception as sync_err:
             logger.debug(f"[UPDATE_CAMERA] Dynamic control sync skipped: {sync_err}")
@@ -295,14 +292,15 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
 
         # Apply control mode AFTER update/create
         if camera.control_mode == "auto":
-            camera.exposure = None
-            camera.gain = None
-            camera.focus = None
-            camera.auto_exposure = True
-            camera.auto_focus = True
+            camera.exposure = 16
+            camera.gain = 400
+            camera.focus = 120
         elif camera.control_mode == "manual":
-            camera.auto_exposure = False
-            camera.auto_focus = False
+            camera.exposure = camera.exposure if camera.exposure is not None else 16
+            camera.gain = camera.gain if camera.gain is not None else 400
+            camera.focus = camera.focus if camera.focus is not None else 120
+        camera.auto_exposure = False
+        camera.auto_focus = False
 
         # =========================================================
         # TRAINING

@@ -305,6 +305,7 @@ async def get_available_devices():
 # ==================== Camera Controls ====================
 
 class CameraControlsRequest(BaseModel):
+    control_mode: Optional[str] = None
     exposure: Optional[int] = None
     gain: Optional[int] = None
     focus: Optional[int] = None
@@ -318,9 +319,7 @@ class CameraControlsRequest(BaseModel):
 
 @router.post("/controls/reset")
 def reset_camera_controls():
-    """Real Camera Hardware Reset — restores full 3A (Auto Exposure, Auto Focus, Auto White Balance)
-    and removes all manual shutter/gain/focus overrides, matching fresh boot state.
-    """
+    """Apply the fixed Auto (Stream) preset with camera autofocus/exposure disabled."""
     try:
         return oak_camera_service.reset_controls()
     except Exception as e:
@@ -331,6 +330,7 @@ def reset_camera_controls():
 @router.post("/controls")
 def update_controls(
     body: Optional[CameraControlsRequest] = Body(default=None),
+    control_mode: str | None = None,
     exposure: int | None = None,
     gain: int | None = None,
     focus: int | None = None,
@@ -350,6 +350,7 @@ def update_controls(
         f = body.focus if body and body.focus is not None else focus
         b = body.brightness if body and body.brightness is not None else brightness
         c = body.contrast if body and body.contrast is not None else contrast
+        mode = body.control_mode if body and body.control_mode is not None else control_mode
         af = (body.auto_focus if body and body.auto_focus is not None else (body.autoFocus if body and body.autoFocus is not None else auto_focus))
         ae = (body.auto_exposure if body and body.auto_exposure is not None else (body.autoExposure if body and body.autoExposure is not None else auto_exposure))
 
@@ -361,6 +362,7 @@ def update_controls(
             contrast=c,
             auto_focus=af,
             auto_exposure=ae,
+            control_mode=mode,
             reset=is_reset,
         )
         return {"status": "ok"}

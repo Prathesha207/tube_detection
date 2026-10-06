@@ -111,7 +111,7 @@ export const cameraService = {
       const res = await api.post("/oak/controls/reset");
       return res.data;
     } catch {
-      const res = await api.post("/oak/controls", { reset: true, auto_exposure: true, auto_focus: true, brightness: 0, contrast: 50 });
+      const res = await api.post("/oak/controls", { reset: true, auto_exposure: false, auto_focus: false, brightness: 0, contrast: 50 });
       return res.data;
     }
   },

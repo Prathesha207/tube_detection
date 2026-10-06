@@ -88,11 +88,13 @@ class OakCameraService:
         self.current_fps: float = 0.0
         self._configured_fps: int = 30
         self._ae_limit_us: int | None = None  # None = manual mode
-        self.current_exposure_us: int = 10000  # Default 10ms manual shutter
-        self.current_gain: int = 100          # Default ISO 100 manual gain
+        self.current_exposure_us: int = 16000 # Default 16ms fixed shutter
+        self.current_gain: int = 400          # Default ISO 400 fixed gain
         self.current_focus: int = 120         # Default lens position (0-255)
-        self.auto_exposure_enabled: bool = True
-        self.auto_focus_enabled: bool = True
+        # This app only supports fixed/manual sensor controls. The UI's
+        # "Auto (Stream)" mode is a calibrated preset, not camera AE/AF.
+        self.auto_exposure_enabled: bool = False
+        self.auto_focus_enabled: bool = False
 
         # ---- Recording ----
         self._active_recording = None  # RecordingSession instance when active
@@ -323,20 +325,37 @@ class OakCameraService:
                 # Keep autofocus OFF and lock to calibrated standard focus (120) and standard exposure (16ms, 400 ISO)
                 # so the image remains perfectly steady and never hunts or flickers when tubes move.
                 self._ae_limit_us = None
+                exposure, gain, focus = 16000, 400, 120
+                self.current_exposure_us = exposure
+                self.current_gain = gain
+                self.current_focus = focus
+                self.current_brightness = 0
+                self.current_contrast = 50
+                self.auto_exposure_enabled = False
+                self.auto_focus_enabled = False
                 init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                init_ctrl.setManualFocus(120)
-                init_ctrl.setManualExposure(16000, 400)
+                init_ctrl.setManualFocus(focus)
+                init_ctrl.setManualExposure(exposure, gain)
                 logger.info("[PIPELINE] Auto mode: calibrated steady stream (Focus=120, Exp=16ms, Gain=400 ISO, continuous AF hunting disabled)")
             else:
                 self._ae_limit_us = None
                 try:
                     exposure = int(config.exposure)
+                    # UI and persisted settings use milliseconds; DepthAI
+                    # expects microseconds. Accept legacy microsecond values too.
+                    if exposure <= 1000:
+                        exposure *= 1000
                     gain = int(config.gain)
                     focus = int(config.focus)
                 except Exception:
                     logger.warning("[PIPELINE] Invalid manual values — using defaults")
-                    exposure, gain, focus = 10000, 200, 120
+                    exposure, gain, focus = 16000, 400, 120
 
+                self.current_exposure_us = exposure
+                self.current_gain = gain
+                self.current_focus = focus
+                self.auto_exposure_enabled = False
+                self.auto_focus_enabled = False
                 init_ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
                 init_ctrl.setManualExposure(exposure, gain)
                 init_ctrl.setManualFocus(focus)
@@ -937,35 +956,51 @@ class OakCameraService:
         contrast: int | None = None,
         auto_focus: bool | None = None,
         auto_exposure: bool | None = None,
+        control_mode: str | None = None,
         reset: bool | None = None,
     ) -> None:
         """Update hardware camera controls (Exposure, Gain, Focus, Brightness, Contrast)."""
         if reset:
             self.reset_controls()
             return
-        # 1. Update internal state
-        if brightness is not None:
+        # The only supported modes are a fixed preset and user-set manual
+        # values. Legacy auto_focus/auto_exposure request fields are ignored.
+        requested_mode = (control_mode or "").lower()
+        if requested_mode == "auto":
+            self.control_mode = "auto"
+            self.current_exposure_us = 16000
+            self.current_gain = 400
+            self.current_focus = 120
+            self.current_brightness = 0
+            self.current_contrast = 50
+        elif requested_mode == "manual":
+            self.control_mode = "manual"
+
+        # 1. Update internal state (UI exposure values are milliseconds).
+        if brightness is not None and requested_mode != "auto":
             self.current_brightness = max(-50, min(50, int(brightness)))
 
-        if contrast is not None:
+        if contrast is not None and requested_mode != "auto":
             self.current_contrast = max(0, min(100, int(contrast)))
 
-        if gain is not None:
+        if gain is not None and requested_mode != "auto":
             self.current_gain = max(100, min(1600, int(gain)))
 
-        if focus is not None:
+        if focus is not None and requested_mode != "auto":
             self.current_focus = max(0, min(255, int(focus)))
 
-        if exposure is not None:
+        if exposure is not None and requested_mode != "auto":
             val = int(exposure)
-            if val <= 100:
-                exp_us = val * 1000
-            elif val < 1000:
-                exp_us = val * 1000
-            else:
-                exp_us = val
+            exp_us = val * 1000 if val < 1000 else val
             max_period_us = max(1000, int(1_000_000 / max(self._configured_fps, 1)))
             self.current_exposure_us = max(100, min(max_period_us, exp_us))
+
+        if requested_mode != "auto" and any(value is not None for value in (exposure, gain, focus)):
+            self.control_mode = "manual"
+
+        # Do not allow legacy API clients or stale saved settings to enable AE/AF.
+        self.auto_exposure_enabled = False
+        self.auto_focus_enabled = False
 
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return
@@ -973,50 +1008,15 @@ class OakCameraService:
         ctrl = dai.CameraControl()
         should_send = False
 
-        # 2. Exposure & Gain Logic
-        if auto_exposure is True:
-            self.auto_exposure_enabled = True
-            self.control_mode = "auto"
-            try:
-                ctrl.setAutoExposureEnable()
-                if self._ae_limit_us is not None:
-                    try:
-                        ctrl.setAutoExposureLimit(self._ae_limit_us)
-                    except Exception:
-                        pass
-                should_send = True
-            except Exception as e:
-                logger.warning(f"[CONTROL] setAutoExposureEnable failed: {e}")
-        elif auto_exposure is False or (auto_exposure is None and (exposure is not None or gain is not None)):
-            self.auto_exposure_enabled = False
-            self.control_mode = "manual"
-            try:
-                ctrl.setAutoExposureLock(False)
-                ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
-                should_send = True
-            except Exception as e:
-                logger.warning(f"[CONTROL] setManualExposure failed: {e}")
-
-        # 3. Focus Logic (Both auto_focus toggle and manual focus position)
-        if auto_focus is True:
-            self.auto_focus_enabled = True
-            try:
-                ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-                try:
-                    ctrl.setAutoFocusTrigger()
-                except Exception:
-                    pass
-                should_send = True
-            except Exception as e:
-                logger.warning(f"[CONTROL] setAutoFocusMode failed: {e}")
-        elif auto_focus is False or (auto_focus is None and focus is not None):
-            self.auto_focus_enabled = False
-            try:
-                ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-                ctrl.setManualFocus(self.current_focus)
-                should_send = True
-            except Exception as e:
-                logger.warning(f"[CONTROL] setManualFocus failed: {e}")
+        # Every mode sends fixed camera controls. Auto (Stream) picks its
+        # calibrated values; Manual keeps the slider values.
+        try:
+            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            ctrl.setManualFocus(self.current_focus)
+            ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
+            should_send = True
+        except Exception as e:
+            logger.warning(f"[CONTROL] Manual focus/exposure setup failed: {e}")
 
         # 4. Hardware Brightness (-10 to 10)
         if brightness is not None:
@@ -1874,8 +1874,8 @@ class OakCameraService:
         if not (self._hires_thread and self._hires_thread.is_alive()):
             logger.info("[RECORD] Step 1 — capture threads not running, starting now")
             self._start_capture_threads()
-            self._enforce_ae_limit()
-            logger.info(f"[RECORD] Step 2 — AE limit enforced | configured_fps={self._configured_fps} | ae_limit_us={self._ae_limit_us}")
+            self._enforce_fixed_controls()
+            logger.info("[RECORD] Step 2 — fixed camera controls enforced")
         else:
             logger.info("[RECORD] Capture threads already running (AE limit already applied at stream start)")
 
@@ -1976,12 +1976,9 @@ class OakCameraService:
                 self._pipeline.start()
                 self._is_running = True
 
-                # Send AE limit immediately after pipeline starts.
-                # The control queue is ready as soon as the pipeline is running.
-                # Sending here (before capture threads start) ensures the camera
-                # applies the shutter cap from its very first exposure cycle.
-                if self.control_mode == "auto" and self._ae_limit_us is not None:
-                    self._enforce_ae_limit()
+                # Re-apply the fixed controls after pipeline startup so they take
+                # effect before capture or recording begins.
+                self._enforce_fixed_controls()
 
                 logger.info("[START] Pipeline ready — waiting for stream/start")
                 realtime_log_service.add_log(
@@ -2030,36 +2027,24 @@ class OakCameraService:
                 logger.error(f"[STOP] Failed: {e}")
                 return {"status": "error", "message": str(e)}
 
-    # ==================== AE Runtime Enforcement ====================
+    # ==================== Fixed-control Runtime Enforcement ====================
 
-    def _enforce_ae_limit(self) -> None:
-        """Send AE shutter limit via runtime control queue.
-
-        initialControl settings are applied at pipeline build time but are often
-        overridden by the camera firmware during AE convergence.  Sending the same
-        limit again as a runtime CameraControl message after the pipeline is running
-        is the authoritative way to cap the shutter and guarantee the configured fps.
-        """
-        if self._ae_limit_us is None:
-            logger.info("[AE] Control mode is manual — no AE limit to enforce")
-            return
+    def _enforce_fixed_controls(self) -> None:
+        """Re-send fixed focus and exposure through the runtime control queue."""
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return
         try:
             ctrl = dai.CameraControl()
-            ctrl.setAutoExposureEnable()
-            ctrl.setAutoExposureLimit(self._ae_limit_us)
+            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            ctrl.setManualFocus(self.current_focus)
+            ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
             self._control_queue.send(ctrl)
-            logger.info(
-                f"[AE] Runtime AE limit sent: {self._ae_limit_us} µs "
-                f"(max shutter = {self._ae_limit_us / 1000:.1f} ms → "
-                f"guarantees {self._configured_fps} fps)"
-            )
+            logger.info("[CONTROL] Fixed focus and exposure sent after pipeline startup")
         except Exception as e:
             if "closed" in str(e).lower() or "xlink" in str(e).lower():
-                self._on_device_lost("Control queue closed during AE enforcement")
+                self._on_device_lost("Control queue closed during fixed-control enforcement")
             else:
-                logger.warning(f"[AE] Runtime AE limit failed: {e}")
+                logger.warning(f"[CONTROL] Fixed-control enforcement failed: {e}")
 
     # ==================== Stream Lifecycle (capture threads) ====================
 
@@ -2071,11 +2056,10 @@ class OakCameraService:
         if not self._start_capture_threads():
             return {"status": "error", "message": "Capture threads failed to start"}
 
-        # Enforce AE shutter limit via runtime control now that the pipeline is live.
-        # This is more reliable than initialControl alone.
+        # Re-apply fixed controls now that the runtime queue is available.
         logger.info(f"[STREAMING] Step 1 — capture threads started")
-        self._enforce_ae_limit()
-        logger.info(f"[STREAMING] Step 2 — AE limit enforced | configured_fps={self._configured_fps} | ae_limit_us={self._ae_limit_us}")
+        self._enforce_fixed_controls()
+        logger.info("[STREAMING] Step 2 — fixed camera controls enforced")
 
         self._is_streaming = True
         logger.info("[STREAMING] Started")

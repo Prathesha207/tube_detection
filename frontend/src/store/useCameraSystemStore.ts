@@ -298,8 +298,8 @@ export const useCameraSystemStore = create<StoreState>()(
                         brightness: data[0].brightness ?? 0,
                         contrast: data[0].contrast ?? 0,
 
-                        auto_exposure: data[0].auto_exposure ?? true,
-                        auto_focus: data[0].auto_focus ?? true,
+                        auto_exposure: false,
+                        auto_focus: false,
                     };
 
                     set({

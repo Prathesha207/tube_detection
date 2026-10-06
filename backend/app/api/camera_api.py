@@ -151,6 +151,7 @@ def update_live_controls(camera_id: int, data: CameraLiveControl):
             contrast=data.contrast,
             auto_focus=af,
             auto_exposure=ae,
+            control_mode=data.control_mode,
         )
         logger.info("[LIVE CONTROLS] Applied successfully")
         return {"status": "success", "message": "Live controls applied"}

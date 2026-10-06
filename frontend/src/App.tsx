@@ -979,13 +979,14 @@ export default function App() {
           try {
             if (cfg.connected) {
               const liveResult = await cameraService.updateLiveControls(cfg.id, {
+                control_mode: cfg.controlMode ?? 'auto',
                 exposure: cfg.exposure,
                 gain: cfg.iso ?? cfg.gain,
                 focus: cfg.focus,
                 brightness: cfg.brightness,
                 contrast: cfg.contrast,
-                auto_focus: cfg.autoFocus,
-                auto_exposure: cfg.autoExposure ?? true,
+                auto_focus: false,
+                auto_exposure: false,
               });
               if (liveResult?.status === 'error') {
                 throw new Error(liveResult.message || 'Failed to apply camera controls');
@@ -997,7 +998,7 @@ export default function App() {
               rotation_angle: cfg.rotationAngle ?? 0, control_mode: cfg.controlMode ?? 'auto',
               exposure: cfg.exposure, gain: cfg.iso ?? cfg.gain, focus: cfg.focus,
               brightness: cfg.brightness, contrast: cfg.contrast,
-              auto_focus: cfg.autoFocus, auto_exposure: cfg.autoExposure ?? true,
+              auto_focus: false, auto_exposure: false,
               recording_format: cfg.recordingFormat || 'MP4',
             };
             const savedCamera = cfg.id
@@ -1035,8 +1036,8 @@ export default function App() {
               focus: targetConfig.focus,
               brightness: targetConfig.brightness,
               contrast: targetConfig.contrast,
-              auto_focus: targetConfig.autoFocus,
-              auto_exposure: targetConfig.autoExposure ?? true,
+              auto_focus: false,
+              auto_exposure: false,
               is_enabled: true,
             };
 

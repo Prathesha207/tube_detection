@@ -202,7 +202,14 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         ip_address: ipAddress,
         resolution: localConfig.resolution || '1920x1080',
         fps: localConfig.targetFps || 30,
-        control_mode: 'auto',
+        control_mode: localConfig.controlMode || 'auto',
+        exposure: localConfig.exposure ?? 16,
+        gain: localConfig.gain ?? localConfig.iso ?? 400,
+        focus: localConfig.focus ?? 120,
+        brightness: localConfig.brightness ?? 0,
+        contrast: localConfig.contrast ?? 50,
+        auto_focus: false,
+        auto_exposure: false,
       };
       const saved = await cameraService.createCamera(payload);
       const updated: CameraConfig = {
@@ -681,7 +688,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <span>Sensor Gain (ISO)</span>
                 </div>
                 <span className="font-mono text-xs font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">
-                  ISO {localConfig.gain ?? localConfig.iso ?? 100}
+                  ISO {localConfig.gain ?? localConfig.iso ?? 400}
                 </span>
               </div>
               <input
@@ -689,12 +696,12 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 min={100}
                 max={1600}
                 step={10}
-                value={localConfig.gain ?? localConfig.iso ?? 100}
+                value={localConfig.gain ?? localConfig.iso ?? 400}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
-                  setLocalConfig({ ...localConfig, gain: val, iso: val, autoExposure: false });
+                  setLocalConfig({ ...localConfig, gain: val, iso: val, controlMode: 'manual', autoExposure: false, autoFocus: false });
                 }}
-                style={getSliderStyle(localConfig.gain ?? localConfig.iso ?? 100, 100, 1600)}
+                style={getSliderStyle(localConfig.gain ?? localConfig.iso ?? 400, 100, 1600)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
@@ -713,19 +720,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <span>Focus Lens Position</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLocalConfig({ ...localConfig, autoFocus: !localConfig.autoFocus });
-                    }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
-                      localConfig.autoFocus
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]'
-                    }`}
-                  >
-                    {localConfig.autoFocus ? 'AUTO (AF)' : 'MANUAL'}
-                  </button>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]">
+                    MANUAL
+                  </span>
                   <span className="font-mono text-xs font-bold text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded">
                     {localConfig.focus ?? 120} / 255
                   </span>
@@ -738,7 +735,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 step={1}
                 value={localConfig.focus ?? 120}
                 onChange={(e) => {
-                  setLocalConfig({ ...localConfig, focus: parseInt(e.target.value, 10), autoFocus: false });
+                  setLocalConfig({ ...localConfig, focus: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
                 style={getSliderStyle(localConfig.focus ?? 120, 0, 255)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
@@ -758,21 +755,11 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <span>Exposure Shutter Time</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLocalConfig({ ...localConfig, autoExposure: !localConfig.autoExposure });
-                    }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
-                      localConfig.autoExposure
-                        ? 'bg-[var(--accent-pond)] text-white shadow-xs'
-                        : 'bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]'
-                    }`}
-                  >
-                    {localConfig.autoExposure ? 'AUTO (AE)' : 'MANUAL'}
-                  </button>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[var(--btn-secondary-bg)] text-[var(--text-secondary)] border border-[var(--border-color)]">
+                    MANUAL
+                  </span>
                   <span className="font-mono text-xs font-bold text-[var(--accent-pond)] bg-[var(--accent-pond-subtle)] px-2 py-0.5 rounded">
-                    {localConfig.exposure ?? 10} ms
+                    {localConfig.exposure ?? 16} ms
                   </span>
                 </div>
               </div>
@@ -781,11 +768,11 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 min={1}
                 max={33}
                 step={1}
-                value={localConfig.exposure ?? 10}
+                value={localConfig.exposure ?? 16}
                 onChange={(e) => {
-                  setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10), autoExposure: false });
+                  setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
-                style={getSliderStyle(localConfig.exposure ?? 10, 1, 33)}
+                style={getSliderStyle(localConfig.exposure ?? 16, 1, 33)}
                 className="w-full h-1.5 rounded cursor-pointer transition-all"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
@@ -809,7 +796,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   min={-50}
                   max={50}
                   value={localConfig.brightness ?? 0}
-                  onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10) })}
+                  onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false })}
                   style={getSliderStyle(localConfig.brightness ?? 0, -50, 50)}
                   className="w-full h-1.5 rounded cursor-pointer transition-all"
                 />
@@ -827,7 +814,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   min={0}
                   max={100}
                   value={localConfig.contrast ?? 50}
-                  onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10) })}
+                  onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false })}
                   style={getSliderStyle(localConfig.contrast ?? 50, 0, 100)}
                   className="w-full h-1.5 rounded cursor-pointer transition-all"
                 />

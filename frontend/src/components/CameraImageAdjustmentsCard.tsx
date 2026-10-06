@@ -16,7 +16,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   onUpdateConfig,
   isLive = true,
 }) => {
-  // Mode: 'auto' (default streaming, no hunting, sliders hidden) vs 'manual' (sliders visible)
+  // Auto (Stream) is a fixed preset; Manual enables the same sliders.
   const [mode, setMode] = useState<'auto' | 'manual'>(config?.controlMode === 'manual' ? 'manual' : 'auto');
 
   const [exposure, setExposure] = useState<number>(config?.exposure ?? 16);
@@ -35,12 +35,21 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   // Sync internal state when external config loads or changes
   useEffect(() => {
     if (config) {
-      if (typeof config.exposure === 'number') setExposure(config.exposure);
-      if (typeof config.gain === 'number') setGain(config.gain);
-      if (typeof config.focus === 'number') setFocus(config.focus);
-      if (typeof config.brightness === 'number') setBrightness(config.brightness);
-      if (typeof config.contrast === 'number') setContrast(config.contrast);
-      if (config.controlMode) setMode(config.controlMode);
+      if (config.controlMode !== 'manual') {
+        setExposure(16);
+        setGain(400);
+        setFocus(120);
+        setBrightness(0);
+        setContrast(50);
+        setMode('auto');
+      } else {
+        if (typeof config.exposure === 'number') setExposure(config.exposure);
+        if (typeof config.gain === 'number') setGain(config.gain);
+        if (typeof config.focus === 'number') setFocus(config.focus);
+        if (typeof config.brightness === 'number') setBrightness(config.brightness);
+        if (typeof config.contrast === 'number') setContrast(config.contrast);
+        setMode('manual');
+      }
     }
   }, [config?.id, config?.exposure, config?.gain, config?.focus, config?.brightness, config?.contrast, config?.controlMode]);
 
@@ -133,6 +142,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
         setSyncStatus('synced');
       } catch {
         scheduleDispatch({
+          control_mode: 'auto',
           reset: true,
           exposure: defaultExp,
           gain: defaultGain,
@@ -143,6 +153,17 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
           auto_focus: false,
         });
       }
+    } else {
+      scheduleDispatch({
+        control_mode: 'manual',
+        exposure,
+        gain,
+        focus,
+        brightness,
+        contrast,
+        auto_exposure: false,
+        auto_focus: false,
+      });
     }
   };
 
@@ -151,6 +172,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setExposure(newExp);
     onUpdateConfig?.({ exposure: newExp, controlMode: 'manual' });
     scheduleDispatch({
+      control_mode: 'manual',
       exposure: newExp,
       gain,
       focus,
@@ -166,6 +188,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setGain(newGain);
     onUpdateConfig?.({ gain: newGain, controlMode: 'manual' });
     scheduleDispatch({
+      control_mode: 'manual',
       exposure,
       gain: newGain,
       focus,
@@ -181,6 +204,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setFocus(newFocus);
     onUpdateConfig?.({ focus: newFocus, controlMode: 'manual' });
     scheduleDispatch({
+      control_mode: 'manual',
       exposure,
       gain,
       focus: newFocus,
@@ -196,6 +220,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setBrightness(newB);
     onUpdateConfig?.({ brightness: newB, controlMode: 'manual' });
     scheduleDispatch({
+      control_mode: 'manual',
       exposure,
       gain,
       focus,
@@ -211,6 +236,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setContrast(newC);
     onUpdateConfig?.({ contrast: newC, controlMode: 'manual' });
     scheduleDispatch({
+      control_mode: 'manual',
       exposure,
       gain,
       focus,
@@ -222,7 +248,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   };
 
   // Reset to Calibrated Default Values
-  const handleResetDefaults = async () => {
+  const handleResetDefaults = () => {
     const defaultExp = 16;
     const defaultGain = 400;
     const defaultFocus = 120;
@@ -236,6 +262,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setContrast(defaultC);
 
     onUpdateConfig?.({
+      controlMode: 'manual',
       exposure: defaultExp,
       gain: defaultGain,
       focus: defaultFocus,
@@ -245,22 +272,16 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       autoFocus: false,
     });
 
-    setSyncStatus('adjusting');
-    try {
-      await cameraService.resetCameraControls();
-      setSyncStatus('synced');
-    } catch {
-      scheduleDispatch({
-        reset: true,
-        exposure: defaultExp,
-        gain: defaultGain,
-        focus: defaultFocus,
-        brightness: defaultB,
-        contrast: defaultC,
-        auto_exposure: false,
-        auto_focus: false,
-      });
-    }
+    scheduleDispatch({
+      control_mode: 'manual',
+      exposure: defaultExp,
+      gain: defaultGain,
+      focus: defaultFocus,
+      brightness: defaultB,
+      contrast: defaultC,
+      auto_exposure: false,
+      auto_focus: false,
+    });
   };
 
   const getSliderStyle = (val: number, min: number, max: number) => {
@@ -342,8 +363,8 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
       </div>
 
       {/* 3. Conditional Content: Auto (Default Stream) vs Manual Sliders */}
-      {mode === 'auto' ? (
-        /* AUTO MODE: Sliders are hidden. Clean, steady stream status card */
+      {mode === 'auto' && (
+        /* Auto (Stream) preset status */
         <div className="mt-3 p-3 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] flex items-start gap-2.5 transition-all">
           <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
           <div className="flex flex-col gap-1 text-left">
@@ -358,8 +379,8 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
             </p>
           </div>
         </div>
-      ) : (
-        /* MANUAL MODE: Sliders are revealed for fine-tuning */
+      )}
+      <fieldset disabled={mode === 'auto'} className="min-w-0 disabled:opacity-60">
         <div className="pt-3 flex flex-col gap-3 transition-all animate-fadeIn">
           {/* --- 1. SENSOR GAIN (ISO) --- */}
           <div className="flex flex-col gap-1.5 p-2.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)]">
@@ -496,7 +517,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
             </button>
           </div>
         </div>
-      )}
+      </fieldset>
     </div>
   );
 };

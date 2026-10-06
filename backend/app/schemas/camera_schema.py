@@ -22,9 +22,9 @@ class CameraBase(BaseModel):
     brightness: Optional[int] = Field(default=None, ge=0, le=100)
     contrast: Optional[int] = Field(default=None, ge=0, le=100)
 
-    # Auto Toggles
-    auto_exposure: bool = True
-    auto_focus: bool = True
+    # Legacy status fields; camera autofocus and auto exposure are always off.
+    auto_exposure: bool = False
+    auto_focus: bool = False
 
     # Streaming / AI
     stream_url: Optional[str] = None

@@ -35,8 +35,8 @@ class Camera(Base):
     contrast = Column(Integer, nullable=True)
 
     # Auto Toggles
-    auto_exposure = Column(Boolean, default=True)
-    auto_focus = Column(Boolean, default=True)
+    auto_exposure = Column(Boolean, default=False)
+    auto_focus = Column(Boolean, default=False)
     
      # Streaming / AI
     stream_url = Column(String(500), nullable=True)

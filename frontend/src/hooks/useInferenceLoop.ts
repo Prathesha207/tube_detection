@@ -418,6 +418,7 @@ export function useInferenceLoop({
         .then((result: any) => {
           setIsStarting(false);
           if (result?.status === 'error') throw new Error(result.message || 'Inference start failed');
+          setCameraIsStreaming?.(true);
           setIsRunning(true);
           showToast('success', 'Inference started');
           addLog('AI inference started on the live camera stream.', 'success');

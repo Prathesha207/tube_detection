@@ -282,7 +282,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               height: `${tube.height}%`,
               zIndex: effectiveZIndex,
             }}
-            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-all duration-150 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${
+            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-colors duration-75 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${
               isCoasting ? 'border-dashed opacity-70' : 'border-solid'
             }`}
           >
@@ -316,7 +316,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {labelMode === 'compact' && (
               <div
                 style={placement.containerStyle}
-                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-all ${
+                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${
                   isHead
                     ? 'bg-slate-950/90 text-cyan-200 border-cyan-500/70'
                     : 'bg-slate-950/90 text-amber-200 border-amber-500/70'

@@ -2,12 +2,14 @@ import React from 'react';
 import { Camera, Play, Video } from 'lucide-react';
 
 interface CameraStandbyCardProps {
+  onStartInference?: () => void;
   onStartStream?: () => void;
   onSwitchToVideo?: () => void;
   onCanvasClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 export const CameraStandbyCard: React.FC<CameraStandbyCardProps> = ({
+  onStartInference,
   onStartStream,
   onSwitchToVideo,
   onCanvasClick,
@@ -33,10 +35,25 @@ export const CameraStandbyCard: React.FC<CameraStandbyCardProps> = ({
         Camera Feed in Standby
       </h3>
       <p className="text-xs sm:text-sm lg:text-base text-[var(--text-secondary)] max-w-md mb-5 leading-relaxed font-medium">
-        Hardware connection is active. Start the camera stream to view live video, record sessions, or run real-time AI inference.
+        Hardware connection is active. Start real-time AI inference directly, or start camera stream to view without AI.
       </p>
 
       <div className="flex flex-wrap items-center justify-center gap-2.5">
+        {onStartInference && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStartInference();
+            }}
+            title="Start camera stream and YOLOv8 real-time AI inference"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>Start Inference</span>
+          </button>
+        )}
+
         {onStartStream && (
           <button
             type="button"
@@ -44,10 +61,11 @@ export const CameraStandbyCard: React.FC<CameraStandbyCardProps> = ({
               e.stopPropagation();
               onStartStream();
             }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95"
+            title="Start camera stream only (no AI inference)"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
-            <span>Start Camera Stream</span>
+            <span>Stream Only</span>
           </button>
         )}
 

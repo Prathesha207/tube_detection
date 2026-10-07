@@ -60,12 +60,15 @@ export function useAnomalyStatus({
     }
 
     if (isRunning && (isStarting || backendStatus === 'LOADING_MODEL' || framesProcessed < 5)) {
+      const isModelLoading = isStarting || backendStatus === 'LOADING_MODEL';
       const isWarming = framesProcessed > 0 && framesProcessed < 5;
       return {
         isAnomaly: false,
         type: 'NONE',
-        message: isWarming ? 'WARMING UP' : 'PROCESSING',
-        subMessage: isWarming ? 'Calibrating ML tracking...' : 'Inference is running...',
+        message: isModelLoading ? 'LOADING MODEL' : 'WARMING UP',
+        subMessage: isModelLoading
+          ? 'Loading YOLOv8 weights into GPU memory...'
+          : `Calibrating ML tracking (${framesProcessed}/5)...`,
         headsCount: 0,
         tailsCount: 0,
       };

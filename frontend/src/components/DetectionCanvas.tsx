@@ -521,6 +521,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
       {isCameraSource && !hasCameraRecording && isCameraConnected && !isStreaming && (
         <CameraStandbyCard
+          onStartInference={onResumeInference || onToggleRunning}
           onStartStream={onStartStream}
           onSwitchToVideo={() => onRequestSwitchMode?.('uploaded-video')}
           onCanvasClick={handleCanvasClick}

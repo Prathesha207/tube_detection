@@ -358,9 +358,14 @@ async def api_logging_middleware(request: Request, call_next):
                 detail = body.decode(errors="ignore")[:300]
 
             if response.status_code >= 500:
-                logger.error(
-                    f"[API ERROR] {method} {path} -> {response.status_code} ({duration_ms}ms) | {detail}"
-                )
+                if path == "/health" and response.status_code == 503:
+                    logger.debug(
+                        f"[API] {method} {path} -> 503 ({duration_ms}ms) | {detail}"
+                    )
+                else:
+                    logger.error(
+                        f"[API ERROR] {method} {path} -> {response.status_code} ({duration_ms}ms) | {detail}"
+                    )
             else:
                 logger.warning(
                     f"[API WARN] {method} {path} -> {response.status_code} ({duration_ms}ms) | {detail}"

@@ -421,6 +421,14 @@ async def start_inference(session_id: str, body: InferenceStartBody = InferenceS
             except Exception as e:
                 logger.warning(f"[INFERENCE] Auto-start camera for inference failed: {e}")
 
+        # Ensure streaming capture threads and _is_streaming flag are active for live camera inference
+        if not body.offline and oak_camera_service._is_running and not oak_camera_service._is_streaming:
+            try:
+                logger.info("[INFERENCE] Auto-starting camera stream for live inference")
+                await oak_camera_service.start_streaming()
+            except Exception as e:
+                logger.warning(f"[INFERENCE] Auto-start stream for inference failed: {e}")
+
         loop = asyncio.get_running_loop()
         # Resolve legacy videoId field as videoPath so old frontend builds still work
         resolved_video_path = body.videoPath or body.videoId or None
@@ -497,14 +505,15 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                 await websocket.send_json(result)
                 break
 
-            logger.info(
-                f"[INFERENCE WS] #{results_sent} → status={result.get('status')} | "
-                f"record={result.get('record')} | "
-                f"detections={len(result.get('detections', []))} | "
-                f"fps={result.get('metrics', {}).get('fps', '?')} | "
-                f"gpu={result.get('metrics', {}).get('gpu_pct', '?')}% | "
-                f"latency={result.get('metrics', {}).get('latency_ms', '?')}ms"
-            )
+            if results_sent % 60 == 0:
+                logger.info(
+                    f"[INFERENCE WS] #{results_sent} → status={result.get('status')} | "
+                    f"detections={len(result.get('detections', []))} | "
+                    f"fps={result.get('metrics', {}).get('fps', '?')} | "
+                    f"latency={result.get('metrics', {}).get('latency_ms', '?')}ms"
+                )
+            else:
+                logger.debug(f"[INFERENCE WS] #{results_sent} → detections={len(result.get('detections', []))}")
 
             ws_result = dict(result)
             if "_raw_frame" in ws_result:
@@ -526,5 +535,6 @@ async def inference_ws(websocket: WebSocket, session_id: str):
         logger.info(f"[INFERENCE WS] Closed — session: {session_id}")
         try:
             await websocket.close()
-        except RuntimeError:
+        except Exception:
             pass
+

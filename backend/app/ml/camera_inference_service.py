@@ -41,6 +41,14 @@ _IDLE_SWEEP_INTERVAL_SEC = 30       # how often the background thread looks for 
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 _idle_sweeper: Optional[threading.Thread] = None
+_shared_camera_analyzer: Optional[TubeAnalyzer] = None
+
+
+def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
+    """Preloaded TubeAnalyzer from backend startup lifespan for instant zero-delay camera inference."""
+    global _shared_camera_analyzer
+    _shared_camera_analyzer = analyzer
+    logger.info("Preloaded TubeAnalyzer registered into camera_inference_service — ready for instant inference")
 
 
 # ------------------------------------------------------------------ sessions
@@ -95,6 +103,19 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
         _sessions[session_id] = session
         _start_idle_sweeper_once()
 
+        # Fast path: If preloaded analyzer is available, use it immediately (zero cold start!)
+        if _shared_camera_analyzer is not None:
+            _shared_camera_analyzer.reset_tracking()
+            if session.get("roi_points"):
+                try:
+                    _shared_camera_analyzer.set_roi(session["roi_points"], session["roi_frame_size"])
+                except Exception as e:
+                    logger.warning(f"Stored ROI invalid: {e}")
+            session["analyzer"] = _shared_camera_analyzer
+            session["last_stats"] = new_stats(session_id=session_id, status="running")
+            logger.info(f"Reusing preloaded TubeAnalyzer for camera session {session_id} — instantaneous GPU start")
+            return session
+
         def _load_model():
             try:
                 logger.info(f"Creating TubeAnalyzer asynchronously for camera session {session_id}")
@@ -135,9 +156,13 @@ def close_camera_session(session_id: str) -> None:
 
     # Wait for a frame that is mid-inference; new frames will see analyzer=None and stop.
     with session["inference_lock"]:
+        analyzer = session.get("analyzer")
+        if analyzer is not None and analyzer is not _shared_camera_analyzer:
+            release_gpu_memory()
+        elif analyzer is _shared_camera_analyzer:
+            analyzer.reset_tracking()
         session["analyzer"] = None
         session["last_annotated_frame"] = None
-        release_gpu_memory()                        # VRAM back BEFORE anyone else may claim the GPU
         if session.get("inference_claimed"):
             app_state.exit_inference("camera")
             session["inference_claimed"] = False
@@ -246,3 +271,11 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
             analyzer = s.get("analyzer")
             if isinstance(analyzer, TubeAnalyzer):
                 analyzer.set_roi(points, frame_size)
+
+
+# Backward compatibility aliases
+clear_session = close_camera_session
+get_session_status = get_camera_session_stats
+cleanup_stale_sessions = evict_idle_camera_sessions
+run_inference = analyze_camera_frame
+

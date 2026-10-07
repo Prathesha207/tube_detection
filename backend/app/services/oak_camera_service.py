@@ -124,6 +124,12 @@ class OakCameraService:
         self._current_video_name: str = ""
         self._latest_metadata: tuple[int, int, int | None] | None = None
 
+        # ---- Auto-calibration monitor ----
+        self._monitor_last_calib_time: float = 0.0
+        self._monitor_baseline_sharpness: float | None = None
+        self._monitor_baseline_brightness: float | None = None
+        self._monitor_bad_start_time: float | None = None
+
         # GPU sampler — runs independently, never blocks inference
         self._gpu_usage: float = -1.0
         self._gpu_sampler_thread: threading.Thread | None = None
@@ -1245,7 +1251,7 @@ class OakCameraService:
                 # ── Run inference + measure latency ───────────────────────────
                 t_start = time.perf_counter()
                 infer_res = analyze_camera_frame(
-                    frame.copy(),
+                    frame if not self._inference_offline else frame.copy(),
                     session_id,
                     video_name=self._current_video_name,
                     wait_for_model=self._inference_offline,
@@ -1554,14 +1560,14 @@ class OakCameraService:
         logger.info("[OFFLINE] Thread stopped")
 
     async def _async_inference_push(self, result: dict) -> None:
-        """Drop-oldest push into inference result queue."""
+        """Drop-oldest push into inference result queue — always keeps the freshest frame for zero lag."""
         if self._inference_result_queue is None:
             return
-        if self._inference_result_queue.full():
+        while not self._inference_result_queue.empty():
             try:
                 self._inference_result_queue.get_nowait()
             except asyncio.QueueEmpty:
-                pass
+                break
         try:
             self._inference_result_queue.put_nowait(result)
         except asyncio.QueueFull:
@@ -1600,7 +1606,7 @@ class OakCameraService:
         self._inference_session_id = session_id
         self._inference_loop = loop
         self._inference_offline = offline
-        self._inference_result_queue = asyncio.Queue(maxsize=4)
+        self._inference_result_queue = asyncio.Queue(maxsize=2)
 
         def _push_error(msg: str) -> None:
             asyncio.run_coroutine_threadsafe(
@@ -1645,6 +1651,8 @@ class OakCameraService:
             if not (self._hires_thread and self._hires_thread.is_alive()):
                 logger.info("[INFERENCE] Capture threads not running — starting now")
                 self._start_capture_threads()
+                self._enforce_fixed_controls()
+            self._is_streaming = True
 
         self._inference_stop.clear()
         self._inference_thread = threading.Thread(
@@ -1673,7 +1681,7 @@ class OakCameraService:
         }
 
     def stop_inference(self) -> dict:
-        from app.ml.camera_inference_service import clear_session
+        from app.ml.camera_inference_service import close_camera_session
 
         logger.info("[INFERENCE] Stopping...")
         self._inference_stop.set()
@@ -1724,9 +1732,9 @@ class OakCameraService:
                         f"{session_id} has now actually exited -- releasing GPU claim."
                     )
                     try:
-                        clear_session(session_id)
+                        close_camera_session(session_id)
                     except Exception as e:
-                        logger.error(f"[INFERENCE] clear_session during delayed release failed: {e}")
+                        logger.error(f"[INFERENCE] close_camera_session during delayed release failed: {e}")
 
                 threading.Thread(
                     target=_wait_and_release,
@@ -1776,7 +1784,13 @@ class OakCameraService:
         if self._inference_result_queue is None:
             return None
         try:
-            return await asyncio.wait_for(self._inference_result_queue.get(), timeout=timeout)
+            res = await asyncio.wait_for(self._inference_result_queue.get(), timeout=timeout)
+            while not self._inference_result_queue.empty():
+                try:
+                    res = self._inference_result_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            return res
         except asyncio.TimeoutError:
             return None
 
@@ -1852,6 +1866,7 @@ class OakCameraService:
             logger.info("[RECORD] Step 2 — fixed camera controls enforced")
         else:
             logger.info("[RECORD] Capture threads already running (AE limit already applied at stream start)")
+        self._is_streaming = True
 
         path = _start(session_id, width, height, fps, root_path, rec_fmt, camera_settings)
         self._active_recording = active_recordings.get(session_id)

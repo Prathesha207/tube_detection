@@ -210,8 +210,8 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                     </span>
                   </button>
 
-                  {/* For Camera: Record Button next to START INFERENCE when stream is active and inference not running */}
-                  {isCameraMode && isStreaming && !isRunning && !cameraRecordSessionId && (
+                  {/* For Camera: Record Button next to START INFERENCE when inference is not running */}
+                  {isCameraMode && !isRunning && !cameraRecordSessionId && (
                     <button
                       disabled={isSavingRecording}
                       onClick={() => onToggleRecording?.()}
@@ -220,7 +220,9 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                           ? 'Finalizing recording... please wait'
                           : isRecording
                             ? 'Stop camera recording'
-                            : 'Start recording camera stream'
+                            : !isStreaming
+                              ? 'Start camera stream and begin recording'
+                              : 'Start recording camera stream'
                       }
                       className={`h-8 sm:h-9 flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 rounded-xl font-bold text-[11px] sm:text-xs shadow-xs transition-all shrink-0 cursor-pointer active:scale-95 ${
                         isSavingRecording

@@ -10,11 +10,15 @@ output/
 *.mp4
 *.avi
 *.whl
-!backend/app/ml/whl/*.whl
+!backend/app/ml/whl/head_tail_analyzer-0.1.2-py3-none-any.whl
+!backend/app/ml/whl/head_tail_analyzer-0.1.3-py3-none-any.whl
+backend/app/ml/whl/*0.2*.whl
 manual_inference_output/
 release-backend/
 *.db
 measured/
 .DS_Store
 *.log
+backend/app/ml/test_inference/sona_whl/
+
 

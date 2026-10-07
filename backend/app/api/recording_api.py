@@ -71,6 +71,7 @@ def stop_recording(data: StopRecordingRequest):
 
         return {
             "status": "done",
+            "session_id": data.session_id,
             "recording_session_id": data.session_id,
             "recording_path": video_path,
             "filename": filename,

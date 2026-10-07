@@ -484,8 +484,9 @@ export default function App() {
     if (video.cameraRecordSessionId || isRunning) return;
     if (recording.isRecording) {
       const res = await recording.stopRecording();
-      if (res && res.session_id) {
-        video.setCameraRecordSessionId(res.session_id);
+      const targetSessionId = res?.session_id || res?.recording_session_id;
+      if (res && targetSessionId) {
+        video.setCameraRecordSessionId(targetSessionId);
         if (res.filename) video.setCameraRecordName(res.filename);
         if (res.recording_path || res.stream_url) {
           video.setCameraRecordUrl(res.recording_path || res.stream_url);

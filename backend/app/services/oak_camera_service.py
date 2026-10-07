@@ -487,6 +487,25 @@ class OakCameraService:
             self._stream_subscribers.clear()
             self._stream_queue = None
 
+            # If inference was active, push terminal error so frontend WebSocket knows immediately
+            if self._inference_result_queue is not None and self._inference_loop is not None and not self._inference_loop.is_closed():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._async_inference_push({
+                            "status": "error",
+                            "error": f"Camera disconnected: {reason}",
+                            "reasons": [f"Camera disconnected: {reason}"],
+                            "done": True,
+                        }),
+                        self._inference_loop,
+                    )
+                except Exception:
+                    pass
+            self._inference_result_queue = None
+            self._inference_thread = None
+            self._inference_watchdog_thread = None
+            self._inference_session_id = None
+
             # Close device handle safely if not already closed
             if self.device is not None:
                 try:

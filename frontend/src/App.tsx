@@ -256,11 +256,22 @@ export default function App() {
   });
 
   // Recalculate derived values that depend on inference state.
-  // NOTE: isRunning=true means inference is active regardless of stream state flags —
-  // this handles the post-refresh window where isRunning is seeded true but camera/video
-  // flags haven't fully settled yet.
-  const hasActiveStream = isRunning || (isVideoSource && hasActiveVideo) || (isCameraSource && camera.isCameraDeviceActive && camera.cameraStartingState === 'ready');
+  const hasActiveStream = isVideoSource
+    ? (isRunning || hasActiveVideo)
+    : (camera.isCameraDeviceActive && (isRunning || camera.isStreaming || camera.cameraStartingState === 'ready'));
   const isStandby = !hasActiveStream && !isRunning && tubes.length === 0;
+
+  // Immediately stop inference and clear warmup state if camera hardware is disconnected or removed
+  useEffect(() => {
+    if (isCameraSource && camera.cameraConnected === false) {
+      if (isRunning || isStarting) {
+        setIsRunning(false);
+        setIsStarting(false);
+        setFramesProcessed(0);
+        addLog('Camera disconnected or removed — stopping inference.', 'warning');
+      }
+    }
+  }, [isCameraSource, camera.cameraConnected, isRunning, isStarting, addLog, setFramesProcessed]);
 
   // ─── Auto-resume after page refresh ───────────────────────────────
   // On mount: isRunning, videoSessionId, and sourceType are already seeded

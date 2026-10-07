@@ -28,6 +28,17 @@ export function useAnomalyStatus({
   const backendStatus = backendStats.status;
 
   const anomalyStatus: AnomalyStatus = useMemo(() => {
+    if (isCameraSource && !hasActiveStream) {
+      return {
+        isAnomaly: false,
+        type: 'NONE',
+        message: 'NO CAMERA',
+        subMessage: 'No Luxonis OAK-D / USB camera connected',
+        headsCount: 0,
+        tailsCount: 0,
+      };
+    }
+
     if (!hasActiveStream && tubes.length === 0) {
       return {
         isAnomaly: false,
@@ -59,7 +70,7 @@ export function useAnomalyStatus({
       };
     }
 
-    if (isRunning && (isStarting || backendStatus === 'LOADING_MODEL' || framesProcessed < 5)) {
+    if (isRunning && hasActiveStream && (isStarting || backendStatus === 'LOADING_MODEL' || framesProcessed < 5)) {
       const isModelLoading = isStarting || backendStatus === 'LOADING_MODEL';
       const isWarming = framesProcessed > 0 && framesProcessed < 5;
       return {

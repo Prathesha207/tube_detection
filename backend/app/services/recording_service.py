@@ -101,7 +101,6 @@ class RecordingSession:
         self._last_bgr = None       # last frame received, used for pad-frame on stop
         self._last_pts_ms: int = 0  # PTS of that frame
         self.thread = None
-        self.metadata_path = os.path.splitext(self.video_path)[0] + ".json"
         self.camera_settings = camera_settings or {}
         self.settings_history = [{"elapsed_seconds": 0.0, "settings": self.camera_settings.copy()}]
 
@@ -238,18 +237,6 @@ class RecordingSession:
             )
         # Container is already closed by the worker's finally block
         duration = time.monotonic() - self._start_mono
-        try:
-            with open(self.metadata_path, "w", encoding="utf-8") as metadata_file:
-                json.dump({
-                    "video_file": self.filename,
-                    "duration_seconds": round(duration, 3),
-                    "width": self.width,
-                    "height": self.height,
-                    "format": self.fmt,
-                    "settings_history": self.settings_history,
-                }, metadata_file, indent=2)
-        except Exception as e:
-            logger.warning(f"[RECORD] Could not write settings metadata: {e}")
         return {
             "recording_path": self.video_path,
             "filename": self.filename,
@@ -258,7 +245,6 @@ class RecordingSession:
             "format": self.fmt,
             "width": self.width,
             "height": self.height,
-            "metadata_path": self.metadata_path,
         }
 
 

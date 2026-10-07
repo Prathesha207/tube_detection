@@ -79,7 +79,6 @@ def stop_recording(data: StopRecordingRequest):
             "frames": result.get("frames_written", 0),
             "width": result.get("width", 1920),
             "height": result.get("height", 1080),
-            "metadata_path": result.get("metadata_path"),
         }
     except HTTPException:
         raise

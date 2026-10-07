@@ -268,7 +268,7 @@ export default function App() {
         setIsRunning(false);
         setIsStarting(false);
         setFramesProcessed(0);
-        addLog('Camera disconnected or removed — stopping inference.', 'warning');
+        addLog('Camera disconnected or removed — stopping inference.', 'warn');
       }
     }
   }, [isCameraSource, camera.cameraConnected, isRunning, isStarting, addLog, setFramesProcessed]);

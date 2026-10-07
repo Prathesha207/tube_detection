@@ -444,6 +444,7 @@ class TubeAnalyzer:
         self.next_id = 1
         self._last_analysis = None
         self.roi = None
+        self.peak = {}
 
     reset = reset_tracking   # old name, still works
 
@@ -503,9 +504,17 @@ class TubeAnalyzer:
         self._drop_stale_tracks(frame_number)
 
         inside_roi = [d for d in detections if rvf.in_roi(d, self.roi)]   # ROI limits output only
+        inside_roi = rvf.cap_per_role(inside_roi, self.cfg)
         for d in inside_roi:
             d["track"].in_roi_ever = True
         result = rvf.build_frame_result(frame_number, inside_roi, self.tracks)
+
+        if not hasattr(self, "peak"):
+            self.peak = {}
+        for role in ["HEAD", "TAIL"]:
+            key = role.lower() + "s"
+            self.peak[key] = max(self.peak.get(key, 0), result.get(f"{key}_count", 0))
+            result[f"{key}_peak"] = self.peak[key]
 
         analysis = FrameAnalysis(result=result, frame=frame, detections=inside_roi)
         self._last_analysis = analysis

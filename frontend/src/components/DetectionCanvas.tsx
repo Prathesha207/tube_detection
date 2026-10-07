@@ -274,13 +274,13 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
   // Auto-retry reconnect loop if stream encountered an error or connection was interrupted
   useEffect(() => {
-    if (streamError && isCameraSource && isStreaming) {
+    if (streamError && ((isCameraSource && isStreaming) || (isRunning && (videoSessionId || cameraRecordSessionId)))) {
       const timer = setTimeout(() => {
         setStreamCacheBuster(Date.now());
       }, 2500);
       return () => clearTimeout(timer);
     }
-  }, [streamError, isCameraSource, isStreaming, streamCacheBuster]);
+  }, [streamError, isCameraSource, isStreaming, isRunning, videoSessionId, cameraRecordSessionId, streamCacheBuster]);
 
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
   const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;

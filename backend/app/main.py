@@ -174,8 +174,10 @@ def _preload_model_background():
             # Warm up: run one dummy inference so CUDA kernels are compiled.
             try:
                 import numpy as np
-                dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-                _analyzer.process_frame(dummy)
+                # Warm up for common resolutions to prevent CUDA cold-start when user starts inference
+                for (h, w) in [(1080, 1920), (720, 1280), (640, 640)]:
+                    dummy = np.zeros((h, w, 3), dtype=np.uint8)
+                    _analyzer.process_frame(dummy)
                 logger.info(f"[STARTUP] ML model warm-up complete — kernels compiled (device={device_val}).")
             except Exception as warm_err:
                 logger.warning(f"[STARTUP] Warm-up inference failed (non-fatal): {warm_err}")

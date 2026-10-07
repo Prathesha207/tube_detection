@@ -3,14 +3,20 @@
 # folder (config + model + roi.json) to another machine as-is.
 # Any setting can be overridden on the command line, e.g. --video, --output.
 
-model_path: ../model/best.pt
-video: null         # set here or pass --video (a file, or 0 for webcam)
+model_path: models/best.pt     # bundled 1280 model
+video: null                    # pass --video
 device: "0"          # "0" = first GPU, "cpu" = CPU
 
 # detection
-conf: 0.35           # best F1 on validation was at ~0.35
+conf: 0.25           # lowered from 0.5 (0.5 was hiding real ends); best F1 on validation was at ~0.35
+conf_head: 0.4       # heads score high (0.7-0.9), so be strict
+conf_tail: 0.2       # tails score low (0.25-0.6), so be lenient
+max_heads: 2         # this setup has 2 heads and 2 tails: keep only the best per frame
+max_tails: 2
 iou: 0.5
-tile: 640            # must match training (0 = whole frame, not recommended)
+scale: 0.33          # new close-up recordings: ends are ~250px, the model knows ~70px. Use 1.0 for part_4-style footage
+imgsz: 1280          # model input size (1280-trained model)
+tile: 1280          # must match training (0 = whole frame, not recommended)
 tile_overlap: 0.3
 merge_iou: 0.5       # merge duplicate boxes from overlapping tiles
 merge_contain: 0.75
@@ -20,18 +26,18 @@ gray: true           # model was trained on grayscale images
 stride: 1            # 1 = every frame
 
 # tracking
-min_frames: 5        # sightings before an end is confirmed and counted
-max_dist: 60         # px an end may move between frames and stay the same end
-max_missed: 15       # frames a lost track can still be re-matched
+min_frames: 5        # back to 5 (10 needed too many sightings); sightings before an end is confirmed and counted
+max_dist: 80         # was 60; px an end may move between frames and stay the same end
+max_missed: 30       # was 15; frames a lost track can still be re-matched
 
 # ROI - inference + tracking use the whole frame; only detections inside
 # this polygon are reported, drawn and counted. Set roi_json: null for none.
-roi_json: null
-draw_roi: false
+roi_json: null                 # use --roi roi.json or --draw-roi
+draw_roi: true
 
 # outputs (null = don't write)
-output_video: measured/frames.mp4
-latest_json: measured/latest_frame.json
+output_video: null
+latest_json: null
 history_jsonl: null                       # e.g. measured/history.jsonl
 print_frames: true
 show_preview: false

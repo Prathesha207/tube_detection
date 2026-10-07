@@ -43,20 +43,15 @@ from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import (
     TubeAnalyzer,
-    build_frontend_stats,
     default_device,
-    inference_context,
     new_stats,
     release_gpu_memory,
-    save_roi,
-    load_roi,
 )
 
 logger = setup_logger("tube-video-inference")
 
 _ML_DIR = Path(__file__).resolve().parent
 _DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
-_ROI_PATH = str(_ML_DIR / "config" / "roi.json")
 _CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 
 _FINISHED_STATES = ("completed", "stopped", "error")
@@ -128,7 +123,6 @@ class VideoInferenceService:
         analyzer = TubeAnalyzer(
             model_path=_DEFAULT_MODEL_PATH,
             config_path=_CONFIG_PATH,
-            roi_path=_ROI_PATH,
             device=default_device(),
             draw_overlay=False,
         )
@@ -341,7 +335,7 @@ class VideoInferenceService:
         set_status("processing")
         logger.info(f"Starting inference for session {session_id}")
 
-        cap = writer = analyzer = last_analysis = None
+        cap = writer = analyzer = last_stats = None
         owns_analyzer = False
         reached_eof = False
         try:
@@ -375,8 +369,6 @@ class VideoInferenceService:
 
             stride = 2 if video_fps > _HIGH_FPS_THRESHOLD else 1   # high-fps: model on every 2nd frame
             frame_number = 0
-            frame_time_ms: Optional[float] = None
-            inference_fps = 0.0
 
             while not stop_event.is_set():
                 ok, frame = cap.read()
@@ -390,46 +382,23 @@ class VideoInferenceService:
                 session["last_active"] = time.time()
                 stats["total_frames"] = max(stats["total_frames"], frame_number)
 
-                # Run the model on this frame, or (stride) reuse the last detections.
-                if last_analysis is None or frame_number % stride == 0:
-                    previous_analysis = last_analysis
+                # Run the model on this frame, or (stride) reuse the last result.
+                if last_stats is None or frame_number % stride == 0:
                     try:
-                        with inference_context():
-                            t_start = time.perf_counter()
-                            last_analysis = analyzer.analyze_frame(frame, frame_number)
-                            if is_cuda_operational():
-                                torch.cuda.synchronize()
-                            frame_time_ms = (time.perf_counter() - t_start) * 1000.0
-                        inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
+                        last_stats = analyzer.infer(frame, frame_number)     # <- the ONE ML call
                     except Exception as frame_err:
-                        if not analyzer._retry_on_cpu_after_cuda_error(frame_err):
-                            raise RuntimeError(
-                                f"Inference failed on frame {frame_number}: {frame_err}"
-                            ) from frame_err
-                        if last_analysis is previous_analysis:
-                            with inference_context():
-                                t_start = time.perf_counter()
-                                last_analysis = analyzer.analyze_frame(frame, frame_number)
-                                frame_time_ms = (time.perf_counter() - t_start) * 1000.0
-                        else:
-                            frame_time_ms = (time.perf_counter() - t_start) * 1000.0
-                        inference_fps = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
+                        raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
 
                 # Stats for the frontend (one update() so readers never see a half-written frame).
-                update = build_frontend_stats(last_analysis.result) if last_analysis else {}
-                update.update(
-                    frame=frame_number,
-                    frames_processed=frame_number,
-                    progress=round(frame_number / stats["total_frames"] * 100, 1),
-                    fps=inference_fps,
-                    frame_time_ms=round(frame_time_ms, 2) if frame_time_ms is not None else None,
-                    latency_ms=round(frame_time_ms, 2) if frame_time_ms is not None else None,
-                )
-                stats.update(update)
+                # "status" is left out: set_status() owns it, a late frame must not undo "stopped".
+                stats.update({k: v for k, v in last_stats.items() if k != "status"},
+                             frame=frame_number,
+                             frames_processed=frame_number,
+                             progress=round(frame_number / stats["total_frames"] * 100, 1))
 
                 # Saved video: boxes drawn on THIS frame (also on stride-skipped frames).
                 if writer is not None:
-                    writer.write(analyzer.draw_annotations(frame, last_analysis))
+                    writer.write(analyzer.draw_annotations(frame))      # latest detections, also on skipped frames
 
                 # Live stream: clean frame; the frontend draws boxes from stats["detections"].
                 try:
@@ -473,7 +442,7 @@ class VideoInferenceService:
             if writer is not None:
                 writer.release()
             session["analyzer"] = None
-            analyzer = last_analysis = None                   # drop our references to the model
+            analyzer = last_stats = None                      # drop our references to the model
             release_gpu_memory()                              # VRAM back BEFORE the claim is released
             app_state.exit_inference("video")
             session["is_task_active"] = False
@@ -501,7 +470,7 @@ def set_video_roi(session_id: Optional[str] = None, points: Any = None, frame_si
             s["roi_points"] = points or []
             s["roi_frame_size"] = frame_size
             analyzer = s.get("analyzer")
-            if analyzer is not None:
+            if isinstance(analyzer, TubeAnalyzer):
                 analyzer.set_roi(points, frame_size)
 
 

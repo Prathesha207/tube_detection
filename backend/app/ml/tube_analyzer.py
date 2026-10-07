@@ -45,6 +45,7 @@ import gc
 import json
 import logging
 import os
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,12 +244,19 @@ def load_roi(path: Optional[str] = None, target_shape: Optional[Tuple[int, int]]
         return None
 
 
+_GLOBAL_YOLO_CACHE: Dict[str, Any] = {}
+_GLOBAL_WARMED_SHAPES: Set[Tuple[int, int]] = set()
+
 def _load_yolo_model(path: str):
+    if path in _GLOBAL_YOLO_CACHE:
+        return _GLOBAL_YOLO_CACHE[path]
     try:
         from ultralytics import YOLO
     except Exception as e:
         raise RuntimeError("Ultralytics / PyTorch failed to load. Check the PyTorch installation.") from e
-    return YOLO(path)
+    model = YOLO(path)
+    _GLOBAL_YOLO_CACHE[path] = model
+    return model
 
 
 # ------------------------------------------------------ what the frontend gets
@@ -357,7 +365,6 @@ class TubeAnalyzer:
         min_frames: Optional[int] = None,
         max_dist: Optional[float] = None,
         max_missed: Optional[int] = None,
-        roi_path: Optional[str] = None,
         draw_overlay: bool = False,
         draw_roi: bool = False,
         **extra: Any,
@@ -385,7 +392,6 @@ class TubeAnalyzer:
 
         self.draw_overlay = draw_overlay
         self.draw_roi = draw_roi
-        self.roi_path = roi_path or ROI_JSON
 
         self.model = _load_yolo_model(path)
         try:
@@ -402,7 +408,7 @@ class TubeAnalyzer:
         self.tracks: list = []
         self.next_id = 1
         self._last_analysis: Optional[FrameAnalysis] = None
-        self._warmed_shapes: Set[Tuple[int, int]] = set()
+        self._warmed_shapes: Set[Tuple[int, int]] = _GLOBAL_WARMED_SHAPES
 
         self.warm_up()   # one tile; call warm_up(frame.shape) again once the real frame size is known
 
@@ -418,7 +424,7 @@ class TubeAnalyzer:
             return
         side = self.cfg.tile or 640
         height, width = (int(frame_shape[0]), int(frame_shape[1])) if frame_shape is not None else (side, side)
-        if (height, width) in self._warmed_shapes or len(self._warmed_shapes) > 0:
+        if (height, width) in self._warmed_shapes:
             return
         try:
             dummy = np.zeros((height, width, 3), dtype=np.uint8)
@@ -505,7 +511,40 @@ class TubeAnalyzer:
         self._last_analysis = analysis
         return analysis
 
-    process_frame = analyze_frame   # backward compatibility alias
+    def infer(self, frame: np.ndarray, frame_number: int = 0) -> Dict[str, Any]:
+        """ONE call: BGR frame in -> the complete dict for the frontend out.
+
+        In order:  warm_up(frame.shape)      once per frame size, not timed
+                   analyze_frame()           detect -> track -> ROI -> result   (timed)
+                   build_frontend_stats()    confidence/class/status/total_count ...
+
+        Whatever keys the wheel puts in its result pass straight through
+        (build_frontend_stats spreads ``**result``), so a new wheel field reaches the
+        frontend without touching any service code.
+
+        Drawing is NOT done here (an image is not JSON). Afterwards call
+        ``draw_annotations(frame)`` -- it reuses the detections of THIS call -- or
+        ``get_clean_frame(frame)``."""
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return new_stats(status="error", reasons=["Empty frame"], frame=frame_number)
+
+        self.warm_up(frame.shape)
+        with inference_context():
+            t_start = time.perf_counter()
+            analysis = self.analyze_frame(frame, frame_number)
+            if cuda_is_available():
+                torch.cuda.synchronize()
+            frame_time_ms = (time.perf_counter() - t_start) * 1000.0
+        return {
+            **build_frontend_stats(analysis.result),
+            "status": "processing",
+            "frame": frame_number,
+            "fps": round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0,
+            "frame_time_ms": round(frame_time_ms, 2),
+            "latency_ms": round(frame_time_ms, 2),     # legacy key, same value
+            "video_width": frame.shape[1],
+            "video_height": frame.shape[0],
+        }
 
     def set_roi(self, points: Any, frame_size: Optional[Tuple[int, int]] = None) -> None:
         """Queue an ROI swap between frames (thread-safe for both camera and video).

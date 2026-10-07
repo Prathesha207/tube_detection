@@ -59,12 +59,13 @@ export function useAnomalyStatus({
       };
     }
 
-    if (isRunning && (isStarting || backendStatus === 'WARMING' || framesProcessed === 0)) {
+    if (isRunning && (isStarting || backendStatus === 'LOADING_MODEL' || framesProcessed < 5)) {
+      const isWarming = framesProcessed > 0 && framesProcessed < 5;
       return {
         isAnomaly: false,
         type: 'NONE',
-        message: 'WARMING',
-        subMessage: 'Warming up AI engine and acquiring tube targets...',
+        message: isWarming ? 'WARMING UP' : 'PROCESSING',
+        subMessage: isWarming ? 'Calibrating ML tracking...' : 'Inference is running...',
         headsCount: 0,
         tailsCount: 0,
       };

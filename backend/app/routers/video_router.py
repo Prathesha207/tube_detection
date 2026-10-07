@@ -259,6 +259,12 @@ async def upload_video(
             if frame_width and frame_height:
                 session["stats"]["video_width"] = frame_width
                 session["stats"]["video_height"] = frame_height
+                try:
+                    analyzer = ml_inference_service._get_or_create_analyzer()
+                    analyzer.warm_up((frame_height, frame_width))
+                    logger.info(f"[UPLOAD] Pre-warmed cuDNN kernels for resolution {frame_width}x{frame_height}")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-warm analyzer during upload: {e}")
 
         # Persist session metadata into session_dir and global registry
         _save_session_meta(

@@ -20,29 +20,19 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-try:
-    import torch
-except Exception:
-    torch = None
 from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import (
     TubeAnalyzer,
-    build_frontend_stats,
-    cuda_is_available,
     default_device,
-    inference_context,
     new_stats,
     release_gpu_memory,
-    save_roi,
-    load_roi,
 )
 
 logger = setup_logger("tube-camera-inference")
 
 _ML_DIR = Path(__file__).resolve().parent
 _DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
-_ROI_PATH = str(_ML_DIR / "config" / "roi.json")
 _CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 
 _SESSION_IDLE_TIMEOUT_SEC = 300     # no frame for this long -> session is closed, GPU released
@@ -111,10 +101,14 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 analyzer = TubeAnalyzer(
                     model_path=model_path or _DEFAULT_MODEL_PATH,
                     config_path=_CONFIG_PATH,
-                    roi_path=_ROI_PATH,
                     device=default_device(),
                     draw_overlay=False,
                 )
+                if session["roi_points"]:
+                    try:
+                        analyzer.set_roi(session["roi_points"], session["roi_frame_size"])
+                    except ValueError as e:
+                        logger.warning(f"Stored ROI invalid: {e}")
                 with session["inference_lock"]:
                     if session.get("analyzer") == "LOADING":
                         session["analyzer"] = analyzer
@@ -224,34 +218,17 @@ def analyze_camera_frame(
 
         frame_number = session["frames_processed"] + 1
         try:
-            with inference_context():
-                analyzer.warm_up(frame.shape)          # no-op after the first frame of this size; not timed
-                t_start = time.perf_counter()
-                analysis = analyzer.analyze_frame(frame, frame_number)
-                if cuda_is_available():
-                    torch.cuda.synchronize()
-                frame_time_ms = (time.perf_counter() - t_start) * 1000.0
-            session["frames_processed"] = frame_number   # only count frames that succeeded
+            stats = analyzer.infer(frame, frame_number)      # <- the ONE ML call
+            session["frames_processed"] = frame_number       # only count frames that succeeded
         except Exception as e:
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
             return _error_stats(session_id, str(e), session["frames_processed"]), frame
 
         clean_frame = analyzer.get_clean_frame(frame)
         if annotate:
-            session["last_annotated_frame"] = analyzer.draw_annotations(frame, analysis)
+            session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # reuses this frame's detections
 
-    stats = {
-        **build_frontend_stats(analysis.result),
-        "session_id": session_id,
-        "status": "processing",
-        "frame": frame_number,
-        "frames_processed": frame_number,
-        "fps": round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0,
-        "frame_time_ms": round(frame_time_ms, 2),
-        "latency_ms": round(frame_time_ms, 2),     # legacy key, same value as frame_time_ms
-        "video_width": frame.shape[1],
-        "video_height": frame.shape[0],
-    }
+    stats.update(session_id=session_id, frames_processed=frame_number)
     session["last_stats"] = stats
     return stats, clean_frame
 
@@ -267,5 +244,5 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
             s["roi_points"] = points or []
             s["roi_frame_size"] = frame_size
             analyzer = s.get("analyzer")
-            if analyzer is not None:
+            if isinstance(analyzer, TubeAnalyzer):
                 analyzer.set_roi(points, frame_size)

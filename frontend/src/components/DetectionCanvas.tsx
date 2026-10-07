@@ -749,7 +749,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       )} */}
 
       {/* Floating Bottom-Right Corner Zoom Controls: Always prominent and accessible on canvas */}
-      {!isOverlayShowing && showHUD && isMediaActive && (
+      {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (
         <div className="absolute bottom-3.5 right-3.5 sm:bottom-4 sm:right-4 z-30 pointer-events-auto">
           <ZoomControls
             zoom={zoom}

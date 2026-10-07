@@ -77,44 +77,46 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     <div className="absolute top-0 left-0 right-0 p-2 sm:p-3 flex items-center justify-between gap-2 pointer-events-none z-30 max-w-full overflow-hidden">
       {/* Top-Left Corner: Real-Time Status Badge or Live Stream Indicator */}
       <div className="pointer-events-auto flex items-center gap-2 min-w-0 shrink-0">
-        {showInferenceStatus ? (
-          <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
-            {anomalyStatus.message === 'WARMING' ? (
-              <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 shadow-[0_0_6px_rgba(245,158,11,0.6)]" />
-                <span>WARMING</span>
-              </div>
-            ) : isRunning ? (
-              <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">
-                <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
-                  <span>LIVE</span>
+        {!isRoiActive && (
+          showInferenceStatus ? (
+            <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
+              {anomalyStatus.message === 'WARMING' ? (
+                <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 shadow-[0_0_6px_rgba(245,158,11,0.6)]" />
+                  <span>WARMING</span>
                 </div>
-                {latencyMs !== undefined && latencyMs !== null && Number(latencyMs) > 0 ? (
-                  <span className="inline-flex items-center px-1.5 sm:px-2 py-0.5 rounded-lg text-xs font-mono font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 shadow-xs">
-                    {Number(latencyMs).toFixed(1)} ms
-                  </span>
-                ) : null}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-[var(--text-secondary)] font-bold text-xs sm:text-sm">
-                <span className="w-2 h-2 rounded-full bg-[var(--accent-pond)] shrink-0" />
-                <span>{anomalyStatus.message || 'STOPPED'}</span>
-              </div>
-            )}
-          </div>
-        ) : isCameraSource && isStreaming ? (
-          <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
-            <div className="flex items-center gap-1.5 text-sky-400 font-bold text-xs sm:text-sm">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse shrink-0 shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
-              <span>LIVE STREAM</span>
+              ) : isRunning ? (
+                <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">
+                  <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
+                    <span>LIVE</span>
+                  </div>
+                  {latencyMs !== undefined && latencyMs !== null && Number(latencyMs) > 0 ? (
+                    <span className="inline-flex items-center px-1.5 sm:px-2 py-0.5 rounded-lg text-xs font-mono font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 shadow-xs">
+                      {Number(latencyMs).toFixed(1)} ms
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-[var(--text-secondary)] font-bold text-xs sm:text-sm">
+                  <span className="w-2 h-2 rounded-full bg-[var(--accent-pond)] shrink-0" />
+                  <span>{anomalyStatus.message || 'STOPPED'}</span>
+                </div>
+              )}
             </div>
-          </div>
-        ) : null}
+          ) : isCameraSource && isStreaming ? (
+            <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
+              <div className="flex items-center gap-1.5 text-sky-400 font-bold text-xs sm:text-sm">
+                <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse shrink-0 shadow-[0_0_6px_rgba(56,189,248,0.6)]" />
+                <span>LIVE STREAM</span>
+              </div>
+            </div>
+          ) : null
+        )}
       </div>
 
       {/* Top-Center: Label Mode View Switcher (Quadrant | Pins | Boxes) using App Theme */}
-      {(showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
+      {!isRoiActive && (showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
         <div className="pointer-events-auto absolute left-1/2 -translate-x-1/2 top-2 sm:top-3 flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs select-none z-30">
           <button
             type="button"
@@ -159,7 +161,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
       {/* Top-Right Corner: Action Controls */}
       <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink-0">
-        {showInferenceStatus && (
+        {!isRoiActive && showInferenceStatus && (
           <>
             {/* Feed toggle pill: RAW vs INFERENCE - Only shown for OAK camera */}
             {isCameraSource && (
@@ -238,7 +240,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         </button> */}
 
         {/* Clear Video button when video is loaded and stopped */}
-        {!isCameraSource && hasActiveVideo && !isRunning && onClearCustomVideo && (
+        {!isRoiActive && !isCameraSource && hasActiveVideo && !isRunning && onClearCustomVideo && (
           <button
             onClick={onClearCustomVideo}
             title="Clear loaded video and upload a new one"

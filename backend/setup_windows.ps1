@@ -138,8 +138,16 @@ if (-not $NpmCmd) {
         Write-Host "Downloading Node.js LTS... This may take a minute." -ForegroundColor Cyan
         $nodeInstaller = "$env:TEMP\nodejs-installer.msi"
         Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -OutFile $nodeInstaller
-        Write-Host "Installing Node.js silently... Please wait." -ForegroundColor Cyan
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeInstaller`" /qn" -Wait -NoNewWindow
+        Write-Host "Opening Node.js Installer. Please complete the setup window that pops up!" -ForegroundColor Cyan
+        Write-Host "(Make sure to allow it to make changes to your device)" -ForegroundColor Yellow
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeInstaller`"" -Wait
+        
+        # Check if it actually installed
+        if (-not (Test-Path "$env:ProgramFiles\nodejs\npm.cmd") -and -not (Test-Path "${env:ProgramFiles(x86)}\nodejs\npm.cmd")) {
+            Write-Host "[ERROR] Node.js installation was canceled or failed." -ForegroundColor Red
+            exit 1
+        }
+        
         Write-Host ""
         Write-Host "=======================================================" -ForegroundColor Green
         Write-Host "[SUCCESS] Node.js installed successfully!" -ForegroundColor Green

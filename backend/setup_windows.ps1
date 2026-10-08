@@ -82,10 +82,26 @@ function Find-ValidPython {
 
 $Python = Find-ValidPython
 if (-not $Python) {
-    Write-Host "[ERROR] Python 3.10+ was not found on your system." -ForegroundColor Red
-    Write-Host "Please download and install Python 3.10, 3.11, or 3.12 from https://www.python.org/downloads/" -ForegroundColor Red
-    Write-Host "Be sure to check 'Add Python to PATH' during installation." -ForegroundColor Red
-    throw "Python 3.10+ not found."
+    Write-Host "[WARNING] Python 3.10+ was not found on your system." -ForegroundColor Yellow
+    Write-Host "Would you like to automatically download and install Python 3.12? (Y/N)" -ForegroundColor Cyan
+    $response = Read-Host
+    if ($response -match "^[yY]") {
+        Write-Host "Downloading Python 3.12.9... This may take a minute." -ForegroundColor Cyan
+        $installerPath = "$env:TEMP\python-installer.exe"
+        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile $installerPath
+        Write-Host "Installing Python silently (with PATH enabled)... Please wait." -ForegroundColor Cyan
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait -NoNewWindow
+        Write-Host ""
+        Write-Host "=======================================================" -ForegroundColor Green
+        Write-Host "[SUCCESS] Python installed successfully!" -ForegroundColor Green
+        Write-Host "Because your system PATH was updated, you MUST close this terminal window," -ForegroundColor Yellow
+        Write-Host "open a new one, and run setup.bat again to continue." -ForegroundColor Yellow
+        Write-Host "=======================================================" -ForegroundColor Green
+        exit 1
+    } else {
+        Write-Host "[ERROR] Please install Python manually and run setup again." -ForegroundColor Red
+        throw "Python 3.10+ not found."
+    }
 }
 
 $PyVersion = & $Python --version 2>&1

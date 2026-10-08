@@ -43,7 +43,7 @@ _sessions_lock = threading.Lock()
 _idle_sweeper: Optional[threading.Thread] = None
 _shared_camera_analyzer: Optional[TubeAnalyzer] = None
 
-
+############### Setup & Lifecycle Functions ###############
 def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
     """Preloaded TubeAnalyzer from backend startup lifespan for instant zero-delay camera inference."""
     global _shared_camera_analyzer
@@ -182,7 +182,7 @@ def get_camera_session_stats(session_id: str) -> Optional[Dict[str, Any]]:
     session = _sessions.get(session_id)
     return session.get("last_stats") if session else None
 
-
+############### Inference & Helper Functions ###############
 # ----------------------------------------------------------------- inference
 def _error_stats(session_id: str, reason: str, frames_processed: int = 0, status: str = "error") -> Dict[str, Any]:
     return {"session_id": session_id, "status": status, "reasons": [reason], "frames_processed": frames_processed}

@@ -40,6 +40,7 @@ worker thread).
 """
 
 from __future__ import annotations
+from anyio import to_thread
 
 import gc
 import json
@@ -79,7 +80,7 @@ MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
 CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 ROI_JSON = str(_ML_DIR / "config" / "roi.json")
 
-
+#################### 1. Hardware & CUDA Helpers ####################
 # --------------------------------------------------------------- small helpers
 def cuda_is_available() -> bool:
     """Return true only when this PyTorch build can execute kernels on the GPU.
@@ -130,9 +131,10 @@ def release_gpu_memory() -> None:
         except Exception:
             pass
 
-
+#################### 2. Region of Interest (ROI) Math ####################
 def _segments_intersect(p1, p2, p3, p4) -> bool:
-    """True if line segment (p1, p2) intersects with (p3, p4)."""
+    """True if line segment (p1, p2) intersects with (p3, p4).
+    _segments_intersect() & _is_self_intersecting() Complex math functions that prevent users from drawing "bowtie" shaped polygons where the lines cross over each other (which breaks the OpenCV drawing algorithms)."""
     def ccw(a, b, c):
         return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
     return (ccw(p1, p3, p4) != ccw(p2, p3, p4)) and (ccw(p1, p2, p3) != ccw(p1, p2, p4))
@@ -157,7 +159,7 @@ def _is_self_intersecting(pts: np.ndarray) -> bool:
 def roi_from_points(points: Any, frame_size: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
     """Validate and convert [[x, y], ...] in native frame pixels -> (N, 2) int32 polygon.
     Empty / None clears the ROI (whole frame counted).
-    Raises ValueError on invalid input or geometry.
+    Raises ValueError on invalid input or geometry.  Takes the raw mouse-click coordinates [[x, y], ...] from the frontend and converts them into a strict Numpy Array. It enforces rules like "must have at least 3 points" and "cannot be smaller than 10x10 pixels".
     """
     if not points:
         return None
@@ -197,7 +199,8 @@ def roi_from_points(points: Any, frame_size: Optional[Tuple[int, int]] = None) -
 
 
 def save_roi(points: Any, path: Optional[str] = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
-    """Validate, then write roi.json atomically with frame_width and frame_height."""
+    """Validate, then write roi.json atomically with frame_width and frame_height.
+    save_roi() & load_roi() Reads and writes the polygon points to roi.json so your drawn zones survive a server restart. If your camera changes resolution, load_roi automatically scales the polygon up or down to match!"""
     roi = roi_from_points(points, frame_size)
     target = Path(path or ROI_JSON)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -243,11 +246,12 @@ def load_roi(path: Optional[str] = None, target_shape: Optional[Tuple[int, int]]
         logger.warning(f"Could not read ROI file {target}: {e} -- running without ROI")
         return None
 
-
+#################### 4. Model Loading & Warming ####################
 _GLOBAL_YOLO_CACHE: Dict[str, Any] = {}
 _GLOBAL_WARMED_SHAPES: Set[Tuple[int, int]] = set()
 
 def _load_yolo_model(path: str):
+    """Load the YOLO model (cached) for fast inference."""
     if path in _GLOBAL_YOLO_CACHE:
         return _GLOBAL_YOLO_CACHE[path]
     try:
@@ -258,11 +262,11 @@ def _load_yolo_model(path: str):
     _GLOBAL_YOLO_CACHE[path] = model
     return model
 
-
+#################### 3. Data Formatting ####################
 # ------------------------------------------------------ what the frontend gets
 def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     """Wheel result dict -> the dict the frontend / API returns (one place, used by both services).
-
+    These functions prepare the raw ML data so the React frontend can understand it.
     Adds: per-detection ``confidence`` / ``class`` / ``status`` aliases, ``total_count``
     (heads + tails visible in THIS frame; use heads_total + tails_total for the running
     total), and the always-None ``bigger_tube`` / ``smaller_tube`` the frontend expects.
@@ -307,7 +311,7 @@ def new_stats(**fields: Any) -> Dict[str, Any]:
     stats.update(fields)
     return stats
 
-
+#################### 5.The TubeAnalyzer Class & Frame Analysis ####################
 @dataclass
 class FrameAnalysis:
     """Everything one analyze_frame() call produced.
@@ -472,6 +476,12 @@ class TubeAnalyzer:
         return True
 
     # ------------------------------------------------------------ per frame
+    """ analyze_frame() This is the core ML loop that runs 30 times a second. It executes exactly in this order:
+        rvf.detect(): Scans the image to find Tubes (Heads/Tails).
+        rvf.update_tracks(): Compares the Tubes found in this frame to the Tubes found in the last frame, giving them a persistent ID so they aren't double-counted.
+        _drop_stale_tracks(): Clears out memory for tubes that walked off-screen.
+        rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone.
+        rvf.build_frame_result(): Tallies up the final counts and builds the result dictionary."""
     def analyze_frame(self, frame: np.ndarray, frame_number: int = 0) -> FrameAnalysis:
         """Detect -> track -> ROI filter -> result for ONE BGR frame.
 
@@ -493,20 +503,22 @@ class TubeAnalyzer:
             self.roi = new_roi
             for t in self.tracks:
                 t.in_roi_ever = False
-
+        #rvf.detect(): Scans the image to find Tubes (Heads/Tails).
         try:
             detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
         except Exception as error:
             if not self._retry_on_cpu_after_cuda_error(error):
                 raise
             detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
+        #rvf.update_tracks(): Compares the Tubes found in this frame to the Tubes found in the last frame, giving them a persistent ID so they aren't double-counted.
         self.next_id = rvf.update_tracks(self.tracks, detections, frame_number, self.next_id, self.cfg)
         self._drop_stale_tracks(frame_number)
-
+        #rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone.
         inside_roi = [d for d in detections if rvf.in_roi(d, self.roi)]   # ROI limits output only
         inside_roi = rvf.cap_per_role(inside_roi, self.cfg)
         for d in inside_roi:
             d["track"].in_roi_ever = True
+        #rvf.build_frame_result(): Tallies up the final counts and builds the result dictionary.
         result = rvf.build_frame_result(frame_number, inside_roi, self.tracks)
 
         if not hasattr(self, "peak"):

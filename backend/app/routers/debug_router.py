@@ -31,20 +31,39 @@ def _file_hash(path: str) -> str:
 def ml_module_info():
     """
     Reports info about the TubeAnalyzer module: file path, content hash,
-    and whether process_frame is ready.
+    and whether process_frame is ready. Also reports the installed wheel version.
     """
     info = {"import_succeeded": False}
     try:
         from app.ml import tube_analyzer
         file_path = getattr(tube_analyzer, "__file__", None)
+        
+        wheel_error = getattr(tube_analyzer, "_WHEEL_ERROR", None)
+        wheel_version = None
+        
+        try:
+            wheel_version = md.version("head_tail_analyzer")
+        except md.PackageNotFoundError:
+            wheel_version = "Not installed"
+
+        if wheel_error:
+            msg = f"ML code imported, but the core engine failed to load: {wheel_error}"
+            ready = False
+        else:
+            msg = f"ML Module is fully loaded, healthy, and ready for inference. Using wheel version: {wheel_version}"
+            ready = hasattr(getattr(tube_analyzer, "TubeAnalyzer", object), "analyze_frame")
+
         info.update({
+            "message": msg,
+            "wheel_version": wheel_version,
             "import_succeeded": True,
             "file_path": file_path,
             "last_modified": os.path.getmtime(file_path) if file_path and os.path.exists(file_path) else None,
             "sha256_short": _file_hash(file_path) if file_path else None,
-            "is_tube_analyzer_ready": hasattr(getattr(tube_analyzer, "TubeAnalyzer", object), "process_frame"),
+            "is_tube_analyzer_ready": ready,
         })
     except ImportError as e:
         info["error"] = str(e)
+        info["message"] = f"CRITICAL: Failed to import the ML module entirely: {e}"
 
     return info

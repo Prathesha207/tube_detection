@@ -131,9 +131,26 @@ if (-not $NpmCmd) {
 }
 
 if (-not $NpmCmd) {
-    Write-Host "[ERROR] Node.js / npm was not found on your system." -ForegroundColor Red
-    Write-Host "Please download and install Node.js LTS (v18+) from https://nodejs.org/" -ForegroundColor Red
-    throw "Node.js / npm not found."
+    Write-Host "[WARNING] Node.js / npm was not found on your system." -ForegroundColor Yellow
+    Write-Host "Would you like to automatically download and install Node.js? (Y/N)" -ForegroundColor Cyan
+    $response = Read-Host
+    if ($response -match "^[yY]") {
+        Write-Host "Downloading Node.js LTS... This may take a minute." -ForegroundColor Cyan
+        $nodeInstaller = "$env:TEMP\nodejs-installer.msi"
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -OutFile $nodeInstaller
+        Write-Host "Installing Node.js silently... Please wait." -ForegroundColor Cyan
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeInstaller`" /qn" -Wait -NoNewWindow
+        Write-Host ""
+        Write-Host "=======================================================" -ForegroundColor Green
+        Write-Host "[SUCCESS] Node.js installed successfully!" -ForegroundColor Green
+        Write-Host "Because your system PATH was updated, you MUST close this terminal window," -ForegroundColor Yellow
+        Write-Host "open a new one, and run setup.bat again to continue." -ForegroundColor Yellow
+        Write-Host "=======================================================" -ForegroundColor Green
+        exit 1
+    } else {
+        Write-Host "[ERROR] Please install Node.js manually and run setup again." -ForegroundColor Red
+        throw "Node.js / npm not found."
+    }
 }
 
 $NpmExecutable = if ($NpmCmd.Source) { $NpmCmd.Source } else { $NpmCmd.FullName }

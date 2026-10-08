@@ -112,13 +112,16 @@ if (-not $NpmCmd) {
     $NpmCmd = (Get-Command npm -ErrorAction SilentlyContinue)
 }
 if (-not $NpmCmd) {
+    $portableNodeDir = "$env:LocalAppData\Programs\node-v20.18.0-win-x64"
     $nodePaths = @(
+        "$portableNodeDir\npm.cmd",
         "$env:ProgramFiles\nodejs\npm.cmd",
         "${env:ProgramFiles(x86)}\nodejs\npm.cmd"
     )
     foreach ($np in $nodePaths) {
         if (Test-Path $np) {
             $NpmCmd = Get-Item $np
+            $env:Path = (Split-Path -Parent $np) + ";" + $env:Path
             break
         }
     }

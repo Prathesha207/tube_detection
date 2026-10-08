@@ -42,6 +42,8 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 _idle_sweeper: Optional[threading.Thread] = None
 _shared_camera_analyzer: Optional[TubeAnalyzer] = None
+_global_roi_points: list = []
+_global_roi_frame_size: Optional[Tuple[int, int]] = None
 
 ############### Setup & Lifecycle Functions ###############
 def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
@@ -96,8 +98,8 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             "inference_lock": threading.Lock(),
             "last_stats": new_stats(session_id=session_id, status="LOADING_MODEL"),
             "last_annotated_frame": None,
-            "roi_points": [],
-            "roi_frame_size": None,
+            "roi_points": list(_global_roi_points),
+            "roi_frame_size": _global_roi_frame_size,
             "load_error": None,
         }
         _sessions[session_id] = session
@@ -260,13 +262,18 @@ def analyze_camera_frame(
 
 def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
     """Hot-swap active camera session analyzer in-memory (per-session ROI, no disk persistence)."""
+    global _global_roi_points, _global_roi_frame_size
     with _sessions_lock:
+        # Save globally so new sessions inherit it
+        _global_roi_points = points or []
+        _global_roi_frame_size = frame_size
+        
         if session_id and session_id in _sessions:
             targets = [_sessions[session_id]]
         else:
             targets = list(_sessions.values())
         for s in targets:
-            s["roi_points"] = points or []
+            s["roi_points"] = list(_global_roi_points)
             s["roi_frame_size"] = frame_size
             analyzer = s.get("analyzer")
             if isinstance(analyzer, TubeAnalyzer):

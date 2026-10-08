@@ -447,7 +447,7 @@ async def get_health():
     if not _backend_ready:
         # FastAPI is up but model is still loading — tell Electron to keep waiting
         return JSONResponse(
-            status_code=503,
+            status_code=200,
             content={"status": "starting", "message": "Backend is loading ML model...", "data": None}
         )
     return {"status": "ready", "message": "Backend is healthy", "data": None}

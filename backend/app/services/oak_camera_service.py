@@ -126,6 +126,7 @@ class OakCameraService:
 
         # ---- Auto-calibration monitor ----
         self._monitor_last_calib_time: float = 0.0
+        self._monitor_last_check: float = 0.0
         self._monitor_baseline_sharpness: float | None = None
         self._monitor_baseline_brightness: float | None = None
         self._monitor_bad_start_time: float | None = None
@@ -526,6 +527,9 @@ class OakCameraService:
     # ── New method: background GPU sampler ───────────────────────────────────────
     def _start_gpu_sampler(self) -> None:
         """Samples GPU every 2s in background — never blocks inference."""
+        if self._gpu_sampler_thread and self._gpu_sampler_thread.is_alive():
+            return
+
         def _loop():
             import subprocess
             while not self._gpu_sampler_stop.is_set():
@@ -961,15 +965,17 @@ class OakCameraService:
 
     def _run_monitor(self, frame: np.ndarray) -> None:
         now = time.time()
-        if now - self._monitor_last_calib_time < 5.0:
+        if now - self._monitor_last_calib_time < 5.0 or now - self._monitor_last_check < 0.5:
             return
+        
+        self._monitor_last_check = now
 
         # crop center for speed and relevance (50% of center)
         h, w = frame.shape[:2]
         crop = frame[h//4:3*h//4, w//4:3*w//4]
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+        sharpness = cv2.Laplacian(gray, cv2.CV_32F).var()
         brightness = gray.mean()
 
         if self._monitor_baseline_sharpness is None:

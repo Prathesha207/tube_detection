@@ -448,6 +448,7 @@ class TubeAnalyzer:
         self.next_id = 1
         self._last_analysis = None
         self.roi = None
+        self._pending_roi = None
         self.peak = {}
 
     reset = reset_tracking   # old name, still works

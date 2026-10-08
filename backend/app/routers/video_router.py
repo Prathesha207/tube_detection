@@ -546,9 +546,8 @@ async def get_status(session_id: str):
 @router.post("/stop/{session_id}")
 async def stop_video(session_id: str):
     try:
-        await _ensure_session_exists(session_id)
-        status = ml_inference_service.get_status(session_id)
-        if not status:
+        session = ml_inference_service.sessions.get(session_id)
+        if not session:
             return JSONResponse(status_code=404, content={"message": "Session not found."})
         
         # BUGFIX: bound the wait so a wedged task can't hang this request
@@ -565,11 +564,11 @@ async def stop_video(session_id: str):
 @router.post("/clear/{session_id}")
 async def clear_video_session(session_id: str):
     try:
-        session = await _ensure_session_exists(session_id)
+        session = ml_inference_service.sessions.get(session_id)
         if session:
             await ml_inference_service.stop_session(session_id, timeout=3.0)
-            ml_inference_service.clear_session_files(session_id)
-            ml_inference_service.sessions.pop(session_id, None)
+        ml_inference_service.clear_session_files(session_id)
+        ml_inference_service.sessions.pop(session_id, None)
         return {"status": "cleared", "session_id": session_id}
     except HTTPException:
         raise
@@ -581,7 +580,7 @@ async def clear_video_session(session_id: str):
 @router.post("/reset/{session_id}")
 async def reset_video_session(session_id: str):
     try:
-        session = await _ensure_session_exists(session_id)
+        session = ml_inference_service.sessions.get(session_id)
         if session:
             # 1. Stop the task fully and await it (bounded -- see stop_session docstring)
             await ml_inference_service.stop_session(session_id, timeout=3.0)
@@ -593,10 +592,11 @@ async def reset_video_session(session_id: str):
                 except:
                     pass
                 session["analyzer"] = None
-            # 3. Clear temp files
-            ml_inference_service.clear_session_files(session_id)
-            # 4. Remove session from memory
-            ml_inference_service.sessions.pop(session_id, None)
+        
+        # 3. Clear temp files
+        ml_inference_service.clear_session_files(session_id)
+        # 4. Remove session from memory
+        ml_inference_service.sessions.pop(session_id, None)
         return {"status": "reset", "session_id": session_id}
     except HTTPException:
         raise

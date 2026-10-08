@@ -132,6 +132,8 @@ if (-not $NpmCmd) {
     Expand-Archive -Path $nodeZip -DestinationPath "$env:LocalAppData\Programs" -Force
     $nodeDir = "$env:LocalAppData\Programs\node-v20.18.0-win-x64"
     $env:Path = "$nodeDir;" + $env:Path
+    # Save to user's permanent registry so it isn't forgotten!
+    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$nodeDir", "User")
     
     $NpmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue)
     if (-not $NpmCmd) {
@@ -423,6 +425,8 @@ if ((Test-Path $NodeModulesDir) -and (Test-Path $DistHtml)) {
     Push-Location $FrontendDir
     try {
         Write-Host "Installing frontend dependencies..."
+        if (Test-Path "package-lock.json") { Remove-Item -Force "package-lock.json" -ErrorAction SilentlyContinue }
+        if (Test-Path "node_modules\@electron") { Remove-Item -Recurse -Force "node_modules\@electron", "node_modules\electron" -ErrorAction SilentlyContinue }
         & $NpmExecutable install --include=optional
         if ($LASTEXITCODE -ne 0) {
             throw "npm install failed in $FrontendDir."

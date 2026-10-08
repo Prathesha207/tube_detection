@@ -58,6 +58,9 @@ function Find-ValidPython {
         "$env:LocalAppData\Programs\Python\Python312\python.exe",
         "$env:LocalAppData\Programs\Python\Python311\python.exe",
         "$env:LocalAppData\Programs\Python\Python310\python.exe",
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files\Python311\python.exe",
+        "C:\Program Files\Python310\python.exe",
         "C:\Python312\python.exe",
         "C:\Python311\python.exe",
         "C:\Python310\python.exe"

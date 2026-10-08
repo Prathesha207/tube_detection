@@ -82,26 +82,20 @@ function Find-ValidPython {
 
 $Python = Find-ValidPython
 if (-not $Python) {
-    Write-Host "[WARNING] Python 3.10+ was not found on your system." -ForegroundColor Yellow
-    Write-Host "Would you like to automatically download and install Python 3.12? (Y/N)" -ForegroundColor Cyan
-    $response = Read-Host
-    if ($response -match "^[yY]") {
-        Write-Host "Downloading Python 3.12.9... This may take a minute." -ForegroundColor Cyan
-        $installerPath = "$env:TEMP\python-installer.exe"
-        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile $installerPath
-        Write-Host "Installing Python silently (with PATH enabled)... Please wait." -ForegroundColor Cyan
-        Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait -NoNewWindow
-        Write-Host ""
-        Write-Host "=======================================================" -ForegroundColor Green
-        Write-Host "[SUCCESS] Python installed successfully!" -ForegroundColor Green
-        Write-Host "Because your system PATH was updated, you MUST close this terminal window," -ForegroundColor Yellow
-        Write-Host "open a new one, and run setup.bat again to continue." -ForegroundColor Yellow
-        Write-Host "=======================================================" -ForegroundColor Green
-        exit 1
-    } else {
-        Write-Host "[ERROR] Please install Python manually and run setup again." -ForegroundColor Red
-        throw "Python 3.10+ not found."
+    Write-Host "[INFO] Python 3.10+ not found. Downloading Python 3.12..." -ForegroundColor Cyan
+    $installerPath = "$env:TEMP\python-installer.exe"
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile $installerPath
+    Write-Host "[INFO] Installing Python silently in background. This may take a minute..." -ForegroundColor Cyan
+    Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait -NoNewWindow
+    
+    $pyDir = "$env:LocalAppData\Programs\Python\Python312"
+    $env:Path = "$pyDir;$pyDir\Scripts;" + $env:Path
+    
+    $Python = Find-ValidPython
+    if (-not $Python) {
+        throw "Failed to install Python."
     }
+    Write-Host "[SUCCESS] Python installed successfully!" -ForegroundColor Green
 }
 
 $PyVersion = & $Python --version 2>&1
@@ -131,34 +125,19 @@ if (-not $NpmCmd) {
 }
 
 if (-not $NpmCmd) {
-    Write-Host "[WARNING] Node.js / npm was not found on your system." -ForegroundColor Yellow
-    Write-Host "Would you like to automatically download and install Node.js? (Y/N)" -ForegroundColor Cyan
-    $response = Read-Host
-    if ($response -match "^[yY]") {
-        Write-Host "Downloading Node.js LTS... This may take a minute." -ForegroundColor Cyan
-        $nodeInstaller = "$env:TEMP\nodejs-installer.msi"
-        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -OutFile $nodeInstaller
-        Write-Host "Opening Node.js Installer. Please complete the setup window that pops up!" -ForegroundColor Cyan
-        Write-Host "(Make sure to allow it to make changes to your device)" -ForegroundColor Yellow
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeInstaller`"" -Wait
-        
-        # Check if it actually installed
-        if (-not (Test-Path "$env:ProgramFiles\nodejs\npm.cmd") -and -not (Test-Path "${env:ProgramFiles(x86)}\nodejs\npm.cmd")) {
-            Write-Host "[ERROR] Node.js installation was canceled or failed." -ForegroundColor Red
-            exit 1
-        }
-        
-        Write-Host ""
-        Write-Host "=======================================================" -ForegroundColor Green
-        Write-Host "[SUCCESS] Node.js installed successfully!" -ForegroundColor Green
-        Write-Host "Because your system PATH was updated, you MUST close this terminal window," -ForegroundColor Yellow
-        Write-Host "open a new one, and run setup.bat again to continue." -ForegroundColor Yellow
-        Write-Host "=======================================================" -ForegroundColor Green
-        exit 1
-    } else {
-        Write-Host "[ERROR] Please install Node.js manually and run setup again." -ForegroundColor Red
-        throw "Node.js / npm not found."
+    Write-Host "[INFO] Node.js not found. Downloading portable Node.js..." -ForegroundColor Cyan
+    $nodeZip = "$env:TEMP\node.zip"
+    Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-win-x64.zip" -OutFile $nodeZip
+    Write-Host "[INFO] Extracting Node.js silently in background..." -ForegroundColor Cyan
+    Expand-Archive -Path $nodeZip -DestinationPath "$env:LocalAppData\Programs" -Force
+    $nodeDir = "$env:LocalAppData\Programs\node-v20.18.0-win-x64"
+    $env:Path = "$nodeDir;" + $env:Path
+    
+    $NpmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue)
+    if (-not $NpmCmd) {
+        throw "Failed to install Node.js."
     }
+    Write-Host "[SUCCESS] Node.js installed successfully!" -ForegroundColor Green
 }
 
 $NpmExecutable = if ($NpmCmd.Source) { $NpmCmd.Source } else { $NpmCmd.FullName }

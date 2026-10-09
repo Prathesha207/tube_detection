@@ -278,7 +278,7 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         det = dict(d)
         det["confidence"] = det.get("conf", 1.0)
         det["class"] = det.get("role", "HEAD")
-        det["status"] = "OK"
+        det["status"] = d.get("status", "OK")
         detections.append(det)
     return {
         **result,

@@ -39,25 +39,6 @@ export function useVideoPipeline({
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
   const [initialUploadFile, setInitialUploadFile] = useState<File | undefined>();
 
-  // Dedicated state for camera recording sessions (kept inside Camera Inference Area)
-  const [cameraRecordSessionId, setCameraRecordSessionId] = useState<string | null>(null);
-  const [cameraRecordUrl, setCameraRecordUrl] = useState<string | undefined>(undefined);
-  const [cameraRecordName, setCameraRecordName] = useState<string | undefined>(undefined);
-
-  const clearCameraRecording = () => {
-    if (cameraRecordSessionId) {
-      fetch(`${getApiBaseUrl()}/video/clear/${cameraRecordSessionId}`, { method: 'POST' }).catch(() => {});
-    }
-    setCameraRecordSessionId(null);
-    setCameraRecordUrl(undefined);
-    setCameraRecordName(undefined);
-    setIsRunning(false);
-    setTubes([]);
-    useInferenceStore.getState().resetStats();
-    resetBBoxCache();
-    addLog('Camera recording cleared • Returned to live camera feed.', 'info');
-  };
-
   // Persist video session state on every change so Ctrl+R can reconnect
   useEffect(() => {
     saveSessionState({ videoSessionId: videoSessionId ?? null, customVideoUrl, customVideoName });
@@ -67,31 +48,8 @@ export function useVideoPipeline({
   const handleVideoUploaded = async (
     url: string,
     name: string,
-    sessionId?: string,
-    isCameraRecording?: boolean
+    sessionId?: string
   ): Promise<void> => {
-    const isRecordedStream = Boolean(isCameraRecording);
-
-    if (isRecordedStream) {
-      if (sessionId) {
-        setVideoSessionId(sessionId);
-      }
-      setLocalPreviewUrl(url);
-      setCustomVideoUrl(url);
-      setCustomVideoName(name);
-      setSourceType('uploaded-video');
-      setCameraRecordSessionId(null);
-      setCameraRecordUrl(undefined);
-      setCameraRecordName(undefined);
-      setCameraStartingState('ready');
-      setTubes([]);
-      setFramesProcessed(0);
-      setFps(0);
-      useInferenceStore.getState().resetStats();
-      resetBBoxCache();
-      showToast('info', `Recorded video loaded: "${name}". Click START INFERENCE to run.`);
-      return;
-    }
 
     // If online camera is currently active, block upload with alert as per requirement (unless it's a recorded stream)
     const isCameraActive = (sourceType === 'oak-camera' || sourceType === 'webcam') && isRunning;
@@ -223,12 +181,5 @@ export function useVideoPipeline({
     handleVideoUploaded,
     handleClearVideo,
     startVideoInference,
-    cameraRecordSessionId,
-    setCameraRecordSessionId,
-    cameraRecordUrl,
-    setCameraRecordUrl,
-    cameraRecordName,
-    setCameraRecordName,
-    clearCameraRecording,
   };
 }

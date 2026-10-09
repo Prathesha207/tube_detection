@@ -8,7 +8,6 @@ import { DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT } from '../utils/constants';
 export function useInferenceLoop({
   sourceType,
   videoSessionId,
-  cameraRecordSessionId,
   showToast,
   addLog,
   startCameraPipeline,
@@ -30,7 +29,6 @@ export function useInferenceLoop({
 }: {
   sourceType: StreamSourceType;
   videoSessionId: string | null;
-  cameraRecordSessionId?: string | null;
   showToast: (type: 'error' | 'success' | 'info', message: string) => void;
   addLog: (message: string, level?: LogEntry['level']) => void;
   startCameraPipeline: () => Promise<boolean>;
@@ -58,8 +56,8 @@ export function useInferenceLoop({
     }, 1000);
 
     const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
-    const effectiveVideoSessionId = isCameraSource ? cameraRecordSessionId : videoSessionId;
-    const isLive = isCameraSource && !effectiveVideoSessionId;
+    const effectiveVideoSessionId = videoSessionId;
+    const isLive = isCameraSource;
 
     if (!isLive && !effectiveVideoSessionId) {
       clearInterval(uptimeTimer);
@@ -69,19 +67,32 @@ export function useInferenceLoop({
     if (isLive) {
       let ws: WebSocket | null = null;
       let isMounted = true;
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
       const connectWs = () => {
+        if (!isMounted) return;
         const wsUrl = getApiBaseUrl().replace('http', 'ws') + '/oak/inference/ws/live';
         ws = new WebSocket(wsUrl);
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (!isMounted) return;
+
+            if (stallTimer) clearTimeout(stallTimer);
+            stallTimer = setTimeout(() => {
+              if (isMounted) setTubes([]);
+            }, 700);
+
             useInferenceStore.getState().setStats(data);
 
-            if (data.status === 'error' || data.status === 'stopped' || data.done) {
+            const statusLower = String(data.status || '').toLowerCase();
+            const isError = statusLower === 'error';
+            if (data.status === 'stopped' || data.done || isError) {
+              if (stallTimer) clearTimeout(stallTimer);
               setIsRunning(false);
-              if (data.status === 'error') {
-                const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Camera inference failed';
+              if (isError) {
+                const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Camera inference stopped on error';
                 showToast('error', `Inference error: ${errDetail}`);
                 addLog(`Inference stopped on error: ${errDetail}`, 'error');
               }
@@ -107,11 +118,20 @@ export function useInferenceLoop({
           } catch (e) { }
         };
         ws.onclose = () => {
-          if (isMounted) setTimeout(connectWs, 2000);
+          if (stallTimer) clearTimeout(stallTimer);
+          if (isMounted) {
+            reconnectTimer = setTimeout(connectWs, 2000);
+          }
         };
       };
       connectWs();
-      return () => { isMounted = false; if (ws) ws.close(); clearInterval(uptimeTimer); };
+      return () => {
+        isMounted = false;
+        if (stallTimer) clearTimeout(stallTimer);
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (ws) ws.close();
+        clearInterval(uptimeTimer);
+      };
     }
 
     const sessionId = effectiveVideoSessionId as string;
@@ -130,6 +150,8 @@ export function useInferenceLoop({
           consecutive404s += 1;
           if (consecutive404s >= 10) {
             console.warn(`[VisionAI] Session ${sessionId} is no longer active on the backend. Polling stopped.`);
+            setIsRunning(false);
+            showToast('info', 'Video session ended or backend restarted.');
             return;
           }
           if (isMounted) timeoutId = setTimeout(pollBackend, 800);
@@ -209,10 +231,7 @@ export function useInferenceLoop({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
     };
-    // NOTE: cameraRecordSessionId added to deps — this is what makes the
-    // effect correctly tear down the websocket and switch to polling (or
-    // vice versa) the instant a recording is loaded or cleared.
-  }, [isRunning, videoSessionId, cameraRecordSessionId, sourceType]);
+  }, [isRunning, videoSessionId, sourceType]);
 
   const handleToggleRunning = async (startVideoInference: (customSessionId?: string) => Promise<void>) => {
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
@@ -228,13 +247,7 @@ export function useInferenceLoop({
       showToast('info', 'Inference paused. Click Resume or Start.');
       addLog('Inference paused • Model evaluation temporarily suspended.', 'info');
 
-      if (isCameraMode && cameraRecordSessionId) {
-        // Stopping inference on a loaded recording — this is a video-service
-        // session, so stop it the same way uploaded-video does.
-        try {
-          await fetch(`${getApiBaseUrl()}/video/stop/${cameraRecordSessionId}`, { method: 'POST' });
-        } catch (e) { }
-      } else if (isCameraMode) {
+      if (isCameraMode) {
         try { await cameraService.stopLiveInference(); } catch (e) { }
       }
       if (!isCameraMode && videoSessionId) {
@@ -243,18 +256,7 @@ export function useInferenceLoop({
         } catch (e) { }
       }
     } else {
-      if (isCameraMode && cameraRecordSessionId) {
-        // GPU-contention fix: a recording uses the video-inference GPU
-        // claim, which is refused while the camera claim is held. Always
-        // release live camera inference/stream first, even if the user
-        // believes it's already stopped.
-        setIsStarting(true);
-        try { await cameraService.stopLiveInference(); } catch (e) { }
-        try { await cameraService.stopStream(); } catch (e) { }
-        setCameraIsStreaming?.(false);
-        await startVideoInference(cameraRecordSessionId);
-        setIsStarting(false);
-      } else if (isCameraMode) {
+      if (isCameraMode) {
         setIsStarting(true);
         await startCameraPipeline();
         setIsStarting(false);
@@ -283,7 +285,7 @@ export function useInferenceLoop({
   const handleStopInference = async () => {
     setIsRunning(false);
 
-    const sids = Array.from(new Set([videoSessionId, cameraRecordSessionId].filter(Boolean))) as string[];
+    const sids = Array.from(new Set([videoSessionId].filter(Boolean))) as string[];
 
     for (const sid of sids) {
       try {
@@ -298,7 +300,7 @@ export function useInferenceLoop({
     }
 
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
-    if (isCameraMode && !cameraRecordSessionId && !videoSessionId) {
+    if (isCameraMode && !videoSessionId) {
       cameraService.stopLiveInference().catch(() => { });
     }
 
@@ -347,7 +349,7 @@ export function useInferenceLoop({
     setIsRunning(false);
     setIsStarting(false);
 
-    const sids = Array.from(new Set([videoSessionId, cameraRecordSessionId].filter(Boolean))) as string[];
+    const sids = Array.from(new Set([videoSessionId].filter(Boolean))) as string[];
 
     for (const sid of sids) {
       try {
@@ -393,17 +395,6 @@ export function useInferenceLoop({
       useInferenceStore.getState().resetStats();
       resetBBoxCache();
       void startVideoInference();
-      return;
-    }
-
-    if (isCameraMode && cameraRecordSessionId) {
-      // Resuming inference on a loaded recording — video-service path with GPU guard
-      (async () => {
-        try { await cameraService.stopLiveInference(); } catch (e) { }
-        try { await cameraService.stopStream(); } catch (e) { }
-        setCameraIsStreaming?.(false);
-        await startVideoInference(cameraRecordSessionId);
-      })();
       return;
     }
 

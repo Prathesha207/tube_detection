@@ -259,8 +259,7 @@ class VideoInferenceService:
         session["queue"] = asyncio.Queue(maxsize=2)
         session["stop_event"] = threading.Event()
         session["last_frame_bytes"] = None
-        session["roi_points"] = []
-        session["roi_frame_size"] = None
+        # Preserve user ROI across runs; only clear ROI when user explicitly resets it
         session["status"] = "processing"
         session["stats"].update({
             **new_stats(),
@@ -341,6 +340,12 @@ class VideoInferenceService:
         try:
             analyzer, owns_analyzer = self._acquire_analyzer()   # model load happens here, off the event loop
             analyzer.reset_tracking()
+            if session.get("roi_points"):
+                try:
+                    analyzer.set_roi(session["roi_points"], session.get("roi_frame_size"))
+                    logger.info(f"Re-applied {len(session['roi_points'])}-point ROI to session {session_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to re-apply ROI for session {session_id}: {e}")
             session["analyzer"] = analyzer
 
             cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)

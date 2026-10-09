@@ -65,7 +65,7 @@ export const mapDetectionsToTubes = (
       y: py,
       width: pw,
       height: ph,
-      width_px: d.width_px ?? null,
+      width_px: d.width_px ?? (Array.isArray(bArr) && bArr.length >= 3 ? Math.round(bArr[2]) : null),
       width_mm: d.width_mm ?? null,
       size: d.size ?? null,
       pair_id: d.pair_id ?? null,

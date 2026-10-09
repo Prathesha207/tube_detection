@@ -28,9 +28,9 @@ export const useVideoUpload = (
     const localPath = (file as any).path || '';
     if (localPath && typeof localPath === 'string' && localPath.length > 3 && !isRec) {
       formData.append('file_path', localPath);
+    } else {
+      formData.append('file', file);
     }
-
-    formData.append('file', file);
     formData.append('is_camera_recording', isRec ? 'true' : 'false');
     const fpsMatch = file.name.match(/_(\d+)fps/i);
     if (fpsMatch) {

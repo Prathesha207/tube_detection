@@ -152,20 +152,22 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
     const result: Record<string, BadgePlacement> = {};
     if (validTubes.length === 0) return result;
 
-    // 1. Calculate cluster center
+    // 1. Anchor outward placement relative to frame center (50%, 50%)
+    // This guarantees label quadrant placement is completely stable and
+    // never jumps sides when another tube appears or disappears!
     const centers = validTubes.map((t) => ({
       tube: t,
       cx: t.x + t.width / 2,
       cy: t.y + t.height / 2,
     }));
 
-    const avgCx = centers.reduce((sum, c) => sum + c.cx, 0) / centers.length;
-    const avgCy = centers.reduce((sum, c) => sum + c.cy, 0) / centers.length;
+    const anchorCx = 50;
+    const anchorCy = 50;
 
-    // 2. Calculate outward vector & polar angle from center
+    // 2. Calculate outward vector & polar angle from frame center
     const withAngles = centers.map((item) => {
-      const dx = item.cx - avgCx;
-      const dy = item.cy - avgCy;
+      const dx = item.cx - anchorCx;
+      const dy = item.cy - anchorCy;
       const angle = Math.atan2(dy, dx);
       return { ...item, dx, dy, angle };
     });
@@ -258,7 +260,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
 
         return (
           <div
-            key={`bbox-${idx}-${tube.id}`}
+            key={`bbox-${tube.id}`}
             role="button"
             tabIndex={0}
             aria-label={`Select tube end ${tube.id}`}

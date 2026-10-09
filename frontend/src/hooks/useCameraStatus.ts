@@ -69,22 +69,27 @@ export function useCameraStatus(
           if (isMounted) {
             const isOnline = Boolean(data.connected || data.running || data.streaming);
             const settings = data.camera_settings;
-            setCameraConfig((prev) => ({
-              ...prev,
-              connected: isOnline,
-              ...(settings ? {
-                controlMode: settings.control_mode,
-                exposure: settings.exposure,
-                gain: settings.gain,
-                iso: settings.gain,
-                focus: settings.focus ?? undefined,
-                focusAvailable: Boolean(settings.focus_available),
-                brightness: settings.brightness,
-                contrast: settings.contrast,
-                autoFocus: false,
-                autoExposure: false,
-              } : {}),
-            }));
+            setCameraConfig((prev) => {
+              const wasOffline = !prev.connected;
+              return {
+                ...prev,
+                connected: isOnline,
+                // Only overwrite controls when transitioning from offline to online,
+                // so user slider edits don't snap back every 5 seconds!
+                ...(settings && wasOffline ? {
+                  controlMode: settings.control_mode,
+                  exposure: settings.exposure,
+                  gain: settings.gain,
+                  iso: settings.gain,
+                  focus: settings.focus ?? undefined,
+                  focusAvailable: Boolean(settings.focus_available),
+                  brightness: settings.brightness,
+                  contrast: settings.contrast,
+                  autoFocus: false,
+                  autoExposure: false,
+                } : (settings ? { focusAvailable: Boolean(settings.focus_available) } : {})),
+              };
+            });
             setIsCameraDeviceActive(isOnline);
             setCameraConnected(isOnline);
             if (data.last_error) {

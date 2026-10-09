@@ -331,9 +331,15 @@ class InferenceRecorder:
         try:
             while self._is_running or not self._queue.empty():
                 try:
-                    raw_bgr, proc_bgr, pts_ms = self._queue.get(timeout=1.0)
+                    item = self._queue.get(timeout=1.0)
                 except queue.Empty:
                     continue
+
+                if len(item) == 4:
+                    raw_bgr, dets, display_status, pts_ms = item
+                    proc_bgr = draw_overlay(raw_bgr, detections=dets, status=display_status)
+                else:
+                    raw_bgr, proc_bgr, pts_ms = item
 
                 try:
                     self._encode_frame(raw_bgr,  self._raw_stream,       pts_ms)
@@ -364,25 +370,19 @@ class InferenceRecorder:
             return
 
         pts_ms = int((time.monotonic() - self._start_mono) * 1000)
-
         display_status = self._final_status if self._status_finalized else "PENDING"
-
-        processed_frame = draw_overlay(
-            raw_frame,
-            detections=result.get("detections", []),
-            status=display_status,
-        )
+        dets = result.get("detections", [])
 
         self._last_pts_ms = pts_ms
         self._last_raw    = raw_frame
-        self._last_proc   = processed_frame
+        self._last_proc   = None
 
         try:
-            self._queue.put_nowait((raw_frame, processed_frame, pts_ms))
+            self._queue.put_nowait((raw_frame, dets, display_status, pts_ms))
         except queue.Full:
             try:
                 self._queue.get_nowait()
-                self._queue.put_nowait((raw_frame, processed_frame, pts_ms))
+                self._queue.put_nowait((raw_frame, dets, display_status, pts_ms))
             except Exception:
                 pass
 

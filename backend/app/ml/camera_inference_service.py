@@ -76,13 +76,15 @@ def _start_idle_sweeper_once() -> None:
 
 def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = None) -> Dict[str, Any]:
     existing = _sessions.get(session_id)
-    if existing is not None and existing.get("analyzer") is not None:
-        return existing
+    if existing is not None:
+        if existing.get("analyzer") is not None or existing.get("load_error") is not None:
+            return existing
 
     with _sessions_lock:
         existing = _sessions.get(session_id)
-        if existing is not None and existing.get("analyzer") is not None:
-            return existing
+        if existing is not None:
+            if existing.get("analyzer") is not None or existing.get("load_error") is not None:
+                return existing
 
         if not app_state.try_enter_inference("camera"):
             if app_state.get_mode() == "TRAINING":
@@ -139,7 +141,7 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             except Exception as e:
                 logger.error(f"Failed to load camera analyzer asynchronously: {e}", exc_info=True)
                 with session["inference_lock"]:
-                    session["analyzer"] = None  # Clear loading state to prevent infinite loops
+                    session["analyzer"] = "ERROR"
                     session["load_error"] = str(e)
                     if session.get("inference_claimed"):
                         app_state.exit_inference("camera")
@@ -197,6 +199,7 @@ def analyze_camera_frame(
     video_name: Optional[str] = None,      # accepted for old callers, not used
     annotate: bool = False,
     wait_for_model: bool = False,
+    frame_seq: Optional[int] = None,
     **kwargs,
 ) -> Tuple[Dict[str, Any], Any]:
     """Run the model on one camera frame. Returns (stats, clean_frame).
@@ -238,15 +241,15 @@ def analyze_camera_frame(
             stats = new_stats(session_id=session_id, status="LOADING_MODEL")
             session["last_stats"] = stats
             return stats, frame
-        if session.get("load_error"):
-            return _error_stats(session_id, session["load_error"], session["frames_processed"]), frame
+        if session.get("load_error") or analyzer == "ERROR":
+            return _error_stats(session_id, session.get("load_error") or "Model failed to load", session["frames_processed"]), frame
         if analyzer is None:        # session was closed while this frame waited for the lock
             return _error_stats(session_id, "Camera session was closed", session["frames_processed"]), frame
 
-        frame_number = session["frames_processed"] + 1
+        frame_number = frame_seq if frame_seq is not None else (session["frames_processed"] + 1)
         try:
             stats = analyzer.infer(frame, frame_number)      # <- the ONE ML call
-            session["frames_processed"] = frame_number       # only count frames that succeeded
+            session["frames_processed"] += 1
         except Exception as e:
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
             return _error_stats(session_id, str(e), session["frames_processed"]), frame
@@ -255,7 +258,7 @@ def analyze_camera_frame(
         if annotate:
             session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # reuses this frame's detections
 
-    stats.update(session_id=session_id, frames_processed=frame_number)
+    stats.update(session_id=session_id, frames_processed=session["frames_processed"])
     session["last_stats"] = stats
     return stats, clean_frame
 
@@ -263,6 +266,14 @@ def analyze_camera_frame(
 def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:
     """Hot-swap active camera session analyzer in-memory (per-session ROI, no disk persistence)."""
     global _global_roi_points, _global_roi_frame_size
+    if points and len(points) >= 3:
+        try:
+            from app.ml.tube_analyzer import roi_from_points
+            _ = roi_from_points(points, frame_size)
+        except Exception as val_err:
+            logger.warning(f"Invalid ROI geometry in set_camera_roi: {val_err}")
+            raise
+
     with _sessions_lock:
         # Save globally so new sessions inherit it
         _global_roi_points = points or []
@@ -270,6 +281,8 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
         
         if session_id and session_id in _sessions:
             targets = [_sessions[session_id]]
+        elif session_id in ("camera", "live") and "live" in _sessions:
+            targets = [_sessions["live"]]
         else:
             targets = list(_sessions.values())
         for s in targets:
@@ -277,6 +290,8 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
             s["roi_frame_size"] = frame_size
             analyzer = s.get("analyzer")
             if isinstance(analyzer, TubeAnalyzer):
+                analyzer.set_roi(points, frame_size)
+                analyzer.reset_tracking()
                 analyzer.set_roi(points, frame_size)
 
 

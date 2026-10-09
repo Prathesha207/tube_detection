@@ -84,6 +84,7 @@ class OakCameraService:
         self._latest_bgr: np.ndarray | None = None
         self._latest_jpeg: bytes | None = None
         self._latest_bgr_seq: int = 0
+        self._latest_frame_data: tuple[np.ndarray, int, float] | None = None  # (bgr, seq_num, capture_ts)
         self._pipeline_width: int = 1920
         self._pipeline_height: int = 1080
 
@@ -110,6 +111,7 @@ class OakCameraService:
         self._inference_watchdog_thread: threading.Thread | None = None
         self._inference_stop = threading.Event()
         self._inference_result_queue: asyncio.Queue | None = None
+        self._inference_subscribers: set[asyncio.Queue] = set()
         self._inference_loop: asyncio.AbstractEventLoop | None = None
         self._inference_session_id: str | None = None
 
@@ -146,7 +148,7 @@ class OakCameraService:
             try:
                 logger.info(f"[DEVICE] Connecting to {ip} (attempt {attempt + 1}/{max_attempts})")
                 try:
-                    device_info = self._resolve_device_info(ip)
+                    device_info = await loop.run_in_executor(None, self._resolve_device_info, ip)
                 except RuntimeError as resolve_err:
                     # No OAK device found at all — don't retry, just report cleanly
                     err_msg = str(resolve_err)
@@ -502,6 +504,14 @@ class OakCameraService:
                     )
                 except Exception:
                     pass
+
+            if self._inference_session_id:
+                try:
+                    from app.ml.camera_inference_service import close_camera_session
+                    close_camera_session(self._inference_session_id)
+                except Exception as close_err:
+                    logger.debug(f"[CAMERA] Error closing session on device lost: {close_err}")
+
             self._inference_result_queue = None
             self._inference_thread = None
             self._inference_watchdog_thread = None
@@ -652,10 +662,10 @@ class OakCameraService:
 
                 pkt = self._mjpeg_dai_queue.tryGet()
                 if pkt is None:
-                    # Watchdog: detect frozen camera if no frames from camera for 3.0s
-                    if time.time() - last_frame_ts > 3.0:
-                        logger.error("[MJPEG] Watchdog: No MJPEG frames from camera for 3.0s — device connection frozen")
-                        self._on_device_lost("No MJPEG frames from camera for 3.0s")
+                    # Watchdog: detect frozen camera if no frames from camera for 6.0s after streaming begins
+                    if not self._mjpeg_stop.is_set() and frames > 0 and (time.time() - last_frame_ts > 6.0):
+                        logger.error("[MJPEG] Watchdog: No MJPEG frames from camera for 6.0s — device connection frozen")
+                        self._on_device_lost("No MJPEG frames from camera for 6.0s")
                         break
                     time.sleep(0.001)
                     continue
@@ -746,15 +756,16 @@ class OakCameraService:
                 except Exception:
                     pass
 
+                # Zero-lag: Drop unconsumed frames so converter always converts the freshest frame
+                while not self._hires_packet_queue.empty():
+                    try:
+                        self._hires_packet_queue.get_nowait()
+                    except Exception:
+                        break
                 try:
                     self._hires_packet_queue.put_nowait(pkt)
                 except Exception:
-                    # Queue full — drop oldest, put new
-                    try:
-                        self._hires_packet_queue.get_nowait()
-                        self._hires_packet_queue.put_nowait(pkt)
-                    except Exception:
-                        pass
+                    pass
 
         except Exception as e:
             err_msg = str(e)
@@ -778,10 +789,18 @@ class OakCameraService:
 
         try:
             while not self._convert_stop.is_set() or not self._hires_packet_queue.empty():
-                try:
-                    pkt = self._hires_packet_queue.get(timeout=0.1)
-                except Empty:
-                    continue
+                # Drain queue to only process the newest available packet
+                pkt = None
+                while not self._hires_packet_queue.empty():
+                    try:
+                        pkt = self._hires_packet_queue.get_nowait()
+                    except Empty:
+                        break
+                if pkt is None:
+                    try:
+                        pkt = self._hires_packet_queue.get(timeout=0.05)
+                    except Empty:
+                        continue
 
                 try:
                     raw_bgr = pkt.getCvFrame()
@@ -789,17 +808,19 @@ class OakCameraService:
                     logger.warning(f"[CONVERT] getCvFrame failed: {e}")
                     continue
 
+                seq_num = self._latest_bgr_seq + 1
+                ts_sec = time.time()
+                try:
+                    seq_num = pkt.getSequenceNum()
+                except Exception:
+                    pass
+
                 if not _first_frame_logged:
                     logger.info(f"[CONVERT] First frame received — shape={raw_bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
                     _first_frame_logged = True
 
-                # Apply software adjustments ONLY when explicitly non-neutral and in manual mode.
-                # Default contrast (50 or 0) and brightness 0 is neutral.
-                is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
-                if not is_neutral and self.control_mode == "manual":
-                    display_bgr = self._apply_adjustments(raw_bgr)
-                else:
-                    display_bgr = raw_bgr
+                # Hardware ISP applies brightness and contrast directly to both MJPEG and NV12 outputs
+                display_bgr = raw_bgr
 
                 if self.control_mode == "auto" and not self._calibrating:
                     self._run_monitor(display_bgr)
@@ -807,7 +828,8 @@ class OakCameraService:
                     self._monitor_baseline_sharpness = None
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
-                self._latest_bgr_seq += 1
+                self._latest_bgr_seq = seq_num
+                self._latest_frame_data = (display_bgr, seq_num, ts_sec)
 
                 if self._active_recording is not None:
                     # Save the same adjusted image shown in the live stream.
@@ -964,6 +986,10 @@ class OakCameraService:
             logger.error(f"[MONITOR] Auto-calibration failed: {e}")
 
     def _run_monitor(self, frame: np.ndarray) -> None:
+        # If live inference is actively running, never trigger auto-calibration shifts
+        if self._inference_thread is not None and self._inference_thread.is_alive():
+            return
+
         now = time.time()
         if now - self._monitor_last_calib_time < 5.0 or now - self._monitor_last_check < 0.5:
             return
@@ -1256,11 +1282,12 @@ class OakCameraService:
                         break
                     self._latest_bgr = frame
                 else:
-                    if self._latest_bgr is None or self._latest_bgr_seq == last_seen_seq:
-                        time.sleep(0.005)
+                    frame_data = self._latest_frame_data
+                    if frame_data is None or frame_data[1] == last_seen_seq:
+                        time.sleep(0.002)
                         continue
-                    last_seen_seq = self._latest_bgr_seq
-                    frame = self._latest_bgr
+                    frame, frame_seq, frame_ts = frame_data
+                    last_seen_seq = frame_seq
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:
@@ -1280,6 +1307,7 @@ class OakCameraService:
                     session_id,
                     video_name=self._current_video_name,
                     wait_for_model=self._inference_offline,
+                    frame_seq=frame_seq if not self._inference_offline else None,
                 )
                 latency_ms = (time.perf_counter() - t_start) * 1000
 
@@ -1309,13 +1337,16 @@ class OakCameraService:
                 gpu_pct = self._gpu_usage
 
                 # ── Attach metrics to result ──────────────────────────────────
+                result["frame_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
+                result["capture_age_ms"] = round((time.time() - frame_ts) * 1000, 1) if (not self._inference_offline and frame_ts) else round(latency_ms, 1)
                 result["latency_ms"] = round(latency_ms, 1)
                 result["frame_time_ms"] = round(latency_ms, 1)
                 result["metrics"] = {
-                    "fps":           round(current_fps, 1),
-                    "gpu_pct":       round(gpu_pct, 1),
-                    "latency_ms":    round(latency_ms, 1),
-                    "frame_time_ms": round(latency_ms, 1),
+                    "fps":            round(current_fps, 1),
+                    "gpu_pct":        round(gpu_pct, 1),
+                    "latency_ms":     round(latency_ms, 1),
+                    "frame_time_ms":  round(latency_ms, 1),
+                    "capture_age_ms": result["capture_age_ms"],
                 }
 
                 logger.debug(
@@ -1333,8 +1364,7 @@ class OakCameraService:
                     result["total_videos"]  = self._total_videos
                     result["video_name"]    = self._current_video_name
 
-                if self._inference_offline:
-                    result["_raw_frame"] = frame
+                result["_raw_frame"] = frame
 
                 # ── Push result to WebSocket ──────────────────────────────────
                 if self._inference_result_queue is not None and self._inference_loop is not None:
@@ -1584,19 +1614,53 @@ class OakCameraService:
         self._offline_stop.clear()
         logger.info("[OFFLINE] Thread stopped")
 
+    def subscribe_inference(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self._inference_subscribers.add(q)
+        logger.info(f"[INFERENCE] Client subscribed — active subscribers: {len(self._inference_subscribers)}")
+        return q
+
+    def unsubscribe_inference(self, q: asyncio.Queue | None = None) -> None:
+        if q is not None:
+            self._inference_subscribers.discard(q)
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+        else:
+            for sub in list(self._inference_subscribers):
+                while not sub.empty():
+                    try:
+                        sub.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+            self._inference_subscribers.clear()
+        logger.info(f"[INFERENCE] Client unsubscribed — remaining subscribers: {len(self._inference_subscribers)}")
+
     async def _async_inference_push(self, result: dict) -> None:
-        """Drop-oldest push into inference result queue — always keeps the freshest frame for zero lag."""
-        if self._inference_result_queue is None:
-            return
-        while not self._inference_result_queue.empty():
+        """Drop-oldest push into all client inference queues — always keeps freshest frame for zero lag."""
+        for q in list(self._inference_subscribers):
+            if q.full():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
             try:
-                self._inference_result_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        try:
-            self._inference_result_queue.put_nowait(result)
-        except asyncio.QueueFull:
-            pass
+                q.put_nowait(result)
+            except asyncio.QueueFull:
+                pass
+
+        if self._inference_result_queue is not None and self._inference_result_queue not in self._inference_subscribers:
+            if self._inference_result_queue.full():
+                try:
+                    self._inference_result_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                self._inference_result_queue.put_nowait(result)
+            except asyncio.QueueFull:
+                pass
 
     def _collect_folder_videos(self, folder_path: str) -> list[str]:
         """Return sorted list of video file paths found directly inside folder_path."""
@@ -1621,8 +1685,10 @@ class OakCameraService:
         folder_path: str | None = None,
     ) -> dict:
         if self._inference_thread and self._inference_thread.is_alive():
-            logger.warning("[INFERENCE] Already running")
-            return {"status": "already_running"}
+            logger.info(f"[INFERENCE] Stopping previous inference thread before starting session {session_id}...")
+            self.stop_inference()
+            if self._inference_thread and self._inference_thread.is_alive():
+                self._inference_thread.join(timeout=1.0)
 
         logger.info(f"[INFERENCE] Mode: {'OFFLINE' if offline else 'ONLINE'} — session: {session_id}")
 
@@ -1635,7 +1701,7 @@ class OakCameraService:
 
         def _push_error(msg: str) -> None:
             asyncio.run_coroutine_threadsafe(
-                self._async_inference_push({"status": "ERROR", "error": msg, "done": True}),
+                self._async_inference_push({"status": "error", "error": msg, "reasons": [msg], "done": True}),
                 loop,
             )
 
@@ -1757,7 +1823,8 @@ class OakCameraService:
                         f"{session_id} has now actually exited -- releasing GPU claim."
                     )
                     try:
-                        close_camera_session(session_id)
+                        if self._inference_session_id != session_id:
+                            close_camera_session(session_id)
                     except Exception as e:
                         logger.error(f"[INFERENCE] close_camera_session during delayed release failed: {e}")
 
@@ -1778,6 +1845,7 @@ class OakCameraService:
         if thread_confirmed_dead:
             self._inference_thread = None
         self._inference_watchdog_thread = None
+        self.unsubscribe_inference()
         self._inference_result_queue = None
         self._inference_session_id = None
         self._inference_offline = False

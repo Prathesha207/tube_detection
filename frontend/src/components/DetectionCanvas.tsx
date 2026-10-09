@@ -65,10 +65,6 @@ interface DetectionCanvasProps {
   onCaptureCameraFrame?: (frame: string) => void;
   onRetryConnection?: () => void;
   framesProcessed?: number;
-  cameraRecordSessionId?: string | null;
-  cameraRecordUrl?: string;
-  cameraRecordName?: string;
-  onClearCameraRecord?: () => void;
   cameraError?: string | null;
   cameraTargetFps?: number;
   recordingFormat?: 'AVI' | 'MP4' | 'FFV1';
@@ -114,10 +110,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   onCaptureCameraFrame,
   onRetryConnection,
   framesProcessed = 0,
-  cameraRecordSessionId,
-  cameraRecordUrl,
-  cameraRecordName,
-  onClearCameraRecord,
   cameraTargetFps,
   recordingFormat = 'MP4',
   cameraError,
@@ -138,9 +130,31 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [streamError, setStreamError] = useState<boolean>(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Smooth bounding box persistence: 150ms grace period so a single missed frame
+  // by YOLO doesn't flash or unmount all boxes from the screen
+  const [displayTubes, setDisplayTubes] = useState<TubeEntity[]>([]);
+  const tubeHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (tubes.length > 0) {
+      if (tubeHoldTimeoutRef.current) clearTimeout(tubeHoldTimeoutRef.current);
+      setDisplayTubes(tubes);
+    } else if (isRunning) {
+      tubeHoldTimeoutRef.current = setTimeout(() => {
+        setDisplayTubes([]);
+      }, 150);
+    } else {
+      setDisplayTubes([]);
+    }
+    return () => {
+      if (tubeHoldTimeoutRef.current) clearTimeout(tubeHoldTimeoutRef.current);
+    };
+  }, [tubes, isRunning]);
+
   useEffect(() => {
     return () => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      if (tubeHoldTimeoutRef.current) clearTimeout(tubeHoldTimeoutRef.current);
     };
   }, []);
 
@@ -148,11 +162,10 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
   const isVideoSource = sourceType === 'uploaded-video' || sourceType === 'sample-pond';
   const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
-  const hasCameraRecording = isCameraSource && Boolean(cameraRecordSessionId);
   const hasActiveVideo = isVideoSource && Boolean(customVideoUrl || videoSessionId);
   const isWaitingForVideo = isVideoSource && !hasActiveVideo && !isRunning;
-  const isCameraOffline = isCameraSource && !isCameraConnected && !hasCameraRecording;
-  const isMediaActive = Boolean(hasActiveVideo || videoSessionId || hasCameraRecording || (isCameraSource && isCameraConnected && isStreaming) || (isCameraSource && isRunning) || (isVideoSource && isRunning));
+  const isCameraOffline = isCameraSource && !isCameraConnected;
+  const isMediaActive = Boolean(hasActiveVideo || videoSessionId || (isCameraSource && isCameraConnected && isStreaming) || (isCameraSource && isRunning) || (isVideoSource && isRunning));
 
   // Canvas Zoom & Pan
   const {
@@ -187,15 +200,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const effectiveFh = Number(backendStats?.video_height) || Number(videoDimensions?.height) || 1080;
 
   // Active session id (video or camera)
-  const activeSessionId = videoSessionId || cameraRecordSessionId || (isCameraSource ? 'camera' : undefined);
+  const activeSessionId = videoSessionId || (isCameraSource ? 'camera' : undefined);
 
-  // Pure per-session ROI: Every start of inference or new session starts with a full frame (no ROI).
-  // Never restore old ROIs from disk.
+  // Reset ROI only when switching between completely different media sessions (not on isRunning toggles)
   useEffect(() => {
     setRoiPoints([]);
     setSavedRoiPoints([]);
     setIsRoiActive(false);
-  }, [activeSessionId, isRunning]);
+  }, [activeSessionId]);
 
   const hasRoiChanges = useMemo(() => {
     if (roiPoints.length !== savedRoiPoints.length) return true;
@@ -263,27 +275,27 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   // Reset zoom whenever stream or video source changes
   useEffect(() => {
     resetZoom();
-  }, [sourceType, customVideoUrl, cameraRecordSessionId, resetZoom]);
+  }, [sourceType, customVideoUrl, resetZoom]);
 
-  // Ensure camera stream reconnects cleanly whenever running state changes while streaming or camera reconnects
+  // Ensure camera stream reconnects cleanly when camera connects or stream starts (not on isRunning toggles)
   useEffect(() => {
     if (isCameraSource && isStreaming) {
       setStreamCacheBuster(Date.now());
     }
-  }, [isRunning, isCameraSource, isStreaming, isCameraConnected]);
+  }, [isCameraSource, isStreaming, isCameraConnected]);
 
   // Auto-retry reconnect loop if stream encountered an error or connection was interrupted
   useEffect(() => {
-    if (streamError && ((isCameraSource && isStreaming) || (isRunning && (videoSessionId || cameraRecordSessionId)))) {
+    if (streamError && ((isCameraSource && isStreaming) || (isRunning && videoSessionId))) {
       const timer = setTimeout(() => {
         setStreamCacheBuster(Date.now());
       }, 2500);
       return () => clearTimeout(timer);
     }
-  }, [streamError, isCameraSource, isStreaming, isRunning, videoSessionId, cameraRecordSessionId, streamCacheBuster]);
+  }, [streamError, isCameraSource, isStreaming, isRunning, videoSessionId, streamCacheBuster]);
 
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
-  const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0) && tubes.length > 0;
+  const hasInferenceResult = (effectiveFramesProcessed > 0 || tubes.length > 0 || displayTubes.length > 0) && (tubes.length > 0 || displayTubes.length > 0);
 
   const hasDetections = Boolean(
     tubes.length > 0 ||
@@ -299,7 +311,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     if (!isRunning) {
       setIsFirstFrameLoaded(false);
     }
-  }, [isRunning, videoSessionId, cameraRecordSessionId]);
+  }, [isRunning, videoSessionId]);
 
   // Keep "Inference is Running..." visible until initial detections arrive, then reveal the frame!
   useEffect(() => {
@@ -325,8 +337,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
   const isOverlayShowing =
     Boolean(isStarting) ||
-    Boolean(isCameraSource && !hasCameraRecording && isCameraConnected && cameraStartingState !== 'ready') ||
-    Boolean((isVideoSource || hasCameraRecording) && (hasActiveVideo || hasCameraRecording) && isRunning && !isFirstFrameLoaded);
+    Boolean(isCameraSource && isCameraConnected && cameraStartingState !== 'ready') ||
+    Boolean(isVideoSource && hasActiveVideo && isRunning && !isFirstFrameLoaded);
 
   // Hooks
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef);
@@ -351,7 +363,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   // Cache buster for stream URL
   useEffect(() => {
     setStreamCacheBuster(Date.now());
-  }, [isRunning, videoSessionId, cameraRecordSessionId]);
+  }, [isRunning, videoSessionId]);
 
   useEffect(() => {
     if (backendStats?.status === 'stopped' && !isRunning) {
@@ -502,7 +514,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )}
 
-      {isCameraSource && !hasCameraRecording && !isCameraConnected && (
+      {isCameraSource && !isCameraConnected && (
         <CameraOfflineCard
           onSwitchToVideo={() => onRequestSwitchMode?.('uploaded-video')}
           onRetryConnection={onRetryConnection || (async () => {
@@ -519,7 +531,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )}
 
-      {isCameraSource && !hasCameraRecording && isCameraConnected && !isStreaming && (
+      {isCameraSource && isCameraConnected && !isStreaming && (
         <CameraStandbyCard
           onStartInference={onResumeInference || onToggleRunning}
           onStartStream={onStartStream}
@@ -546,7 +558,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             onClick={handleCanvasClick}
           >
             {/* BACKDROP: Cached or stopped frame rendered as a reliable persistent background */}
-            {effectiveBackdrop && (
+            {effectiveBackdrop && !isRunning && (
               <img
                 src={effectiveBackdrop}
                 className="absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-contain"
@@ -563,26 +575,19 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             )}
 
             {/* STREAM VIEWPORT: If backend session is active (video or camera), render via <img> to support MJPEG streaming */}
-            {(videoSessionId || cameraRecordSessionId || isCameraSource) ? (
+            {(videoSessionId || isCameraSource) ? (
               <img
                 ref={cameraImgRef}
                 crossOrigin="anonymous"
                 src={
-                  hasCameraRecording
-                    ? (isRunning
-                      ? `${getApiBaseUrl()}/video/stream/${cameraRecordSessionId}?t=${streamCacheBuster}`
-                      : `${getApiBaseUrl()}/video/last_frame/${cameraRecordSessionId}?t=${streamCacheBuster}`)
-                    : isCameraSource
-                      ? `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`
-                      : effectiveVideoUrl
+                  isCameraSource
+                    ? (isRunning && feedMode === 'inference' && lastCameraFrame
+                        ? lastCameraFrame
+                        : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
+                    : effectiveVideoUrl
                 }
                 className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-contain ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
                   }`}
-                style={{
-                  filter: isCameraSource && !hasCameraRecording && cameraConfig
-                    ? `brightness(${Math.max(0.2, 1 + ((cameraConfig.brightness ?? 0) / 100))}) contrast(${Math.max(0.2, (cameraConfig.contrast ?? 50) / 50)})`
-                    : undefined
-                }}
                 alt=""
                 onLoad={(e) => {
                   const tgt = e.target as HTMLImageElement;
@@ -628,11 +633,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: Shown in INFERENCE mode or always for video upload / camera recording */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && tubes.length > 0 && (
+            {/* AI Bounding Boxes: Shown in INFERENCE mode or always for video upload */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource) && (tubes.length > 0 || displayTubes.length > 0) && (
               <div className={`absolute inset-0 ${isRoiActive ? 'pointer-events-none opacity-40' : 'pointer-events-auto'}`}>
                 <BoundingBoxOverlay
-                  tubes={tubes}
+                  tubes={tubes.length > 0 ? tubes : displayTubes}
                   selectedTubeId={selectedTubeId}
                   onSelectTube={onSelectTube}
                   labelMode={labelMode}
@@ -690,7 +695,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         isStarting={isStarting}
         isCameraSource={isCameraSource}
         isVideoSource={isVideoSource}
-        hasCameraRecording={hasCameraRecording}
         cameraStartingState={cameraStartingState}
         hasActiveVideo={hasActiveVideo}
         isRunning={isRunning}
@@ -711,7 +715,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           backendStatus={backendStats?.status}
           isCameraSource={isCameraSource}
           isVideoSource={isVideoSource}
-          hasCameraRecording={hasCameraRecording}
           anomalyStatus={anomalyStatus}
           isStreaming={isStreaming}
           isFirstFrameLoaded={isFirstFrameLoaded}

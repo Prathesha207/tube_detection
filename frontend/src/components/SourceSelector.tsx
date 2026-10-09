@@ -35,8 +35,6 @@ interface SourceSelectorProps {
   onStopStream?: () => void;
   isCameraConnected?: boolean;
   cameraStartingState?: 'idle' | 'waking_camera' | 'waiting_frame' | 'ready';
-  cameraRecordSessionId?: string | null;
-  onClearCameraRecord?: () => void;
 }
 
 export const SourceSelector: React.FC<SourceSelectorProps> = ({
@@ -62,8 +60,6 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   onStopStream,
   isCameraConnected = true,
   cameraStartingState = 'ready',
-  cameraRecordSessionId,
-  onClearCameraRecord,
 }) => {
   const isVideoLoading = useInferenceStore((state) => state.isVideoLoading);
   const storeHeads = useInferenceStore((state) => state.stats.heads_count ?? 0);
@@ -211,7 +207,7 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                   </button>
 
                   {/* For Camera: Record Button next to START INFERENCE when inference is not running */}
-                  {isCameraMode && !isRunning && !cameraRecordSessionId && (
+                  {isCameraMode && !isRunning && (
                     <button
                       disabled={isSavingRecording}
                       onClick={() => onToggleRecording?.()}
@@ -271,20 +267,8 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                     </button>
                   )}
 
-                  {/* For Camera Recording: Allow clearing the recorded clip to return to live camera */}
-                  {isCameraMode && cameraRecordSessionId && onClearCameraRecord && (
-                    <button
-                      onClick={() => onClearCameraRecord()}
-                      title="Clear recorded clip and return to live camera stream"
-                      className="h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 rounded-xl bg-[var(--btn-secondary-bg)] border border-[var(--btn-secondary-border)] text-[var(--btn-secondary-text)] hover:bg-rose-500/15 hover:border-rose-500/30 hover:text-rose-600 dark:hover:text-rose-400 font-bold text-[11px] sm:text-xs shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
-                    >
-                      <Trash2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-                      <span className="whitespace-nowrap">CLEAR<span className="hidden sm:inline"> RECORDING</span></span>
-                    </button>
-                  )}
-
                   {/* For Camera: allow streaming-only if user wants to align/view camera without AI */}
-                  {isCameraMode && !cameraRecordSessionId && (
+                  {isCameraMode && (
                     !isStreaming ? (
                       <button
                         onClick={() => {

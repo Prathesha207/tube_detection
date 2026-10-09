@@ -124,6 +124,7 @@ export function useAnomalyStatus({
   ]);
 
   const prevCountRef = useRef({ heads: 0, tails: 0 });
+  const lastLogTimeRef = useRef<number>(0);
 
   useEffect(() => {
     if (!hasActiveStream || !isRunning) {
@@ -131,9 +132,11 @@ export function useAnomalyStatus({
       return;
     }
     const { heads, tails } = prevCountRef.current;
+    const now = Date.now();
     if (heads !== anomalyStatus.headsCount || tails !== anomalyStatus.tailsCount) {
-      if (anomalyStatus.headsCount > 0 || anomalyStatus.tailsCount > 0) {
+      if ((anomalyStatus.headsCount > 0 || anomalyStatus.tailsCount > 0) && (now - lastLogTimeRef.current > 1200)) {
         addLog(`Detected: ${anomalyStatus.headsCount} Heads & ${anomalyStatus.tailsCount} Tails`, 'success');
+        lastLogTimeRef.current = now;
       }
       prevCountRef.current = { heads: anomalyStatus.headsCount, tails: anomalyStatus.tailsCount };
     }

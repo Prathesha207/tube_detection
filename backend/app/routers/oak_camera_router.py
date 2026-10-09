@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import time
 from typing import Optional
@@ -482,18 +483,17 @@ async def inference_ws(websocket: WebSocket, session_id: str):
     """
     await websocket.accept()
     logger.info(f"[INFERENCE WS] ✅ Client connected — session: {session_id}")
-    logger.info(f"[INFERENCE WS] Waiting for inference results — inference_running: {oak_camera_service._inference_thread is not None and oak_camera_service._inference_thread.is_alive()}")
+    client_queue = oak_camera_service.subscribe_inference()
 
     results_sent = 0
 
     try:
         while True:
-            result = await oak_camera_service.get_inference_result(timeout=1.0)
-
-            if result is None:
-                # Inference has stopped — queue was cleared; exit so the event loop is not starved
-                if oak_camera_service._inference_result_queue is None:
-                    logger.info(f"[INFERENCE WS] Inference stopped — closing")
+            try:
+                result = await asyncio.wait_for(client_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if not (oak_camera_service._inference_thread and oak_camera_service._inference_thread.is_alive()):
+                    logger.info("[INFERENCE WS] Inference stopped — closing")
                     break
                 continue
 
@@ -517,11 +517,10 @@ async def inference_ws(websocket: WebSocket, session_id: str):
 
             ws_result = dict(result)
             if "_raw_frame" in ws_result:
-                import cv2, base64, asyncio
                 frame = ws_result.pop("_raw_frame")
                 loop = asyncio.get_running_loop()
                 def _encode():
-                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
                     return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
                 ws_result["frame"] = await loop.run_in_executor(None, _encode)
 
@@ -532,6 +531,7 @@ async def inference_ws(websocket: WebSocket, session_id: str):
     except Exception as e:
         logger.error(f"[INFERENCE WS] Error: {e}", exc_info=True)
     finally:
+        oak_camera_service.unsubscribe_inference(client_queue)
         logger.info(f"[INFERENCE WS] Closed — session: {session_id}")
         try:
             await websocket.close()

@@ -27,7 +27,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   const [syncStatus, setSyncStatus] = useState<'synced' | 'adjusting'>('synced');
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
-  const presetRef = useRef({ exposure: config?.exposure ?? 8, gain: config?.gain ?? 400, focus: config?.focus, brightness: config?.brightness ?? 0, contrast: config?.contrast ?? 50 });
+  const presetRef = useRef({ exposure: config?.exposure ?? 8, gain: config?.gain ?? 400, focus: config?.focus ?? 0, brightness: config?.brightness ?? 0, contrast: config?.contrast ?? 50 });
 
   // Network queuing & pacing refs for ultra-smooth responsiveness
   const inFlightRef = useRef(false);
@@ -39,7 +39,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   useEffect(() => {
     if (config) {
       if (config.controlMode !== 'manual') {
-        presetRef.current = { exposure: config.exposure ?? 8, gain: config.gain ?? 400, focus: config.focus, brightness: config.brightness ?? 0, contrast: config.contrast ?? 50 };
+        presetRef.current = { exposure: config.exposure ?? 8, gain: config.gain ?? 400, focus: config.focus ?? 0, brightness: config.brightness ?? 0, contrast: config.contrast ?? 50 };
         if (typeof config.exposure === 'number') setExposure(config.exposure);
         if (typeof config.gain === 'number') setGain(config.gain);
         if (typeof config.focus === 'number') setFocus(config.focus);

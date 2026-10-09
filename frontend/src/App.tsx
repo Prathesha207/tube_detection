@@ -196,7 +196,7 @@ export default function App() {
       camera.setCameraStartingState('waiting_frame');
       addLog('Step 2/3: Stream started • Waiting for camera sensor to warm up...', 'info');
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
       camera.setCameraStartingState('ready');
       setIsStarting(false);
@@ -234,7 +234,6 @@ export default function App() {
   const inference = useInferenceLoop({
     sourceType,
     videoSessionId: video.videoSessionId,
-    cameraRecordSessionId: video.cameraRecordSessionId,
     showToast,
     addLog,
     startCameraPipeline,
@@ -417,7 +416,6 @@ export default function App() {
     if (isTargetCamera) {
       camera.setCameraStartingState('ready');
       camera.setIsStreaming(false);
-      video.clearCameraRecording(); // CRITICAL: prevent old recordings from hijacking the camera UI and showing the video inference card
       addLog(`Stream source switched to: ${targetType.toUpperCase()}`, 'info');
       showToast('info', 'Switched to OAK Camera mode');
       // No auto-start — CameraStandbyCard renders until user clicks Start Stream.
@@ -481,21 +479,15 @@ export default function App() {
   const recording = useRecording();
 
   const handleToggleRecording = async () => {
-    if (video.cameraRecordSessionId || isRunning) return;
+    if (isRunning) return;
     if (recording.isRecording) {
       const res = await recording.stopRecording();
-      const targetSessionId = res?.session_id || res?.recording_session_id;
-      if (res && targetSessionId) {
-        video.setCameraRecordSessionId(targetSessionId);
-        if (res.filename) video.setCameraRecordName(res.filename);
-        if (res.recording_path || res.stream_url) {
-          video.setCameraRecordUrl(res.recording_path || res.stream_url);
-        }
-        showToast('success', `Recording saved: ${res.filename} • Ready for review & inference`);
-        addLog(`Camera recording saved: ${res.filename} (${res.duration ?? 0}s, ${res.frames ?? 0} frames) • Loaded for review & inference.`, 'success');
-      } else if (res && res.filename) {
+      if (res && res.filename) {
         showToast('success', `Recording saved: ${res.filename}`);
         addLog(`Camera recording saved: ${res.filename} (${res.duration ?? 0}s, ${res.frames ?? 0} frames).`, 'success');
+      } else {
+        showToast('success', 'Recording saved successfully.');
+        addLog('Camera recording saved successfully.', 'success');
       }
     } else {
       if (!camera.isStreaming && camera.startCameraStream) {
@@ -507,21 +499,50 @@ export default function App() {
   };
 
   // ─── 12. Misc Handlers ────────────────────────────────────────────
-  const handleRestart = () => {
+  const handleRestart = async () => {
     setSelectedTubeId(null);
     addLog('Pipeline reset triggered. Reconnecting to camera stream...', 'info');
     inference.setFramesProcessed(0);
     inference.setUptimeSeconds(0);
-    setTimeout(() => addLog('Camera re-connected • YOLOv8 model inference active', 'success'), 400);
+    if (sourceType === 'oak-camera' || sourceType === 'webcam') {
+      await startCameraPipeline();
+    } else {
+      setTimeout(() => addLog('Video stream reset • YOLOv8 model inference active', 'success'), 200);
+    }
   };
 
   const handleTakeSnapshot = () => {
-    addLog(`Snapshot captured at ${new Date().toLocaleTimeString()} (Frame #${inference.framesProcessed})`, 'success');
     const heroEl = document.getElementById('detection-hero-viewport');
     if (heroEl) {
       heroEl.classList.add('ring-4', 'ring-white');
       setTimeout(() => heroEl.classList.remove('ring-4', 'ring-white'), 300);
+
+      const img = heroEl.querySelector('img') as HTMLImageElement | null;
+      const videoEl = heroEl.querySelector('video') as HTMLVideoElement | null;
+      const source = img || videoEl;
+      if (source) {
+        try {
+          const offscreen = document.createElement('canvas');
+          const width = (source as HTMLImageElement).naturalWidth || (source as HTMLVideoElement).videoWidth || source.clientWidth || 1920;
+          const height = (source as HTMLImageElement).naturalHeight || (source as HTMLVideoElement).videoHeight || source.clientHeight || 1080;
+          offscreen.width = width;
+          offscreen.height = height;
+          const ctx = offscreen.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(source, 0, 0, width, height);
+            const a = document.createElement('a');
+            a.download = `snapshot_${Date.now()}_frame_${inference.framesProcessed}.jpg`;
+            a.href = offscreen.toDataURL('image/jpeg', 0.95);
+            a.click();
+            addLog(`Snapshot downloaded: snapshot_${Date.now()}_frame_${inference.framesProcessed}.jpg`, 'success');
+            return;
+          }
+        } catch (e) {
+          console.warn('Snapshot canvas export fallback:', e);
+        }
+      }
     }
+    addLog(`Snapshot captured at ${new Date().toLocaleTimeString()} (Frame #${inference.framesProcessed})`, 'success');
   };
 
   const uploadTriggerRef = React.useRef<(() => void) | null>(null);
@@ -557,7 +578,6 @@ export default function App() {
     inference.setUptimeSeconds(0);
     sourceStateCache.current.camera = null;
     setLastCameraFrame(undefined);
-    video.clearCameraRecording();
     camera.setCameraStartingState('ready');
 
     try {
@@ -591,30 +611,6 @@ export default function App() {
 
     showToast('info', 'Camera stream stopped • Cleared for fresh stream');
     addLog('Camera stream stopped • Canvas, overlays, and drawer cleared for fresh stream.', 'info');
-  };
-
-  const handleClearCameraRecord = () => {
-    const sid = video.cameraRecordSessionId;
-    setIsRunning(false);
-    setSelectedTubeId(null);
-    setTubes([]);
-    useInferenceStore.getState().resetStats();
-    resetBBoxCache();
-    inference.setFramesProcessed(0);
-    inference.setFps(0);
-    inference.setUptimeSeconds(0);
-    sourceStateCache.current.camera = null;
-    setLastCameraFrame(undefined);
-    video.clearCameraRecording();
-    camera.setCameraStartingState('ready');
-    camera.setIsStreaming(false);
-    if (sid) {
-      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
-      fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
-    }
-    cameraService.stopStream().catch(() => { });
-    showToast('info', 'Recorded clip cleared. Switched back to live camera.');
-    addLog('Recorded clip cleared • Switched back to live camera view.', 'info');
   };
 
   const handleResetVideo = async () => {
@@ -653,15 +649,7 @@ export default function App() {
         return;
       }
     }
-    if (sourceType === 'oak-camera' && video.cameraRecordSessionId) {
-      if (!isRunning) {
-        // GPU Contention Safety: release live camera claims before starting video inference on recording
-        await cameraService.stopLiveInference().catch(() => { });
-        await cameraService.stopStream().catch(() => { });
-        camera.setIsStreaming(false);
-      }
-    }
-    if ((sourceType === 'oak-camera' || sourceType === 'webcam') && !video.cameraRecordSessionId) {
+    if (sourceType === 'oak-camera' || sourceType === 'webcam') {
       if (!isRunning && !camera.isStreaming) {
         // Stream not started yet: start both stream and inference together!
         await startCameraPipeline();
@@ -707,11 +695,6 @@ export default function App() {
       video.setCustomVideoName(undefined);
     }
 
-    // Clear camera recording state (camera mode)
-    if (isCameraSource) {
-      video.clearCameraRecording();
-    }
-
     // Clear persisted session so refresh shows a clean state
     clearSessionState();
 
@@ -719,10 +702,6 @@ export default function App() {
     if (sid) {
       fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
       fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
-    }
-    if (video.cameraRecordSessionId && video.cameraRecordSessionId !== sid) {
-      fetch(`${getApiBaseUrl()}/video/stop/${video.cameraRecordSessionId}`, { method: 'POST' }).catch(() => { });
-      fetch(`${getApiBaseUrl()}/video/clear/${video.cameraRecordSessionId}`, { method: 'POST' }).catch(() => { });
     }
 
     // Let the inference loop handle stopping backend + clearing stats/tubes
@@ -737,7 +716,7 @@ export default function App() {
       void video.startVideoInference();
       return;
     }
-    if ((sourceType === 'oak-camera' || sourceType === 'webcam') && !video.cameraRecordSessionId) {
+    if (sourceType === 'oak-camera' || sourceType === 'webcam') {
       if (!camera.isStreaming) {
         // User clicked Start Inference directly without clicking Start Stream first:
         // Automatically start both stream and inference!
@@ -758,7 +737,14 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLButtonElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
       if (e.code === 'Space') { e.preventDefault(); handleToggleRunningRef.current(); }
       else if (e.code === 'KeyI') {
         if (isCameraSourceRef.current) {
@@ -886,8 +872,6 @@ export default function App() {
           hasActiveVideo={Boolean(video.customVideoUrl || video.customVideoName)}
           onClearCustomVideo={handleClearCustomVideo}
           cameraStartingState={camera.cameraStartingState}
-          cameraRecordSessionId={video.cameraRecordSessionId}
-          onClearCameraRecord={handleClearCameraRecord}
         />
 
         <div className="w-full flex flex-col lg:flex-row items-stretch flex-1 min-h-0 gap-4">
@@ -921,13 +905,12 @@ export default function App() {
               lastCameraFrame={lastCameraFrame}
               lastVideoFrame={lastVideoFrame}
               onCaptureVideoFrame={setLastVideoFrame}
-              onRetryConnection={camera.startCameraStream}
+              onRetryConnection={async () => {
+                setIsRunning(false);
+                await camera.startCameraStream();
+              }}
               onStartStream={camera.startCameraStream}
               framesProcessed={inference.framesProcessed}
-              cameraRecordSessionId={video.cameraRecordSessionId}
-              cameraRecordUrl={video.cameraRecordUrl}
-              cameraRecordName={video.cameraRecordName}
-              onClearCameraRecord={handleClearCameraRecord}
               cameraTargetFps={camera.effectiveCameraConfig.targetFps || 30}
               recordingFormat={camera.effectiveCameraConfig.recordingFormat || 'MP4'}
               cameraConfig={camera.effectiveCameraConfig}

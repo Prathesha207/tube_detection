@@ -65,10 +65,14 @@ class RecordingSession:
             options    = {"level": "3"}
         else:  # Default: MP4 (H.264)
             fmt        = "MP4"
-            codec_name = "libx264"
             pix_fmt    = "yuv420p"
             ext        = ".mp4"
-            options    = {"preset": "veryfast", "crf": "16"}
+            if "h264_nvenc" in av.codec.codecs_available:
+                codec_name = "h264_nvenc"
+                options    = {"preset": "fast", "cq": "20"}
+            else:
+                codec_name = "libx264"
+                options    = {"preset": "veryfast", "crf": "18"}
 
         self.filename = now.strftime(f"session_%Y-%m-%d_%H-%M-%S{ext}")
         self.video_path = os.path.join(folder, self.filename)
@@ -138,10 +142,10 @@ class RecordingSession:
                     continue
 
                 try:
-                    # BGR (OpenCV) → RGB → target pixel format
-                    rgb   = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                    frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
-                    frame = frame.reformat(format=self.stream.pix_fmt)
+                    # BGR (OpenCV / camera) → target pixel format directly (no intermediate rgb24 copy)
+                    frame = av.VideoFrame.from_ndarray(bgr, format="bgr24")
+                    if frame.format.name != self.stream.pix_fmt:
+                        frame = frame.reformat(format=self.stream.pix_fmt)
 
                     # pts_ms is milliseconds since recording start.
                     # With time_base = 1/1000, one PTS unit = 1 ms.
@@ -258,14 +262,13 @@ def _resolve_recording_path(root_path: str = None) -> str:
         return root_path
     try:
         from app.core.database import SessionLocal
-        from app.models.camera_model import Camera
-        
+        from app.services.camera_service import get_camera_config, _load_stored_config
 
         db = SessionLocal()
         try:
-            camera    = db.query(Camera).first()
-            inference = None
-            mode = getattr(inference, "mode", None) or "production"
+            camera = get_camera_config(db)
+            cfg = _load_stored_config()
+            mode = cfg.get("inference", {}).get("mode", "production")
             path = (
                 getattr(camera, "recording_video_testing_path", None)
                 if mode == "testing"

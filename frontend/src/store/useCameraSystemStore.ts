@@ -283,20 +283,25 @@ export const useCameraSystemStore = create<StoreState>()(
                         return;
                     }
 
-                    const cam: Camera = {
-                        id: data[0].id,
-                        name: data[0].name,
-                        ip: data[0].ip_address,
-                        resolution: data[0].resolution,
-                        rotation_angle: data[0].rotation_angle,
-                        is_enabled: data[0].is_enabled,
+                    const activeItem =
+                        data.find((c: any) => c.ip_address && c.ip_address !== "127.0.0.1" && c.is_enabled) ||
+                        data.find((c: any) => c.is_enabled) ||
+                        data[0];
 
-                        control_mode: data[0].control_mode,
-                        exposure: data[0].exposure ?? 0,
-                        gain: data[0].gain ?? 0,
-                        focus: data[0].focus ?? 0,
-                        brightness: data[0].brightness ?? 0,
-                        contrast: data[0].contrast ?? 0,
+                    const cam: Camera = {
+                        id: activeItem.id,
+                        name: activeItem.name,
+                        ip: activeItem.ip_address,
+                        resolution: activeItem.resolution,
+                        rotation_angle: activeItem.rotation_angle,
+                        is_enabled: activeItem.is_enabled,
+
+                        control_mode: activeItem.control_mode,
+                        exposure: activeItem.exposure ?? 0,
+                        gain: activeItem.gain ?? 0,
+                        focus: activeItem.focus ?? 0,
+                        brightness: activeItem.brightness ?? 0,
+                        contrast: activeItem.contrast ?? 0,
 
                         auto_exposure: false,
                         auto_focus: false,
@@ -399,7 +404,7 @@ export const useCameraSystemStore = create<StoreState>()(
                     const saved = await configService.saveConfig(data);
 
                     set({
-                        config: saved,
+                        config: (saved && saved.camera) ? saved : data,
                         configLoading: false,
                         isFetched: true,
                     });

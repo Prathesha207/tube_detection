@@ -92,6 +92,7 @@ export function useInferenceLoop({
               if (stallTimer) clearTimeout(stallTimer);
               setIsRunning(false);
               if (isError) {
+                setTubes([]);
                 const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Camera inference stopped on error';
                 showToast('error', `Inference error: ${errDetail}`);
                 addLog(`Inference stopped on error: ${errDetail}`, 'error');

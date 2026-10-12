@@ -138,6 +138,10 @@ class OakCameraService:
         self._gpu_sampler_thread: threading.Thread | None = None
         self._gpu_sampler_stop = threading.Event()
 
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
+
     # ==================== Device ====================
 
     async def connect(self, ip: str) -> bool:
@@ -536,22 +540,38 @@ class OakCameraService:
 
     # ── New method: background GPU sampler ───────────────────────────────────────
     def _start_gpu_sampler(self) -> None:
-        """Samples GPU every 2s in background — never blocks inference."""
+        """Samples GPU every 2s in background — uses pynvml with fallback, never blocks inference."""
         if self._gpu_sampler_thread and self._gpu_sampler_thread.is_alive():
             return
 
         def _loop():
             import subprocess
+            nvml_handle = None
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            except Exception:
+                nvml_handle = None
+
             while not self._gpu_sampler_stop.is_set():
-                try:
-                    out = subprocess.check_output(
-                        ["nvidia-smi", "--query-gpu=utilization.gpu",
-                        "--format=csv,noheader,nounits"],
-                        timeout=1,
-                    )
-                    self._gpu_usage = float(out.decode().strip().split("\n")[0])
-                except Exception:
-                    self._gpu_usage = -1.0
+                if nvml_handle is not None:
+                    try:
+                        import pynvml
+                        rates = pynvml.nvmlDeviceGetUtilizationRates(nvml_handle)
+                        self._gpu_usage = float(rates.gpu)
+                    except Exception:
+                        self._gpu_usage = -1.0
+                else:
+                    try:
+                        out = subprocess.check_output(
+                            ["nvidia-smi", "--query-gpu=utilization.gpu",
+                            "--format=csv,noheader,nounits"],
+                            timeout=1,
+                        )
+                        self._gpu_usage = float(out.decode().strip().split("\n")[0])
+                    except Exception:
+                        self._gpu_usage = -1.0
                 self._gpu_sampler_stop.wait(timeout=2.0)   # sleep 2s between polls
 
         self._gpu_sampler_stop.clear()
@@ -716,18 +736,19 @@ class OakCameraService:
                     last_log = now
 
         except Exception as e:
-            err_msg = str(e)
-            if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
-                logger.warning(f"[MJPEG] Device connection lost: {err_msg}")
-            else:
-                logger.error(f"[MJPEG] Thread error: {e}", exc_info=True)
-            self._on_device_lost(f"MJPEG queue closed: {err_msg}")
-            realtime_log_service.add_log(
-                "stream",
-                "NETWORK",
-                "MJPEG Thread disconnected",
-                "error"
-            )
+            if not self._mjpeg_stop.is_set():
+                err_msg = str(e)
+                if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
+                    logger.warning(f"[MJPEG] Device connection lost: {err_msg}")
+                else:
+                    logger.error(f"[MJPEG] Thread error: {e}", exc_info=True)
+                self._on_device_lost(f"MJPEG queue closed: {err_msg}")
+                realtime_log_service.add_log(
+                    "stream",
+                    "NETWORK",
+                    "MJPEG Thread disconnected",
+                    "error"
+                )
         finally:
             logger.info("[MJPEG] Thread ended")
 
@@ -768,12 +789,13 @@ class OakCameraService:
                     pass
 
         except Exception as e:
-            err_msg = str(e)
-            if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
-                logger.warning(f"[HIRES] Device connection lost: {err_msg}")
-            else:
-                logger.error(f"[HIRES] Thread error: {e}", exc_info=True)
-            self._on_device_lost(f"Hi-res queue closed: {err_msg}")
+            if not self._hires_stop.is_set():
+                err_msg = str(e)
+                if "closed" in err_msg.lower() or "xlink" in err_msg.lower():
+                    logger.warning(f"[HIRES] Device connection lost: {err_msg}")
+                else:
+                    logger.error(f"[HIRES] Thread error: {e}", exc_info=True)
+                self._on_device_lost(f"Hi-res queue closed: {err_msg}")
         finally:
             logger.info("[HIRES] Thread ended")
 
@@ -956,25 +978,6 @@ class OakCameraService:
         """Latest BGR frame for inference / recording."""
         frame = self._latest_bgr
         return frame.copy() if frame is not None else None
-
-    # ==================== Image Adjustments ====================
-
-    def _apply_adjustments(self, frame: np.ndarray) -> np.ndarray:
-        c = self.current_contrast
-        b = self.current_brightness
-
-        # If neutral, return frame directly without copying or modifying
-        if (c == 0 or c == 50) and b == 0:
-            return frame
-
-        # Contrast: 50 is neutral (1.0x). 0..100 maps to 0.0x..2.0x
-        alpha = (float(c) / 50.0) if c > 0 else 1.0
-        beta = float(b)
-
-        if abs(alpha - 1.0) < 0.01 and abs(beta) < 0.01:
-            return frame
-
-        return cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
 
     # ==================== Auto-calibration Monitor ====================
 
@@ -1316,9 +1319,10 @@ class OakCameraService:
                     continue
 
                 if isinstance(infer_res, tuple):
-                    result, annotated_frame = infer_res
+                    res_dict, annotated_frame = infer_res
+                    result = dict(res_dict)
                 else:
-                    result, annotated_frame = infer_res, frame
+                    result, annotated_frame = dict(infer_res), frame
 
                 if not isinstance(result, dict):
                     logger.warning("❌ [INFERENCE] analyze_camera_frame result is not a dict")
@@ -1890,17 +1894,21 @@ class OakCameraService:
     # ==================== Recording ====================
 
     def _resolve_recording_path(self) -> str | None:
-        return None
+        try:
+            from app.services.recording_service import _resolve_recording_path as _res
+            return _res()
+        except Exception:
+            return None
 
     def _resolve_recording_format(self, override: str | None = None) -> str:
         if override and isinstance(override, str) and override.strip():
             return override.strip().upper()
         try:
             from app.core.database import SessionLocal
-            from app.models.camera_model import Camera
+            from app.services.camera_service import get_camera_config
             db = SessionLocal()
             try:
-                cam = db.query(Camera).first()
+                cam = get_camera_config(db)
                 fmt = getattr(cam, "recording_format", None)
                 if fmt and isinstance(fmt, str) and fmt.strip():
                     return fmt.strip().upper()

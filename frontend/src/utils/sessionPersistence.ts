@@ -15,6 +15,7 @@ export interface PersistedSessionState {
   customVideoName: string | undefined;
   selectedTubeId?: string | null;
   videoDimensions?: { width: number; height: number } | null;
+  isRunning?: boolean;
 }
 
 export function saveSessionState(state: Partial<PersistedSessionState>) {

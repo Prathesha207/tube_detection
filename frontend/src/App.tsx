@@ -125,8 +125,9 @@ export default function App() {
   useEffect(() => {
     saveSessionState({
       sourceType,
+      isRunning,
     });
-  }, [sourceType]);
+  }, [sourceType, isRunning]);
 
   // Snapshot cache to preserve complete run state across source toggling
   interface SourceStateSnapshot {
@@ -326,7 +327,7 @@ export default function App() {
           const incomingTubes = mapDetectionsToTubes(data, vw, vh);
           setTubes(incomingTubes);
 
-          const backendIsRunning = data.status === 'processing' || data.status === 'warming' || data.status === 'queued';
+          const backendIsRunning = data.status === 'processing' || data.status === 'running' || data.status === 'queued';
 
           if (backendIsRunning) {
             if (!savedIsRunning) {
@@ -458,8 +459,7 @@ export default function App() {
       const key = d.species || d.class || role;
       speciesCounts[key] = (speciesCounts[key] || 0) + 1;
     });
-    const storeStats = useInferenceStore.getState().stats;
-    const latencyVal = storeStats?.latency_ms ?? storeStats?.frame_time_ms;
+    const latencyVal = backendStats?.latency_ms ?? backendStats?.frame_time_ms;
     const actualInferenceTime = (latencyVal !== undefined && latencyVal !== null && Number(latencyVal) > 0)
       ? Number(latencyVal)
       : (inference.fps > 0 ? 1000 / inference.fps : 0);
@@ -474,12 +474,11 @@ export default function App() {
       roleCounts,
       speciesCounts,
     };
-  }, [anomalyFinal.activeTubes, inference.fps, inference.framesProcessed, inference.uptimeSeconds]);
+  }, [anomalyFinal.activeTubes, inference.fps, inference.framesProcessed, inference.uptimeSeconds, backendStats]);
 
   const recording = useRecording();
 
   const handleToggleRecording = async () => {
-    if (isRunning) return;
     if (recording.isRecording) {
       const res = await recording.stopRecording();
       if (res && res.filename) {
@@ -774,6 +773,7 @@ export default function App() {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       saveSessionState({
         sourceType: sourceTypeRef.current,
+        isRunning: isRunningRef.current,
       });
       if (isRunningRef.current) {
         e.preventDefault();

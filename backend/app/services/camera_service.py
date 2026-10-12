@@ -71,10 +71,14 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
         for key, value in update_data.items():
             setattr(camera, key, value)
 
-        camera.exposure = camera.exposure if camera.exposure is not None else 8
-        camera.gain = camera.gain if camera.gain is not None else 400
-        camera.auto_exposure = False
-        camera.auto_focus = False
+        if camera.exposure is None:
+            camera.exposure = 8
+        if camera.gain is None:
+            camera.gain = 400
+        if camera.auto_exposure is None:
+            camera.auto_exposure = False
+        if camera.auto_focus is None:
+            camera.auto_focus = False
 
         db.commit()
         db.refresh(camera)
@@ -234,12 +238,51 @@ def get_camera_config(db: Session):
     return db.query(Camera).order_by(Camera.id.desc()).first()
 
 
+import json
+from app.core.app_paths import APP_DIR
+
+_CONFIG_FILE = APP_DIR / "basic_config.json"
+
+
+def _load_stored_config() -> dict:
+    if _CONFIG_FILE.exists():
+        try:
+            with open(_CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "training": {
+            "record_duration": 10,
+            "feature_window": 5,
+            "anomaly_scorer_nn_count": 3,
+        },
+        "inference": {
+            "mode": "production",
+            "recording_format": "MP4",
+        }
+    }
+
+
+def _save_stored_config(cfg: dict) -> None:
+    try:
+        with open(_CONFIG_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        logger.warning(f"[CONFIG] Failed to write basic_config.json: {e}")
+
+
 def get_inference_config(db: Session):
-    return {"mode": "production"}
+    cfg = _load_stored_config()
+    return cfg.get("inference", {"mode": "production"})
 
 
 def update_inference_mode(db: Session, mode: str):
+    cfg = _load_stored_config()
+    cfg.setdefault("inference", {})["mode"] = mode
+    _save_stored_config(cfg)
     return {"message": "Inference mode updated", "mode": mode}
+
 
 def update_basic_config(db: Session, data: BasicConfigUpdate):
     logger.info("[UPDATE_BASIC_CONFIG] Started")
@@ -254,7 +297,7 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
         # =========================================================
         # CAMERA
         # =========================================================
-        camera = db.query(Camera).first()
+        camera = get_camera_config(db)
 
         if not camera:
             logger.info("[CONFIG] Creating Camera")
@@ -274,22 +317,27 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
                 for key, value in cam_data.items():
                     setattr(camera, key, value)
 
-        camera.exposure = camera.exposure if camera.exposure is not None else 8
-        camera.gain = camera.gain if camera.gain is not None else 400
-        camera.auto_exposure = False
-        camera.auto_focus = False
+        if camera.exposure is None:
+            camera.exposure = 8
+        if camera.gain is None:
+            camera.gain = 400
+        if camera.auto_exposure is None:
+            camera.auto_exposure = False
+        if camera.auto_focus is None:
+            camera.auto_focus = False
 
         # =========================================================
-        # TRAINING
+        # TRAINING & INFERENCE
         # =========================================================
-        
-
-        # =========================================================
-        # INFERENCE
-        # =========================================================
-        
+        cfg = _load_stored_config()
+        if data.training:
+            cfg.setdefault("training", {}).update(data.training.model_dump(exclude_unset=True))
+        if data.inference:
+            cfg.setdefault("inference", {}).update(data.inference.model_dump(exclude_unset=True))
+        _save_stored_config(cfg)
 
         db.commit()
+        db.refresh(camera)
 
         logger.info("[UPDATE_BASIC_CONFIG] Success")
         realtime_log_service.add_log(
@@ -299,9 +347,7 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
             "success"
         )
 
-        return {
-            "message": "Config updated successfully"
-        }
+        return get_basic_config(db)
 
     except HTTPException:
         raise
@@ -330,11 +376,11 @@ def get_basic_config(db: Session):
         "info"
     )
 
-    camera = db.query(Camera).first()
-    
+    camera = get_camera_config(db)
+    cfg = _load_stored_config()
 
     return {
         "camera": camera,
-        
-        "inference": {"mode": "production"}
+        "training": cfg.get("training", {}),
+        "inference": cfg.get("inference", {"mode": "production"}),
     }

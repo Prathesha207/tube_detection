@@ -288,11 +288,16 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
         for s in targets:
             s["roi_points"] = list(_global_roi_points)
             s["roi_frame_size"] = frame_size
-            analyzer = s.get("analyzer")
-            if isinstance(analyzer, TubeAnalyzer):
-                analyzer.set_roi(points, frame_size)
-                analyzer.reset_tracking()
-                analyzer.set_roi(points, frame_size)
+            inference_lock = s.get("inference_lock")
+            if inference_lock:
+                with inference_lock:
+                    analyzer = s.get("analyzer")
+                    if isinstance(analyzer, TubeAnalyzer):
+                        analyzer.set_roi(points, frame_size)
+            else:
+                analyzer = s.get("analyzer")
+                if isinstance(analyzer, TubeAnalyzer):
+                    analyzer.set_roi(points, frame_size)
 
 
 # Backward compatibility aliases

@@ -44,7 +44,8 @@ async def start_camera(payload: Optional[StartCameraPayload] = None, db: Session
 
     if not camera or not camera.ip_address:
         try:
-            device_info = oak_camera_service._resolve_device_info("usb")
+            loop = asyncio.get_running_loop()
+            device_info = await loop.run_in_executor(None, oak_camera_service._resolve_device_info, "usb")
             mxid = str(getattr(device_info, "mxid", "") or "")
             if not mxid:
                 mxid = "usb"
@@ -433,11 +434,14 @@ async def start_inference(session_id: str, body: InferenceStartBody = InferenceS
         loop = asyncio.get_running_loop()
         # Resolve legacy videoId field as videoPath so old frontend builds still work
         resolved_video_path = body.videoPath or body.videoId or None
-        result = oak_camera_service.start_inference(
-            session_id, loop,
-            offline=body.offline,
-            video_path=resolved_video_path,
-            folder_path=body.folderPath,
+        result = await loop.run_in_executor(
+            None,
+            lambda: oak_camera_service.start_inference(
+                session_id, loop,
+                offline=body.offline,
+                video_path=resolved_video_path,
+                folder_path=body.folderPath,
+            )
         )
         return result
     except HTTPException:
@@ -449,9 +453,10 @@ async def start_inference(session_id: str, body: InferenceStartBody = InferenceS
 
 
 @router.post("/inference/stop")
-def stop_inference():
+async def stop_inference():
     try:
-        result = oak_camera_service.stop_inference()
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, oak_camera_service.stop_inference)
         return result
     except HTTPException:
         raise
@@ -497,6 +502,17 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                     break
                 continue
 
+            # Zero-lag: Drain queue so we always process and encode the freshest result
+            while not client_queue.empty():
+                try:
+                    newer = client_queue.get_nowait()
+                    if newer.get("done"):
+                        result = newer
+                        break
+                    result = newer
+                except asyncio.QueueEmpty:
+                    break
+
             results_sent += 1
 
             # Terminal result — send it, then close cleanly
@@ -520,7 +536,12 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                 frame = ws_result.pop("_raw_frame")
                 loop = asyncio.get_running_loop()
                 def _encode():
-                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    f = frame
+                    h, w = f.shape[:2]
+                    if w > 1280:
+                        new_h = int(h * (1280.0 / w))
+                        f = cv2.resize(f, (1280, new_h), interpolation=cv2.INTER_AREA)
+                    _, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 75])
                     return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
                 ws_result["frame"] = await loop.run_in_executor(None, _encode)
 

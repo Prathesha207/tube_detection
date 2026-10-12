@@ -122,14 +122,22 @@ def inference_context():
     return torch.inference_mode() if torch is not None else nullcontext()
 
 
-def release_gpu_memory() -> None:
+def release_gpu_memory(clear_cache: bool = False) -> None:
     """Call AFTER the last reference to a model is dropped, to give VRAM back."""
+    if clear_cache:
+        _GLOBAL_YOLO_CACHE.clear()
+        _GLOBAL_WARMED_SHAPES.clear()
     gc.collect()
     if cuda_is_available():
         try:
             torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+def clear_yolo_cache() -> None:
+    """Explicitly release all cached YOLO models to completely free GPU VRAM."""
+    release_gpu_memory(clear_cache=True)
 
 #################### 2. Region of Interest (ROI) Math ####################
 def _segments_intersect(p1, p2, p3, p4) -> bool:

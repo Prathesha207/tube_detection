@@ -259,12 +259,7 @@ async def upload_video(
             if frame_width and frame_height:
                 session["stats"]["video_width"] = frame_width
                 session["stats"]["video_height"] = frame_height
-                try:
-                    analyzer = ml_inference_service._get_or_create_analyzer()
-                    analyzer.warm_up((frame_height, frame_width))
-                    logger.info(f"[UPLOAD] Pre-warmed cuDNN kernels for resolution {frame_width}x{frame_height}")
-                except Exception as e:
-                    logger.warning(f"Failed to pre-warm analyzer during upload: {e}")
+                # Note: Full warm_up is performed automatically when /video/start is called with proper GPU claim
 
         # Persist session metadata into session_dir and global registry
         _save_session_meta(
@@ -428,13 +423,24 @@ async def _ensure_session_exists(session_id: str):
         except Exception:
             pass
 
-    # Resurrect session if valid video file found
-    if video_file and os.path.exists(video_file):
-        if not browser_video_path or not os.path.exists(browser_video_path):
-            browser_video_path = video_file
-
-        ml_inference_service.create_session(original_filename=orig_fn, session_id=session_id)
-        session = ml_inference_service.sessions.get(session_id)
+        # Resurrect session directly in sessions dict without calling stop_all_sessions()
+        with ml_inference_service._sessions_lock:
+            session = ml_inference_service.sessions.get(session_id)
+            if not session:
+                from app.ml.video_inference_service import new_stats
+                session = {
+                    "status": "ready",
+                    "queue": asyncio.Queue(maxsize=2),
+                    "original_filename": orig_fn,
+                    "analyzer": None,
+                    "temp_files_to_cleanup": [],
+                    "created_at": time.time(),
+                    "last_active": time.time(),
+                    "stats": new_stats(session_id=session_id, original_filename=orig_fn,
+                                       total_frames=0, progress=0.0),
+                    "stop_event": threading.Event(),
+                }
+                ml_inference_service.sessions[session_id] = session
         if session:
             session["session_dir"] = session_dir
             session["video_path"] = video_file
@@ -585,13 +591,7 @@ async def reset_video_session(session_id: str):
             # 1. Stop the task fully and await it (bounded -- see stop_session docstring)
             await ml_inference_service.stop_session(session_id, timeout=3.0)
             # 2. Release resources natively
-            if "analyzer" in session and session["analyzer"] is not None:
-                try:
-                    if hasattr(session["analyzer"], "model") and session["analyzer"].model is not None:
-                        session["analyzer"].model.predictor = None
-                except:
-                    pass
-                session["analyzer"] = None
+            session["analyzer"] = None
         
         # 3. Clear temp files
         ml_inference_service.clear_session_files(session_id)

@@ -103,7 +103,9 @@ class RecordingSession:
         self._start_mono: float = time.monotonic()
         self._frames_written = 0
         self._last_bgr = None       # last frame received, used for pad-frame on stop
-        self._last_pts_ms: int = 0  # PTS of that frame
+        self._last_pts_ms: int = -1  # PTS of that frame
+        self._last_encoded_pts: int = -1  # Monotonic tracker for frame.pts passed to encoder
+        self._last_mux_dts: int = -1      # Monotonic tracker for pkt.dts passed to muxer
         self.thread = None
         self.camera_settings = camera_settings or {}
         self.settings_history = [{"elapsed_seconds": 0.0, "settings": self.camera_settings.copy()}]
@@ -149,9 +151,19 @@ class RecordingSession:
 
                     # pts_ms is milliseconds since recording start.
                     # With time_base = 1/1000, one PTS unit = 1 ms.
+                    # Enforce strictly monotonic PTS so FFmpeg muxer never sees equal or decreasing timestamps.
+                    if pts_ms <= self._last_encoded_pts:
+                        pts_ms = self._last_encoded_pts + 1
+                    self._last_encoded_pts = pts_ms
                     frame.pts = pts_ms
 
                     for pkt in self.stream.encode(frame):
+                        if pkt.dts is not None:
+                            if pkt.dts <= self._last_mux_dts:
+                                pkt.dts = self._last_mux_dts + 1
+                            self._last_mux_dts = pkt.dts
+                        if pkt.pts is not None and pkt.dts is not None and pkt.pts < pkt.dts:
+                            pkt.pts = pkt.dts
                         self.container.mux(pkt)
 
                     self._frames_written += 1
@@ -168,6 +180,12 @@ class RecordingSession:
             # stop() can join() and know the file is fully written.
             try:
                 for pkt in self.stream.encode():
+                    if pkt.dts is not None:
+                        if pkt.dts <= self._last_mux_dts:
+                            pkt.dts = self._last_mux_dts + 1
+                        self._last_mux_dts = pkt.dts
+                    if pkt.pts is not None and pkt.dts is not None and pkt.pts < pkt.dts:
+                        pkt.pts = pkt.dts
                     self.container.mux(pkt)
                 self.container.close()
                 logger.info(
@@ -183,9 +201,11 @@ class RecordingSession:
             return
 
         pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+        if pts_ms <= self._last_pts_ms:
+            pts_ms = self._last_pts_ms + 1
+        self._last_pts_ms = pts_ms
 
         self._last_bgr = bgr
-        self._last_pts_ms = pts_ms
 
         try:
             self.frame_queue.put_nowait((bgr, pts_ms))
@@ -212,7 +232,10 @@ class RecordingSession:
         # the video duration matches the real recording time exactly.
         if self._last_bgr is not None:
             pad_pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+            if pad_pts_ms <= self._last_pts_ms:
+                pad_pts_ms = self._last_pts_ms + 1
             gap_ms = pad_pts_ms - self._last_pts_ms
+            self._last_pts_ms = pad_pts_ms
             logger.info(
                 f"[RECORD] Padding video by {gap_ms} ms "
                 f"(last frame at {self._last_pts_ms} ms → pad to {pad_pts_ms} ms)"

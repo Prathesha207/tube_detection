@@ -204,7 +204,11 @@ class InferenceRecorder:
 
         # Wall-clock start — PTS is ms since this moment (set at creation, not first frame)
         self._start_mono: float = time.monotonic()
-        self._last_pts_ms: int  = 0
+        self._last_pts_ms: int  = -1
+        self._last_raw_pts: int = -1
+        self._last_proc_pts: int = -1
+        self._last_raw_dts: int = -1
+        self._last_proc_dts: int = -1
         self._last_raw: Optional[np.ndarray]       = None
         self._last_proc: Optional[np.ndarray]      = None
 
@@ -306,21 +310,50 @@ class InferenceRecorder:
     # Background writer thread
     # ------------------------------------------------------------------
 
-    def _encode_frame(self, bgr: np.ndarray, stream, pts_ms: int) -> None:
+    def _encode_frame(self, bgr: np.ndarray, stream, pts_ms: int, is_raw: bool = False) -> None:
         if bgr is None or stream is None:
             return
         rgb   = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
         frame = frame.reformat(format=stream.pix_fmt)
+
+        last_pts = self._last_raw_pts if is_raw else self._last_proc_pts
+        if pts_ms <= last_pts:
+            pts_ms = last_pts + 1
+        if is_raw:
+            self._last_raw_pts = pts_ms
+        else:
+            self._last_proc_pts = pts_ms
+
         frame.pts = pts_ms
         container = stream.container
         for pkt in stream.encode(frame):
+            last_dts = self._last_raw_dts if is_raw else self._last_proc_dts
+            if pkt.dts is not None:
+                if pkt.dts <= last_dts:
+                    pkt.dts = last_dts + 1
+                if is_raw:
+                    self._last_raw_dts = pkt.dts
+                else:
+                    self._last_proc_dts = pkt.dts
+            if pkt.pts is not None and pkt.dts is not None and pkt.pts < pkt.dts:
+                pkt.pts = pkt.dts
             container.mux(pkt)
 
-    def _flush_and_close(self, stream, container) -> None:
+    def _flush_and_close(self, stream, container, is_raw: bool = False) -> None:
         if stream and container:
             try:
                 for pkt in stream.encode():
+                    last_dts = self._last_raw_dts if is_raw else self._last_proc_dts
+                    if pkt.dts is not None:
+                        if pkt.dts <= last_dts:
+                            pkt.dts = last_dts + 1
+                        if is_raw:
+                            self._last_raw_dts = pkt.dts
+                        else:
+                            self._last_proc_dts = pkt.dts
+                    if pkt.pts is not None and pkt.dts is not None and pkt.pts < pkt.dts:
+                        pkt.pts = pkt.dts
                     container.mux(pkt)
                 container.close()
             except Exception as e:
@@ -342,8 +375,8 @@ class InferenceRecorder:
                     raw_bgr, proc_bgr, pts_ms = item
 
                 try:
-                    self._encode_frame(raw_bgr,  self._raw_stream,       pts_ms)
-                    self._encode_frame(proc_bgr, self._processed_stream, pts_ms)
+                    self._encode_frame(raw_bgr,  self._raw_stream,       pts_ms, is_raw=True)
+                    self._encode_frame(proc_bgr, self._processed_stream, pts_ms, is_raw=False)
                 except Exception as e:
                     logger.warning(f"[INFERENCE RECORDER] Encode error: {e}")
 
@@ -356,8 +389,8 @@ class InferenceRecorder:
         except Exception as exc:
             logger.error(f"[INFERENCE RECORDER] Worker error: {exc}", exc_info=True)
         finally:
-            self._flush_and_close(self._raw_stream,       self._raw_container)
-            self._flush_and_close(self._processed_stream, self._processed_container)
+            self._flush_and_close(self._raw_stream,       self._raw_container,       is_raw=True)
+            self._flush_and_close(self._processed_stream, self._processed_container, is_raw=False)
             logger.info(f"[INFERENCE RECORDER] Worker ended — total frames: {frames_written}")
 
     # ------------------------------------------------------------------
@@ -370,10 +403,13 @@ class InferenceRecorder:
             return
 
         pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+        if pts_ms <= self._last_pts_ms:
+            pts_ms = self._last_pts_ms + 1
+        self._last_pts_ms = pts_ms
+
         display_status = self._final_status if self._status_finalized else "PENDING"
         dets = result.get("detections", [])
 
-        self._last_pts_ms = pts_ms
         self._last_raw    = raw_frame
         self._last_proc   = None
 
@@ -399,7 +435,10 @@ class InferenceRecorder:
         """Add a pad frame at current wall-clock time, then signal worker to stop."""
         if self._last_raw is not None:
             pad_pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+            if pad_pts_ms <= self._last_pts_ms:
+                pad_pts_ms = self._last_pts_ms + 1
             gap_ms     = pad_pts_ms - self._last_pts_ms
+            self._last_pts_ms = pad_pts_ms
             logger.info(
                 f"[INFERENCE RECORDER] Padding by {gap_ms} ms "
                 f"(last frame {self._last_pts_ms} ms → {pad_pts_ms} ms)"

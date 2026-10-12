@@ -92,10 +92,7 @@ export default function App() {
     if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return 0;
     return (initialSession as any)?.uptimeSeconds ?? 0;
   });
-  const [tubes, setTubes] = useState<import('./types').TubeEntity[]>(() => {
-    if (initialSession?.sourceType === 'oak-camera' || initialSession?.sourceType === 'webcam') return [];
-    return (initialSession as any)?.tubes ?? [];
-  });
+  const [tubes, setTubes] = useState<import('./types').TubeEntity[]>([]);
   const [lastCameraFrame, setLastCameraFrame] = useState<string | undefined>(() => (initialSession as any)?.lastCameraFrame);
   const [lastVideoFrame, setLastVideoFrame] = useState<string | undefined>(() => (initialSession as any)?.lastVideoFrame);
 
@@ -253,6 +250,7 @@ export default function App() {
     uptimeSeconds,
     setUptimeSeconds,
     setLastCameraFrame,
+    setLastVideoFrame,
   });
 
   // Recalculate derived values that depend on inference state.

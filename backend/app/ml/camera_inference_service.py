@@ -107,7 +107,28 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
         _sessions[session_id] = session
         _start_idle_sweeper_once()
 
-        # Fast path: If preloaded analyzer is available, use it immediately (zero cold start!)
+        # Fast path & hot-reload: Check if preloaded analyzer model file changed on disk
+        global _shared_camera_analyzer
+        if _shared_camera_analyzer is not None:
+            if getattr(_shared_camera_analyzer, "has_weights_changed", lambda: False)():
+                logger.info(f"[HOT-RELOAD] Detected updated weights at {_shared_camera_analyzer.model_path}. Hot-reloading TubeAnalyzer...")
+                try:
+                    new_analyzer = TubeAnalyzer(
+                        model_path=_shared_camera_analyzer.model_path,
+                        config_path=_CONFIG_PATH,
+                        device=default_device(),
+                        draw_overlay=False,
+                    )
+                    _shared_camera_analyzer = new_analyzer
+                    try:
+                        from app.ml.video_inference_service import _set_shared_analyzer
+                        _set_shared_analyzer(new_analyzer)
+                    except Exception:
+                        pass
+                    logger.info("[HOT-RELOAD] TubeAnalyzer successfully hot-reloaded with new model weights.")
+                except Exception as reload_err:
+                    logger.error(f"[HOT-RELOAD] Failed to hot-reload updated model: {reload_err}", exc_info=True)
+
         if _shared_camera_analyzer is not None:
             _shared_camera_analyzer.reset_tracking()
             if session.get("roi_points"):

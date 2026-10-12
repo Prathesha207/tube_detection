@@ -26,6 +26,7 @@ export function useInferenceLoop({
   uptimeSeconds,
   setUptimeSeconds,
   setLastCameraFrame,
+  setLastVideoFrame,
 }: {
   sourceType: StreamSourceType;
   videoSessionId: string | null;
@@ -47,6 +48,7 @@ export function useInferenceLoop({
   uptimeSeconds: number;
   setUptimeSeconds: React.Dispatch<React.SetStateAction<number>> | ((val: any) => void);
   setLastCameraFrame?: (frame: string) => void;
+  setLastVideoFrame?: (frame: string) => void;
 }) {
   useEffect(() => {
     if (!isRunning) return;
@@ -186,6 +188,10 @@ export function useInferenceLoop({
 
           if (data.video_width && data.video_height) {
             setVideoDimensions({ width: data.video_width, height: data.video_height });
+          }
+
+          if (data.frame && setLastVideoFrame) {
+            setLastVideoFrame(data.frame);
           }
 
           const vw = data.video_width || DEFAULT_VIDEO_WIDTH;

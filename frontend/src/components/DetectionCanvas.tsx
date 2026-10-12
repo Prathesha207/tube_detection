@@ -561,7 +561,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             {effectiveBackdrop && !isRunning && (
               <img
                 src={effectiveBackdrop}
-                className="absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-contain"
+                className="absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-fill"
                 alt=""
                 onLoad={(e) => {
                   const tgt = e.target as HTMLImageElement;
@@ -584,9 +584,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                     ? (isRunning && feedMode === 'inference' && lastCameraFrame
                         ? lastCameraFrame
                         : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
-                    : effectiveVideoUrl
+                    : (isRunning && feedMode === 'inference' && lastVideoFrame
+                        ? lastVideoFrame
+                        : effectiveVideoUrl)
                 }
-                className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-contain ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
+                className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-fill ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
                   }`}
                 alt=""
                 onLoad={(e) => {
@@ -633,11 +635,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: Shown in INFERENCE mode or always for video upload */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || !isCameraSource) && (tubes.length > 0 || displayTubes.length > 0) && (
+            {/* AI Bounding Boxes: Shown in INFERENCE mode */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && feedMode === 'inference' && tubes.length > 0 && (
               <div className={`absolute inset-0 ${isRoiActive ? 'pointer-events-none opacity-40' : 'pointer-events-auto'}`}>
                 <BoundingBoxOverlay
-                  tubes={tubes.length > 0 ? tubes : displayTubes}
+                  tubes={tubes}
                   selectedTubeId={selectedTubeId}
                   onSelectTube={onSelectTube}
                   labelMode={labelMode}

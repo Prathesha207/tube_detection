@@ -126,6 +126,7 @@ def release_gpu_memory(clear_cache: bool = False) -> None:
     """Call AFTER the last reference to a model is dropped, to give VRAM back."""
     if clear_cache:
         _GLOBAL_YOLO_CACHE.clear()
+        _GLOBAL_YOLO_MTIMES.clear()
         _GLOBAL_WARMED_SHAPES.clear()
     gc.collect()
     if cuda_is_available():
@@ -256,18 +257,29 @@ def load_roi(path: Optional[str] = None, target_shape: Optional[Tuple[int, int]]
 
 #################### 4. Model Loading & Warming ####################
 _GLOBAL_YOLO_CACHE: Dict[str, Any] = {}
+_GLOBAL_YOLO_MTIMES: Dict[str, float] = {}
 _GLOBAL_WARMED_SHAPES: Set[Tuple[int, int]] = set()
 
 def _load_yolo_model(path: str):
-    """Load the YOLO model (cached) for fast inference."""
+    """Load the YOLO model (cached) for fast inference.
+    Automatically detects if the model file was updated on disk and reloads it."""
+    mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
     if path in _GLOBAL_YOLO_CACHE:
-        return _GLOBAL_YOLO_CACHE[path]
+        cached_mtime = _GLOBAL_YOLO_MTIMES.get(path, 0.0)
+        if cached_mtime == mtime:
+            return _GLOBAL_YOLO_CACHE[path]
+        logger.info(f"Model file {path} was modified on disk (cached mtime {cached_mtime} -> new {mtime}). Evicting old model.")
+        _GLOBAL_YOLO_CACHE.pop(path, None)
+        _GLOBAL_YOLO_MTIMES.pop(path, None)
+        release_gpu_memory(clear_cache=False)
+
     try:
         from ultralytics import YOLO
     except Exception as e:
         raise RuntimeError("Ultralytics / PyTorch failed to load. Check the PyTorch installation.") from e
     model = YOLO(path)
     _GLOBAL_YOLO_CACHE[path] = model
+    _GLOBAL_YOLO_MTIMES[path] = mtime
     return model
 
 #################### 3. Data Formatting ####################
@@ -405,6 +417,9 @@ class TubeAnalyzer:
         self.draw_overlay = draw_overlay
         self.draw_roi = draw_roi
 
+        self.model_path = str(path)
+        self.model_mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
+
         self.model = _load_yolo_model(path)
         try:
             self.role_ids = rvf.role_ids_from_names(self.model.names)
@@ -447,6 +462,15 @@ class TubeAnalyzer:
             logger.debug(f"TubeAnalyzer warm-up done for {width}x{height}")
         except Exception as e:
             logger.debug(f"TubeAnalyzer warm-up skipped: {e}")
+
+    def has_weights_changed(self) -> bool:
+        """Check if the underlying .pt file has been modified on disk since this analyzer was loaded."""
+        if not self.model_path or not os.path.exists(self.model_path):
+            return False
+        try:
+            return os.path.getmtime(self.model_path) != self.model_mtime
+        except Exception:
+            return False
 
     def reset_tracking(self) -> None:
         """Forget all tracks (call before a new video / stream).

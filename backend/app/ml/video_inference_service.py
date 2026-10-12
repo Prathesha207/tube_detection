@@ -118,6 +118,24 @@ class VideoInferenceService:
         """(analyzer, owned). An analyzer injected with _set_shared_analyzer() is reused and never
         freed by us; otherwise a fresh one is created and the job frees it when it ends."""
         if self._shared_analyzer is not None:
+            if getattr(self._shared_analyzer, "has_weights_changed", lambda: False)():
+                logger.info(f"[HOT-RELOAD] Detected updated weights at {self._shared_analyzer.model_path}. Reloading TubeAnalyzer for video...")
+                try:
+                    new_analyzer = TubeAnalyzer(
+                        model_path=self._shared_analyzer.model_path,
+                        config_path=_CONFIG_PATH,
+                        device=default_device(),
+                        draw_overlay=False,
+                    )
+                    self._shared_analyzer = new_analyzer
+                    try:
+                        from app.ml.camera_inference_service import _set_camera_analyzer
+                        _set_camera_analyzer(new_analyzer)
+                    except Exception:
+                        pass
+                    logger.info("[HOT-RELOAD] TubeAnalyzer successfully hot-reloaded for video.")
+                except Exception as reload_err:
+                    logger.error(f"[HOT-RELOAD] Failed to reload model weights for video: {reload_err}", exc_info=True)
             return self._shared_analyzer, False
         logger.info(f"Loading TubeAnalyzer for video job (model={_DEFAULT_MODEL_PATH})")
         analyzer = TubeAnalyzer(
@@ -193,7 +211,14 @@ class VideoInferenceService:
     def get_status(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._sessions_lock:
             session = self.sessions.get(session_id)
-        return session["stats"] if session else None
+        if not session:
+            return None
+        res = dict(session["stats"])
+        # Frame-accurate synchronization: include base64 frame matching current detections
+        if session.get("last_frame_bytes"):
+            import base64
+            res["frame"] = "data:image/jpeg;base64," + base64.b64encode(session["last_frame_bytes"]).decode()
+        return res
 
     # --------------------------------------------------------------- stream
     async def get_stream_generator(self, session_id: str):
@@ -355,7 +380,7 @@ class VideoInferenceService:
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             raw_fps = cap.get(cv2.CAP_PROP_FPS)
-            video_fps = raw_fps if (raw_fps and 10.0 <= raw_fps <= 120.0) else 30.0
+            video_fps = raw_fps if (raw_fps and 1.0 <= raw_fps <= 240.0) else 30.0
             stats.update(total_frames=max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)),
                          video_width=width, video_height=height)
             analyzer.warm_up((height, width))                    # so frame 1 is not slow
@@ -407,7 +432,14 @@ class VideoInferenceService:
 
                 # Live stream: clean frame; the frontend draws boxes from stats["detections"].
                 try:
-                    encoded, buffer = cv2.imencode(".jpg", analyzer.get_clean_frame(frame),
+                    clean_f = analyzer.get_clean_frame(frame)
+                    h, w = clean_f.shape[:2]
+                    if w > 1280:
+                        new_h = int(h * (1280.0 / w))
+                        preview_f = cv2.resize(clean_f, (1280, new_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        preview_f = clean_f
+                    encoded, buffer = cv2.imencode(".jpg", preview_f,
                                                    [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
                     if encoded:
                         frame_bytes = buffer.tobytes()

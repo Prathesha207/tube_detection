@@ -26,7 +26,7 @@ gray: true           # model was trained on grayscale images
 stride: 1            # 1 = every frame
 
 # tracking
-min_frames: 5        # back to 5 (10 needed too many sightings); sightings before an end is confirmed and counted
+min_frames: 2        # lowered to 2 for immediate real-time responsiveness on live camera and video (confirms in ~250ms instead of 5-frame delay)
 max_dist: 80         # was 60; px an end may move between frames and stay the same end
 max_missed: 30       # was 15; frames a lost track can still be re-matched
 

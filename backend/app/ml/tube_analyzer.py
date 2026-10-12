@@ -437,7 +437,8 @@ class TubeAnalyzer:
         self._last_analysis: Optional[FrameAnalysis] = None
         self._warmed_shapes: Set[Tuple[int, int]] = _GLOBAL_WARMED_SHAPES
 
-        self.warm_up()   # one tile; call warm_up(frame.shape) again once the real frame size is known
+        # Pre-warm directly on standard 1080p camera/video frame shape so the first live frame has zero delay
+        self.warm_up((1080, 1920))
 
     # ------------------------------------------------------------- lifecycle
     def warm_up(self, frame_shape: Optional[Tuple[int, ...]] = None) -> None:
@@ -445,12 +446,14 @@ class TubeAnalyzer:
         autotuner do not land in the first real frame's timing.
 
         Pass ``frame.shape`` of the real frames: a 1920x1080 frame is split into several
-        640px tiles that are sent to the model as ONE batch, and cuDNN autotunes per batch
-        shape, so warming up with a single tile does not cover it. Runs once per frame size."""
+        tiles that are sent to the model as ONE batch, and cuDNN autotunes per batch
+        shape. Runs once per frame size and caches in _warmed_shapes."""
         if self.cfg.device == "cpu":
             return
-        side = self.cfg.tile or 640
-        height, width = (int(frame_shape[0]), int(frame_shape[1])) if frame_shape is not None else (side, side)
+        if frame_shape is not None and len(frame_shape) >= 2:
+            height, width = int(frame_shape[0]), int(frame_shape[1])
+        else:
+            height, width = 1080, 1920
         if (height, width) in self._warmed_shapes:
             return
         try:
@@ -459,7 +462,7 @@ class TubeAnalyzer:
             if cuda_is_available():
                 torch.cuda.synchronize()
             self._warmed_shapes.add((height, width))
-            logger.debug(f"TubeAnalyzer warm-up done for {width}x{height}")
+            logger.info(f"TubeAnalyzer warm-up done for {width}x{height}")
         except Exception as e:
             logger.debug(f"TubeAnalyzer warm-up skipped: {e}")
 

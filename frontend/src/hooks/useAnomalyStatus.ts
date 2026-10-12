@@ -70,16 +70,16 @@ export function useAnomalyStatus({
       };
     }
 
-    if (isRunning && hasActiveStream && (isStarting || backendStatus === 'LOADING_MODEL' || framesProcessed < 5)) {
+    if (isRunning && hasActiveStream && (isStarting || backendStatus === 'LOADING_MODEL' || (framesProcessed < 2 && tubes.length === 0))) {
       const isModelLoading = isStarting || backendStatus === 'LOADING_MODEL';
-      const isWarming = framesProcessed > 0 && framesProcessed < 5;
+      const isWarming = framesProcessed > 0 && framesProcessed < 2 && tubes.length === 0;
       return {
         isAnomaly: false,
         type: 'NONE',
         message: isModelLoading ? 'LOADING MODEL' : 'WARMING UP',
         subMessage: isModelLoading
           ? 'Loading YOLOv8 weights into GPU memory...'
-          : `Calibrating ML tracking (${framesProcessed}/5)...`,
+          : `Calibrating ML tracking (${framesProcessed}/2)...`,
         headsCount: 0,
         tailsCount: 0,
       };

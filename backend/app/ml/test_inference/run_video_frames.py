@@ -93,6 +93,10 @@ def load_config(path=None, **overrides):
     """DEFAULTS <- config.yaml <- overrides (None values in overrides are ignored).
     Returns a SimpleNamespace, e.g. cfg.conf, cfg.video."""
     cfg = dict(DEFAULTS)
+    if not path:
+        local_cfg = Path(__file__).resolve().parent / "config.yaml"
+        if local_cfg.exists():
+            path = str(local_cfg)
     if path:
         path = Path(path).expanduser().resolve()
         if not path.exists():
@@ -129,6 +133,15 @@ def load_config(path=None, **overrides):
 def role_ids_from_names(names):
     """{class_id: 'HEAD'/'TAIL'} - tubing and anything else is ignored."""
     ids = {int(i): n.upper() for i, n in names.items() if n.upper() in ROLES}
+    if set(ROLES) <= set(ids.values()):
+        return ids
+    # Fallback for generic class names (e.g. class_0, class_1)
+    if all(str(n).lower().startswith("class_") for n in names.values()):
+        generic_map = {0: "HEAD", 1: "TAIL"}
+        ids = {i: r for i, r in generic_map.items() if i in names}
+        if set(ROLES) <= set(ids.values()):
+            print(f"[config] model has generic class names {names} -- assuming {ids}")
+            return ids
     missing = set(ROLES) - set(ids.values())
     if missing:
         raise SystemExit(f"model classes {names} have no {missing} class")

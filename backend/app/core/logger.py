@@ -11,8 +11,10 @@ _BACKUP_COUNT = 3
 
 current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_request_id", default="")
 
-_shared_handlers: List[RotatingFileHandler] = []
+_shared_handlers: List[logging.Handler] = []
 _error_handlers: List[RotatingFileHandler] = []
+_console_handler: Optional[logging.Handler] = None
+_realtime_handler: Optional[logging.Handler] = None
 _retention_cleaned = False
 
 
@@ -23,6 +25,95 @@ class RequestIdFilter(logging.Filter):
             req_id = current_request_id.get()
             record.req_id = f"[{req_id}] " if req_id else ""
         return True
+
+
+class HourlyFileHandler(logging.Handler):
+    """Dynamically writes logs to base_dir/YYYY-MM-DD/HH/session_HH.log.
+    Automatically rotates to a new hour/date folder as time advances."""
+    def __init__(
+        self,
+        base_dir: str,
+        max_bytes: int = _MAX_BYTES,
+        backup_count: int = _BACKUP_COUNT,
+        encoding: str = "utf-8",
+    ):
+        super().__init__()
+        self.base_dir = base_dir
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
+        self.encoding = encoding
+        self._current_key: Optional[str] = None
+        self._active_handler: Optional[RotatingFileHandler] = None
+
+    def _get_active_handler(self) -> RotatingFileHandler:
+        now = datetime.now()
+        date_folder = now.strftime("%Y-%m-%d")
+        hour_folder = now.strftime("%H")
+        key = f"{date_folder}/{hour_folder}"
+
+        if self._active_handler is None or key != self._current_key:
+            if self._active_handler is not None:
+                try:
+                    self._active_handler.close()
+                except Exception:
+                    pass
+            full_path = os.path.join(self.base_dir, date_folder, hour_folder)
+            os.makedirs(full_path, exist_ok=True)
+            log_file_path = os.path.join(full_path, f"session_{hour_folder}.log")
+            self._active_handler = RotatingFileHandler(
+                log_file_path,
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count,
+                encoding=self.encoding,
+            )
+            if self.formatter:
+                self._active_handler.setFormatter(self.formatter)
+            for f in self.filters:
+                self._active_handler.addFilter(f)
+            self._current_key = key
+
+        return self._active_handler
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._get_active_handler().emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        if self._active_handler is not None:
+            try:
+                self._active_handler.close()
+            except Exception:
+                pass
+        super().close()
+
+
+class RealtimeLogHandler(logging.Handler):
+    """Pushes WARNING and ERROR log records into realtime_log_service so the frontend sees them."""
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.WARNING:
+            return
+        try:
+            from app.services.realtime_log_service import realtime_log_service
+            name = (record.name or "").lower()
+            if "record" in name:
+                cat = "record"
+            elif "stream" in name:
+                cat = "stream"
+            elif "infer" in name or "analyzer" in name:
+                cat = "inference"
+            elif "camera" in name or "oak" in name:
+                cat = "camera"
+            else:
+                cat = "system"
+
+            tag = "CRASH" if record.levelno >= logging.ERROR else "WARN"
+            msg = record.getMessage()
+            status = "error" if record.levelno >= logging.ERROR else "warning"
+            realtime_log_service.add_log(cat, tag, msg, status)
+        except Exception:
+            pass
 
 
 def clean_old_logs(base_log_dir: str, retention_days: int = 7) -> None:
@@ -49,19 +140,22 @@ def clean_old_logs(base_log_dir: str, retention_days: int = 7) -> None:
 
 
 def get_current_log_path() -> Optional[str]:
-    if _shared_handlers:
-        return _shared_handlers[0].baseFilename
+    for h in _shared_handlers:
+        if isinstance(h, HourlyFileHandler) and h._active_handler:
+            return h._active_handler.baseFilename
+        elif hasattr(h, "baseFilename"):
+            return h.baseFilename
     return None
 
 
 def setup_logger(name: str = "vision-ai") -> logging.Logger:
-    global _shared_handlers, _error_handlers, _retention_cleaned
+    global _shared_handlers, _error_handlers, _console_handler, _realtime_handler, _retention_cleaned
 
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
 
     if not _shared_handlers or not _error_handlers:
+        import sys
         target_dirs: List[str] = []
 
         # 1. Workspace logs (so logs show in VS Code project explorer during dev)
@@ -85,13 +179,22 @@ def setup_logger(name: str = "vision-ai") -> logging.Logger:
         if not target_dirs:
             target_dirs.append(os.path.abspath("logs"))
 
-        date_folder = datetime.now().strftime("%Y-%m-%d")
-        hour_folder = datetime.now().strftime("%H")
-
         formatter = logging.Formatter(
             "%(asctime)s | %(levelname)s | %(name)s | %(req_id)s%(message)s"
         )
         req_filter = RequestIdFilter()
+
+        # Console handler for clean terminal output
+        if _console_handler is None:
+            _console_handler = logging.StreamHandler(sys.stdout)
+            _console_handler.setLevel(logging.INFO)
+            _console_handler.addFilter(req_filter)
+            _console_handler.setFormatter(formatter)
+
+        # Realtime log handler for frontend live error streaming
+        if _realtime_handler is None:
+            _realtime_handler = RealtimeLogHandler()
+            _realtime_handler.setLevel(logging.WARNING)
 
         for base_log_dir in target_dirs:
             try:
@@ -100,22 +203,18 @@ def setup_logger(name: str = "vision-ai") -> logging.Logger:
                 if not _retention_cleaned:
                     clean_old_logs(base_log_dir, retention_days=7)
 
-                full_path = os.path.join(base_log_dir, date_folder, hour_folder)
-                os.makedirs(full_path, exist_ok=True)
-
-                # Hourly session log
-                log_file_path = os.path.join(full_path, f"session_{hour_folder}.log")
-                sh = RotatingFileHandler(
-                    log_file_path,
-                    maxBytes=_MAX_BYTES,
-                    backupCount=_BACKUP_COUNT,
+                # Dynamic hourly session log
+                sh = HourlyFileHandler(
+                    base_log_dir,
+                    max_bytes=_MAX_BYTES,
+                    backup_count=_BACKUP_COUNT,
                     encoding="utf-8",
                 )
                 sh.addFilter(req_filter)
                 sh.setFormatter(formatter)
                 _shared_handlers.append(sh)
 
-                # Dedicated error-only log
+                # Dedicated error-only log (stores all ERROR & CRITICAL from any module)
                 error_file_path = os.path.join(base_log_dir, "error.log")
                 eh = RotatingFileHandler(
                     error_file_path,
@@ -132,17 +231,27 @@ def setup_logger(name: str = "vision-ai") -> logging.Logger:
 
         _retention_cleaned = True
 
-        # Silence unwanted uvicorn startup/shutdown lifecycle messages & httpx noise
+        # Silence unwanted third-party noise
         logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
+    # Attach all handlers to ROOT logger so every module (recording-service, oak-camera, etc.) logs properly
     for h in _shared_handlers:
-        if h not in logger.handlers:
-            logger.addHandler(h)
+        if h not in root_logger.handlers:
+            root_logger.addHandler(h)
     for h in _error_handlers:
-        if h not in logger.handlers:
-            logger.addHandler(h)
+        if h not in root_logger.handlers:
+            root_logger.addHandler(h)
+    if _console_handler and _console_handler not in root_logger.handlers:
+        root_logger.addHandler(_console_handler)
+    if _realtime_handler and _realtime_handler not in root_logger.handlers:
+        root_logger.addHandler(_realtime_handler)
 
+    # Return configured logger with propagation enabled
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    logger.propagate = True
     return logger

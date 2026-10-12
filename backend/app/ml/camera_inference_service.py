@@ -158,6 +158,9 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 with session["inference_lock"]:
                     if session.get("analyzer") == "LOADING":
                         session["analyzer"] = analyzer
+                        global _shared_camera_analyzer
+                        if _shared_camera_analyzer is None:
+                            _shared_camera_analyzer = analyzer
                         logger.info(f"TubeAnalyzer loaded successfully for session {session_id}")
             except Exception as e:
                 logger.error(f"Failed to load camera analyzer asynchronously: {e}", exc_info=True)

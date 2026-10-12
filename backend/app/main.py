@@ -171,14 +171,10 @@ def _preload_model_background():
             # Instantiating TubeAnalyzer loads YOLO weights + optionally CUDA
             _analyzer = TubeAnalyzer(model_path=resolved_model, device=device_val)
 
-            # Warm up: run one dummy inference so CUDA kernels are compiled.
+            # Warm up for standard 1080p frame resolution so live camera / video starts with zero delay
             try:
-                import numpy as np
-                # Warm up for common resolutions to prevent CUDA cold-start when user starts inference
-                for (h, w) in [(1080, 1920), (720, 1280), (640, 640)]:
-                    dummy = np.zeros((h, w, 3), dtype=np.uint8)
-                    _analyzer.process_frame(dummy)
-                logger.info(f"[STARTUP] ML model warm-up complete — kernels compiled (device={device_val}).")
+                _analyzer.warm_up((1080, 1920))
+                logger.info(f"[STARTUP] ML model warm-up complete — 1080p CUDA kernels compiled (device={device_val}).")
             except Exception as warm_err:
                 logger.warning(f"[STARTUP] Warm-up inference failed (non-fatal): {warm_err}")
 

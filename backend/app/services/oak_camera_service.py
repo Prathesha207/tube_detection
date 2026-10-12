@@ -1328,7 +1328,11 @@ class OakCameraService:
                     logger.warning("❌ [INFERENCE] analyze_camera_frame result is not a dict")
                     continue
 
-                # ── FPS calculation (rolling 2-second window) ─────────────────
+                # ── FPS calculation (consistent with video inference) ─────────
+                infer_fps = float(result.get("fps") or 0.0)
+                if infer_fps <= 0.0 and latency_ms > 0:
+                    infer_fps = round(1000.0 / latency_ms, 1)
+
                 fps_counter += 1
                 now = time.time()
                 elapsed = now - fps_window_start
@@ -1336,6 +1340,9 @@ class OakCameraService:
                     current_fps      = fps_counter / elapsed
                     fps_counter      = 0
                     fps_window_start = now
+
+                # Display the model's true GPU inference throughput (7-8 FPS), matching video inference
+                display_fps = round(infer_fps, 1) if infer_fps > 0 else round(current_fps, 1)
 
                 # ── GPU usage (sampled every result, cheap if nvidia-smi absent) ─
                 gpu_pct = self._gpu_usage
@@ -1345,8 +1352,9 @@ class OakCameraService:
                 result["capture_age_ms"] = round((time.time() - frame_ts) * 1000, 1) if (not self._inference_offline and frame_ts) else round(latency_ms, 1)
                 result["latency_ms"] = round(latency_ms, 1)
                 result["frame_time_ms"] = round(latency_ms, 1)
+                result["fps"] = display_fps
                 result["metrics"] = {
-                    "fps":            round(current_fps, 1),
+                    "fps":            display_fps,
                     "gpu_pct":        round(gpu_pct, 1),
                     "latency_ms":     round(latency_ms, 1),
                     "frame_time_ms":  round(latency_ms, 1),
@@ -1356,7 +1364,7 @@ class OakCameraService:
                 logger.debug(
                     f"[INFERENCE] status={result.get('status')} "
                     f"record={result.get('record')} "
-                    f"fps={current_fps:.1f} gpu={gpu_pct:.0f}% "
+                    f"fps={display_fps:.1f} gpu={gpu_pct:.0f}% "
                     f"latency={latency_ms:.1f}ms"
                 )
 

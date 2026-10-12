@@ -581,9 +581,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 crossOrigin="anonymous"
                 src={
                   isCameraSource
-                    ? (isRunning && feedMode === 'inference' && lastCameraFrame
-                        ? lastCameraFrame
-                        : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
+                    ? `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`
                     : (isRunning && feedMode === 'inference' && lastVideoFrame
                         ? lastVideoFrame
                         : effectiveVideoUrl)

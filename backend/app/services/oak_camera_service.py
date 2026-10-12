@@ -1367,8 +1367,7 @@ class OakCameraService:
                     result["video_index"]   = self._current_video_idx
                     result["total_videos"]  = self._total_videos
                     result["video_name"]    = self._current_video_name
-
-                result["_raw_frame"] = frame
+                    result["_raw_frame"]    = frame
 
                 # ── Push result to WebSocket ──────────────────────────────────
                 if self._inference_result_queue is not None and self._inference_loop is not None:

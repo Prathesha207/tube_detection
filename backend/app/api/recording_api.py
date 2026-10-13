@@ -19,6 +19,9 @@ router = APIRouter()
 
 @router.post("/start")
 def start_recording(data: StartRecordingRequest, db: Session = Depends(get_db)):
+    if not oak_camera_service.is_connected or not oak_camera_service._is_running or oak_camera_service.device is None:
+        raise HTTPException(status_code=400, detail="Cannot start recording: OAK camera hardware is not connected.")
+
     try:
         camera_config = camera_service.get_camera_config(db)
         if not camera_config:

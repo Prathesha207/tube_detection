@@ -58,7 +58,7 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
   isStreaming = false,
   onStartStream,
   onStopStream,
-  isCameraConnected = true,
+  isCameraConnected = false,
   cameraStartingState = 'ready',
 }) => {
   const isVideoLoading = useInferenceStore((state) => state.isVideoLoading);
@@ -174,14 +174,17 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                 /* When Stopped / Paused: provide START INFERENCE (and START/STOP STREAM for Camera) */
                 <div className="flex items-center gap-1 sm:gap-1.5">
                   <button
-                    disabled={isStarting || isVideoLoading}
+                    disabled={isCameraMode ? (!isCameraConnected || isStarting) : (isStarting || isVideoLoading)}
                     onClick={() => {
                       if (isStarting || isVideoLoading) return;
+                      if (isCameraMode && !isCameraConnected) return;
                       if (onResumeInference) onResumeInference();
                       else if (onToggleRunning) onToggleRunning();
                     }}
                     title={
-                      isVideoLoading
+                      isCameraMode && !isCameraConnected
+                        ? "OAK camera not connected — connect a camera to start inference"
+                        : isVideoLoading
                         ? "Video is uploading... please wait"
                         : isStarting
                           ? "Starting inference... please wait"
@@ -189,10 +192,11 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                             ? "Start camera stream and real-time AI inference"
                             : "Start real-time YOLOv8 AI inference"
                     }
-                    className={`h-8 sm:h-9 flex items-center gap-1 sm:gap-2 px-2.5 sm:px-5 rounded-xl font-bold text-[11px] sm:text-xs shadow-sm transition-all shrink-0 ${isStarting || isVideoLoading
-                      ? "bg-emerald-950/80 text-emerald-400/80 border border-emerald-700/50 cursor-not-allowed opacity-80"
-                      : "bg-emerald-600 hover:bg-emerald-500 text-white hover:shadow-emerald-600/30 active:scale-95 cursor-pointer"
-                      }`}
+                    className={`h-8 sm:h-9 flex items-center gap-1 sm:gap-2 px-2.5 sm:px-5 rounded-xl font-bold text-[11px] sm:text-xs shadow-sm transition-all shrink-0 ${
+                      (isStarting || isVideoLoading || (isCameraMode && !isCameraConnected))
+                        ? "bg-emerald-950/40 text-emerald-600/40 border border-emerald-900/30 cursor-not-allowed opacity-50"
+                        : "bg-emerald-600 hover:bg-emerald-500 text-white hover:shadow-emerald-600/30 active:scale-95 cursor-pointer"
+                    }`}
                   >
                     {isStarting || isVideoLoading ? (
                       <Loader2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 animate-spin text-emerald-400" />
@@ -209,10 +213,15 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                   {/* For Camera: Record Button next to START INFERENCE when inference is not running */}
                   {isCameraMode && !isRunning && (
                     <button
-                      disabled={isSavingRecording}
-                      onClick={() => onToggleRecording?.()}
+                      disabled={isSavingRecording || !isCameraConnected}
+                      onClick={() => {
+                        if (!isCameraConnected) return;
+                        onToggleRecording?.();
+                      }}
                       title={
-                        isSavingRecording
+                        !isCameraConnected
+                          ? 'Camera not connected — connect an OAK camera to record'
+                          : isSavingRecording
                           ? 'Finalizing recording... please wait'
                           : isRecording
                             ? 'Stop camera recording'
@@ -220,12 +229,14 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                               ? 'Start camera stream and begin recording'
                               : 'Start recording camera stream'
                       }
-                      className={`h-8 sm:h-9 flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 rounded-xl font-bold text-[11px] sm:text-xs shadow-xs transition-all shrink-0 cursor-pointer active:scale-95 ${
-                        isSavingRecording
+                      className={`h-8 sm:h-9 flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 rounded-xl font-bold text-[11px] sm:text-xs shadow-xs transition-all shrink-0 ${
+                        !isCameraConnected
+                          ? 'bg-rose-500/5 border border-rose-500/20 text-rose-500/40 cursor-not-allowed opacity-40'
+                          : isSavingRecording
                           ? 'bg-rose-700/80 text-white cursor-wait opacity-80'
                           : isRecording
                             ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse ring-2 ring-rose-400/50 shadow-md shadow-rose-600/30'
-                            : 'bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-500 dark:text-rose-400 hover:text-rose-600 dark:hover:text-white'
+                            : 'bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-500 dark:text-rose-400 hover:text-rose-600 dark:hover:text-white cursor-pointer active:scale-95'
                       }`}
                     >
                       {isSavingRecording ? (
@@ -271,11 +282,21 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
                   {isCameraMode && (
                     !isStreaming ? (
                       <button
+                        disabled={!isCameraConnected}
                         onClick={() => {
+                          if (!isCameraConnected) return;
                           onStartStream?.();
                         }}
-                        title="Start camera stream only (no AI inference)"
-                        className="h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] sm:text-xs shadow-xs active:scale-95 cursor-pointer transition-all shrink-0"
+                        title={
+                          !isCameraConnected
+                            ? "Camera not connected — connect an OAK camera to start stream"
+                            : "Start camera stream only (no AI inference)"
+                        }
+                        className={`h-8 sm:h-9 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 rounded-xl font-bold text-[11px] sm:text-xs shadow-xs transition-all shrink-0 ${
+                          !isCameraConnected
+                            ? "bg-sky-950/40 text-sky-600/40 border border-sky-900/30 cursor-not-allowed opacity-50"
+                            : "bg-sky-600 hover:bg-sky-500 text-white active:scale-95 cursor-pointer"
+                        }`}
                       >
                         <Play className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-current" />
                         <span className="whitespace-nowrap">START<span className="hidden sm:inline"> STREAM</span></span>

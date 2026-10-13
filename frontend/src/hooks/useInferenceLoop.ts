@@ -71,12 +71,13 @@ export function useInferenceLoop({
       let isMounted = true;
       let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
       let stallTimer: ReturnType<typeof setTimeout> | null = null;
+      let renderSeq = 0;
 
       const connectWs = () => {
         if (!isMounted) return;
         const wsUrl = getApiBaseUrl().replace('http', 'ws') + '/oak/inference/ws/live';
         ws = new WebSocket(wsUrl);
-        ws.onmessage = (event) => {
+        ws.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data);
             if (!isMounted) return;
@@ -102,9 +103,6 @@ export function useInferenceLoop({
               return;
             }
 
-            if (data.frame && setLastCameraFrame) {
-              setLastCameraFrame(data.frame);
-            }
             if (data.status !== 'queued' && data.status !== 'idle') {
               setFps(data.metrics?.fps || data.fps || 0);
               setFramesProcessed(data.frames_processed || 0);
@@ -116,7 +114,28 @@ export function useInferenceLoop({
               const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
               const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
               const incomingTubes = mapDetectionsToTubes(data, vw, vh);
-              setTubes(incomingTubes);
+              const thisSeq = ++renderSeq;
+
+              // Decode the exact analyzed frame before applying its detections.
+              if (data.frame && setLastCameraFrame) {
+                const img = new Image();
+                img.src = data.frame;
+                if (img.decode) {
+                  try {
+                    await img.decode();
+                  } catch (_) {
+                    if (isMounted && thisSeq === renderSeq) setTubes([]);
+                    return;
+                  }
+                }
+                if (!isMounted || thisSeq < renderSeq) return;
+
+                setLastCameraFrame(data.frame);
+                setTubes(incomingTubes);
+              } else {
+                // Without the matching image, never place these detections over an older frame.
+                if (thisSeq === renderSeq) setTubes([]);
+              }
             }
           } catch (e) { }
         };
@@ -145,6 +164,7 @@ export function useInferenceLoop({
     let isMounted = true;
     let timeoutId: ReturnType<typeof setTimeout>;
     let consecutive404s = 0;
+    let videoRenderSeq = 0;
 
     const pollBackend = async () => {
       try {
@@ -190,14 +210,27 @@ export function useInferenceLoop({
             setVideoDimensions({ width: data.video_width, height: data.video_height });
           }
 
-          if (data.frame && setLastVideoFrame) {
-            setLastVideoFrame(data.frame);
-          }
-
           const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
           const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
           const incomingTubes = mapDetectionsToTubes(data, vw, vh);
-          setTubes(incomingTubes);
+
+          // 100% Lockstep Frame Synchronization for Video:
+          if (data.frame && setLastVideoFrame) {
+            const thisSeq = ++videoRenderSeq;
+            const img = new Image();
+            img.src = data.frame;
+            if (img.decode) {
+              try {
+                await img.decode();
+              } catch (_) {}
+            }
+            if (!isMounted || thisSeq < videoRenderSeq) return;
+
+            setLastVideoFrame(data.frame);
+            setTubes(incomingTubes);
+          } else {
+            setTubes(incomingTubes);
+          }
 
           if (data.status === 'completed') {
             setIsRunning(false);

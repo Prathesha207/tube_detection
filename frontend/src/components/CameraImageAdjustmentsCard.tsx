@@ -87,7 +87,7 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   const scheduleDispatch = useCallback((payload: any) => {
     const now = Date.now();
     const elapsed = now - lastSentTimeRef.current;
-    const THROTTLE_MS = 40;
+    const THROTTLE_MS = 150;
 
     if (elapsed >= THROTTLE_MS && !inFlightRef.current) {
       if (throttleTimerRef.current) {

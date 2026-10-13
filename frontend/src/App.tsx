@@ -71,7 +71,7 @@ export default function App() {
   const [pendingSourceSwitch, setPendingSourceSwitch] = useState<StreamSourceType | null>(null);
 
   // ─── 5. Camera Hardware ────────────────────────────────────────────
-  const camera = useCameraStatus(addLog, showToast);
+  const camera = useCameraStatus(addLog, showToast, sourceType);
 
   // ─── Shared Pipeline State ─────────────────────────────────────────
   const initialSession = useMemo(() => loadSessionState(), []);
@@ -172,6 +172,7 @@ export default function App() {
   // ─── 8. Camera Pipeline (startCameraPipeline / stopCameraPipeline) ─
   const startCameraPipeline = async (): Promise<boolean> => {
     setTubes([]);
+    setLastCameraFrame(undefined);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
     camera.setCameraStartingState('waking_camera');
@@ -256,7 +257,7 @@ export default function App() {
   // Recalculate derived values that depend on inference state.
   const hasActiveStream = isVideoSource
     ? (isRunning || hasActiveVideo)
-    : (camera.isCameraDeviceActive && (isRunning || camera.isStreaming || camera.cameraStartingState === 'ready'));
+    : Boolean(camera.isCameraDeviceActive && camera.effectiveCameraConfig.connected && (isRunning || camera.isStreaming));
   const isStandby = !hasActiveStream && !isRunning && tubes.length === 0;
 
   // Immediately stop inference and clear warmup state if camera hardware is disconnected or removed
@@ -361,6 +362,7 @@ export default function App() {
     backendStats,
     addLog,
     tubes,
+    isDeviceDetected: camera.isDeviceDetected,
   });
 
   // ─── 10. Mode Switching ────────────────────────────────────────────
@@ -487,11 +489,20 @@ export default function App() {
         addLog('Camera recording saved successfully.', 'success');
       }
     } else {
-      if (!camera.isStreaming && camera.startCameraStream) {
-        await camera.startCameraStream();
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (!camera.isCameraDeviceActive || !camera.effectiveCameraConfig.connected) {
+        showToast('error', 'Cannot record: OAK camera is not connected. Connect a camera first.');
+        addLog('Cannot start recording: OAK camera is not connected.', 'error');
+        return;
       }
-      await recording.startRecording(camera.effectiveCameraConfig.recordingFormat || 'MP4');
+      try {
+        if (!camera.isStreaming && camera.startCameraStream) {
+          await camera.startCameraStream();
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        await recording.startRecording(camera.effectiveCameraConfig.recordingFormat || 'MP4');
+      } catch (err: any) {
+        console.error('Failed to start recording:', err);
+      }
     }
   };
 
@@ -862,6 +873,7 @@ export default function App() {
           isStreaming={camera.isStreaming}
           onStartStream={camera.startCameraStream}
           onStopStream={handleStopStream}
+          isCameraConnected={camera.effectiveCameraConfig.connected}
           onOpenSettings={() => setSettingsOpen(true)}
           customVideoName={video.customVideoName}
           onCustomVideoUploaded={video.handleVideoUploaded}
@@ -897,12 +909,14 @@ export default function App() {
               onCameraDeviceChange={camera.setIsCameraDeviceActive}
               videoDimensions={video.videoDimensions}
               isCameraConnected={camera.effectiveCameraConfig.connected}
+              isDeviceDetected={camera.isDeviceDetected}
               initialUploadFile={video.initialUploadFile}
               isBackendConnected={isBackendConnected}
               onRegisterTriggerUpload={(fn) => { uploadTriggerRef.current = fn; }}
               lastCameraFrame={lastCameraFrame}
               lastVideoFrame={lastVideoFrame}
               onCaptureVideoFrame={setLastVideoFrame}
+              onCaptureCameraFrame={setLastCameraFrame}
               onRetryConnection={async () => {
                 setIsRunning(false);
                 await camera.startCameraStream();

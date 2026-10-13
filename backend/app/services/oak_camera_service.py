@@ -41,6 +41,10 @@ class OakCameraService:
         # ---- Device ----
         self.device: dai.Device | None = None
         self.is_connected: bool = False
+        self._last_device_scan_time: float = 0.0
+        self._cached_device_detected: bool = False
+        self._cached_devices_count: int = 0
+        self._is_scanning_devices: bool = False
 
         # ---- Pipeline ----
         self._pipeline: dai.Pipeline | None = None
@@ -684,7 +688,7 @@ class OakCameraService:
                 if pkt is None:
                     # Watchdog: detect frozen camera if no frames from camera for 6.0s after streaming begins
                     if not self._mjpeg_stop.is_set() and frames > 0 and (time.time() - last_frame_ts > 6.0):
-                        logger.error("[MJPEG] Watchdog: No MJPEG frames from camera for 6.0s — device connection frozen")
+                        logger.warning("[MJPEG] Watchdog: No MJPEG frames from camera for 6.0s — device connection frozen")
                         self._on_device_lost("No MJPEG frames from camera for 6.0s")
                         break
                     time.sleep(0.001)
@@ -1096,7 +1100,10 @@ class OakCameraService:
         ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
         ctrl.setBrightness(max(-10, min(10, int(round(self.current_brightness / 5.0)))))
         ctrl.setContrast(max(-10, min(10, int(round((self.current_contrast - 50) / 5.0)))))
-        self._control_queue.send(ctrl)
+        try:
+            self._control_queue.send(ctrl)
+        except Exception as ctrl_err:
+            logger.warning(f"[CONTROL] Control queue send failed: {ctrl_err}")
         if self._active_recording is not None:
             self._active_recording.add_settings_event(self._recording_settings_snapshot())
 
@@ -1375,7 +1382,10 @@ class OakCameraService:
                     result["video_index"]   = self._current_video_idx
                     result["total_videos"]  = self._total_videos
                     result["video_name"]    = self._current_video_name
-                    result["_raw_frame"]    = frame
+
+                # Synchronized frame: attach the analyzed frame so frontend renders the exact frame
+                # in 100% lockstep with its detection bounding boxes (no latency mismatch or trail)
+                result["_raw_frame"] = frame
 
                 # ── Push result to WebSocket ──────────────────────────────────
                 if self._inference_result_queue is not None and self._inference_loop is not None:
@@ -1626,7 +1636,8 @@ class OakCameraService:
         logger.info("[OFFLINE] Thread stopped")
 
     def subscribe_inference(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=4)
+        # maxsize=1 ensures clients always receive the freshest frame with zero backlog/drift
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
         self._inference_subscribers.add(q)
         logger.info(f"[INFERENCE] Client subscribed — active subscribers: {len(self._inference_subscribers)}")
         return q
@@ -1708,7 +1719,7 @@ class OakCameraService:
         self._inference_session_id = session_id
         self._inference_loop = loop
         self._inference_offline = offline
-        self._inference_result_queue = asyncio.Queue(maxsize=2)
+        self._inference_result_queue = asyncio.Queue(maxsize=1)
 
         def _push_error(msg: str) -> None:
             asyncio.run_coroutine_threadsafe(
@@ -1935,6 +1946,9 @@ class OakCameraService:
         recording_format: str | None = None,
         camera_settings: dict | None = None,
     ) -> str:
+        if not self.is_connected or not self._is_running or self.device is None:
+            raise RuntimeError("Cannot start recording: OAK camera is not connected.")
+
         from app.services.recording_service import start_recording as _start, active_recordings
 
         root_path = self._resolve_recording_path()
@@ -2161,8 +2175,8 @@ class OakCameraService:
 
     async def start_streaming(self) -> dict:
         """User clicks Start Streaming — start the 3 capture threads."""
-        if not self._is_running:
-            return {"status": "error", "message": "Pipeline not started — call /oak/start first"}
+        if not self._is_running or not self.is_connected or self.device is None:
+            return {"status": "error", "message": "Cannot stream: OAK camera is not connected — call /oak/start first"}
 
         if not self._start_capture_threads():
             return {"status": "error", "message": "Capture threads failed to start"}
@@ -2205,23 +2219,59 @@ class OakCameraService:
         logger.info("[STREAMING] Stopped")
         return {"status": "stopped"}
 
+    def _refresh_device_detection_async(self):
+        """Asynchronously probe DepthAI devices without blocking health polling."""
+        if getattr(self, "_is_scanning_devices", False):
+            return
+        self._is_scanning_devices = True
+
+        def _scan():
+            try:
+                devs = dai.Device.getAllAvailableDevices()
+                count = len(devs)
+                self._cached_devices_count = count
+                self._cached_device_detected = count > 0
+            except Exception as e:
+                logger.debug(f"[OAK PROBE] Failed checking devices: {e}")
+                self._cached_devices_count = 0
+                self._cached_device_detected = False
+            finally:
+                self._last_device_scan_time = time.time()
+                self._is_scanning_devices = False
+
+        t = threading.Thread(target=_scan, daemon=True, name="oak-device-probe")
+        t.start()
+
+    def is_device_detected(self) -> bool:
+        """Check if any physical OAK / DepthAI device is present."""
+        if self.is_connected and self.device is not None:
+            return True
+        now = time.time()
+        if now - getattr(self, "_last_device_scan_time", 0.0) > 2.5 and not getattr(self, "_is_scanning_devices", False):
+            self._refresh_device_detection_async()
+        return getattr(self, "_cached_device_detected", False)
+
     # ==================== Health ====================
 
     def health(self) -> dict:
+        is_hardware_connected = bool(self.is_connected and self.device is not None)
+        device_detected = self.is_device_detected()
         return {
-            "running": self._is_running,
-            "connected": self.is_connected,
-            "camera_running": self._is_running,
-            "is_running": self._is_running,
-            "is_connected": self.is_connected,
-            "mjpeg_thread": bool(self._mjpeg_thread and self._mjpeg_thread.is_alive()),
-            "hires_thread": bool(self._hires_thread and self._hires_thread.is_alive()),
-            "convert_thread": bool(self._convert_thread and self._convert_thread.is_alive()),
-            "inference_thread": bool(self._inference_thread and self._inference_thread.is_alive()),
-            "inference_watchdog_thread": bool(self._inference_watchdog_thread and self._inference_watchdog_thread.is_alive()),
-            "streaming": self._is_streaming,
-            "fps": round(self.current_fps, 1),
-            "camera_settings": self._camera_settings() if self._is_running or self.is_connected else None,
+            "running": bool(self._is_running and is_hardware_connected),
+            "connected": is_hardware_connected,
+            "device_detected": device_detected,
+            "devices_count": 1 if is_hardware_connected else getattr(self, "_cached_devices_count", 0),
+            "camera_running": bool(self._is_running and is_hardware_connected),
+            "is_running": bool(self._is_running and is_hardware_connected),
+            "is_connected": is_hardware_connected,
+            "mjpeg_thread": bool(self._mjpeg_thread and self._mjpeg_thread.is_alive() and is_hardware_connected),
+            "hires_thread": bool(self._hires_thread and self._hires_thread.is_alive() and is_hardware_connected),
+            "convert_thread": bool(self._convert_thread and self._convert_thread.is_alive() and is_hardware_connected),
+            "inference_thread": bool(self._inference_thread and self._inference_thread.is_alive() and is_hardware_connected),
+            "inference_watchdog_thread": bool(self._inference_watchdog_thread and self._inference_watchdog_thread.is_alive() and is_hardware_connected),
+            "streaming": bool(self._is_streaming and is_hardware_connected),
+            "fps": round(self.current_fps, 1) if is_hardware_connected else 0.0,
+            "camera_settings": self._camera_settings() if (self._is_running and is_hardware_connected) else None,
             "last_error": getattr(self, "_last_connection_error", None),
         }
 

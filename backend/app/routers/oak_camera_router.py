@@ -12,6 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from concurrent.futures import ThreadPoolExecutor
 from app.dependencies import get_db
 from app.models.camera_model import Camera
 from app.services import camera_service
@@ -21,6 +22,7 @@ from app.services.realtime_log_service import realtime_log_service
 logger = logging.getLogger("oak-camera")
 
 router = APIRouter()
+_inference_encoder_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inf_ws_enc")
 
 
 
@@ -540,10 +542,15 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                     h, w = f.shape[:2]
                     if w > 1280:
                         new_h = int(h * (1280.0 / w))
-                        f = cv2.resize(f, (1280, new_h), interpolation=cv2.INTER_AREA)
-                    _, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
-                ws_result["frame"] = await loop.run_in_executor(None, _encode)
+                        f = cv2.resize(f, (1280, new_h), interpolation=cv2.INTER_LINEAR)
+                    _, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 75, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
+                    return "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii")
+                ws_result["frame"] = await loop.run_in_executor(_inference_encoder_pool, _encode)
+
+            # Drop-stale guard: If a newer inference result was computed while encoding,
+            # discard this frame to ensure the frontend only renders freshest synchronized frame.
+            if not client_queue.empty() and not ws_result.get("done"):
+                continue
 
             await websocket.send_json(ws_result)
 

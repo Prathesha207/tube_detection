@@ -358,6 +358,10 @@ async def api_logging_middleware(request: Request, call_next):
                     logger.debug(
                         f"[API] {method} {path} -> 503 ({duration_ms}ms) | {detail}"
                     )
+                elif response.status_code == 503 and any(path.startswith(p) for p in ("/oak/stream", "/oak/inference/stream")):
+                    logger.warning(
+                        f"[API WARN] {method} {path} -> 503 ({duration_ms}ms) | {detail}"
+                    )
                 else:
                     logger.error(
                         f"[API ERROR] {method} {path} -> {response.status_code} ({duration_ms}ms) | {detail}"

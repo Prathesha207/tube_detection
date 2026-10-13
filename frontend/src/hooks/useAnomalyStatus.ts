@@ -10,6 +10,7 @@ export function useAnomalyStatus({
   backendStats,
   addLog,
   tubes,
+  isDeviceDetected = false,
 }: {
   hasActiveStream: boolean;
   isRunning: boolean;
@@ -19,6 +20,7 @@ export function useAnomalyStatus({
   backendStats: any;
   addLog: (message: string, level?: LogEntry['level']) => void;
   tubes: TubeEntity[];
+  isDeviceDetected?: boolean;
 }) {
   const activeTubes = useMemo(() => {
     if (!hasActiveStream && tubes.length === 0) return [];
@@ -32,8 +34,10 @@ export function useAnomalyStatus({
       return {
         isAnomaly: false,
         type: 'NONE',
-        message: 'NO CAMERA',
-        subMessage: 'No Luxonis OAK-D / USB camera connected',
+        message: isDeviceDetected ? 'CAMERA READY' : 'NO CAMERA',
+        subMessage: isDeviceDetected
+          ? 'OAK camera detected • Standby'
+          : 'No Luxonis OAK-D / USB camera connected',
         headsCount: 0,
         tailsCount: 0,
       };
@@ -43,9 +47,9 @@ export function useAnomalyStatus({
       return {
         isAnomaly: false,
         type: 'NONE',
-        message: isCameraSource ? 'NO CAMERA' : 'STANDBY',
+        message: isCameraSource ? (isDeviceDetected ? 'CAMERA READY' : 'NO CAMERA') : 'STANDBY',
         subMessage: isCameraSource
-          ? 'No Luxonis OAK-D / USB camera connected'
+          ? (isDeviceDetected ? 'OAK camera detected • Standby' : 'No Luxonis OAK-D / USB camera connected')
           : 'Waiting for video stream...',
         headsCount: 0,
         tailsCount: 0,

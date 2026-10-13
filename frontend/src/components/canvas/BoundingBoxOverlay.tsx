@@ -368,16 +368,19 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
 
                 <div className="flex items-center justify-between text-slate-300">
                   <span>Width:</span>
-                  <span className="font-bold text-white">
-                    {tube.width_px ? `${tube.width_px.toFixed(1)}px` : '-'}
-                    {tube.width_mm ? ` (${tube.width_mm.toFixed(2)}mm)` : ''}
+                  <span className="font-bold text-white font-mono">
+                    {typeof tube.width_px === 'number'
+                      ? `${tube.width_px.toFixed(1)}px`
+                      : typeof tube.width_mm === 'number'
+                      ? `${tube.width_mm.toFixed(2)}mm`
+                      : 'null'}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between text-slate-300">
                   <span>Pair:</span>
-                  <span className={tube.pair_id != null ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
-                    {tube.pair_id != null ? `Tube #${tube.pair_id}` : 'Unpaired'}
+                  <span className={tube.pair_id != null ? 'text-emerald-400 font-bold font-mono' : 'text-slate-400 font-mono'}>
+                    {tube.pair_id != null ? `Tube #${tube.pair_id}` : 'null'}
                   </span>
                 </div>
 

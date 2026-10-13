@@ -112,8 +112,7 @@ def draw_overlay(
             
             role = d.get("role") or d.get("class") or "TUBE"
             is_head = role == "HEAD"
-            status_val = d.get("status", "OK")
-            is_anomaly = status_val != "OK" or d.get("pair_id") is None
+            is_anomaly = status_val != "OK"
             
             # Color: Cyan for HEAD, Indigo for TAIL, Red for Alert
             if is_anomaly:

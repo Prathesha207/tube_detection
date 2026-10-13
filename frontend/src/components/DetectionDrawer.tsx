@@ -271,46 +271,46 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     </div>
                   ) : (
                     tubes.map((d, idx) => {
-                    const isHead = d.role === 'HEAD';
-                    const isSelected = selectedTubeId != null && String(d.id) === String(selectedTubeId);
-                    const widthVal = Number(d.width_px ?? d.width_mm ?? 0);
-                    const isCheck = d.status && d.status !== 'OK';
+                      const isHead = d.role === 'HEAD';
+                      const isSelected = selectedTubeId != null && String(d.id) === String(selectedTubeId);
+                      const widthVal = Number(d.width_px ?? d.width_mm ?? 0);
+                      const isCheck = d.status && d.status !== 'OK';
 
-                    return (
-                      <div
-                        key={`det-${d.id ?? idx}`}
-                        onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
-                        role="button"
-                        tabIndex={0}
-                        className={`flex items-center justify-between p-2 rounded-lg font-mono text-xs border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-xs transition-all cursor-pointer ${
-                          isSelected ? 'ring-2 ring-[var(--accent-pond)] shadow-sm' : 'hover:border-[var(--accent-pond)]'
-                        }`}
-                      >
-                        {/* Index -> Class -> Tracker ID */}
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-bold text-[var(--text-secondary)] min-w-[20px]">
-                            #{idx + 1}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
-                            isHead ? 'bg-sky-500 text-white' : 'bg-indigo-500 text-white'
-                          }`}>
-                            {d.role || 'END'}
-                          </span>
-                          <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-75">
-                            ID: {d.displayId ?? d.id}
-                          </span>
-                        </div>
-
-                        {/* Confidence score */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {d.confidence != null ? (
-                            <span className="text-[11px] text-[var(--text-secondary)] font-mono font-medium">
-                              {Math.round(Number(d.confidence) <= 1 ? Number(d.confidence) * 100 : Number(d.confidence))}%
+                      return (
+                        <div
+                          key={`det-${d.id ?? idx}`}
+                          onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
+                          role="button"
+                          tabIndex={0}
+                          className={`flex items-center justify-between p-2 rounded-lg font-mono text-xs border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-xs transition-all cursor-pointer ${isSelected ? 'ring-2 ring-[var(--accent-pond)] shadow-sm' : 'hover:border-[var(--accent-pond)]'
+                            }`}
+                        >
+                          {/* Index -> Class -> Tracker ID */}
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-bold text-[var(--text-secondary)] min-w-[20px]">
+                              #{idx + 1}
                             </span>
-                          ) : null}
-                        </div>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black ${isHead ? 'bg-sky-500 text-white' : 'bg-indigo-500 text-white'
+                              }`}>
+                              {d.role || 'END'}
+                            </span>
+                            <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-75">
+                              ID: {d.displayId ?? d.id}
+                            </span>
+                          </div>
 
-                        {/* COMMENTED OUT: width and unpaired / pair tags
+                          {/* Width, Pair & Confidence */}
+                          <div className="flex items-center gap-2.5 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
+                            <span>w: <strong className="text-[var(--text-primary)]">{typeof d.width_px === 'number' ? `${d.width_px.toFixed(1)}px` : 'null'}</strong></span>
+                            <span>pair: <strong className="text-[var(--text-primary)]">{d.pair_id != null ? `tube#${d.pair_id}` : 'null'}</strong></span>
+                            {d.confidence != null ? (
+                              <span className="text-[11px] text-[var(--text-secondary)] font-medium">
+                                {Math.round(Number(d.confidence) <= 1 ? Number(d.confidence) * 100 : Number(d.confidence))}%
+                              </span>
+                            ) : null}
+                          </div>
+
+                          {/* COMMENTED OUT: width and unpaired / pair tags
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="text-[11px] text-[var(--text-secondary)]">
                             width=
@@ -348,10 +348,10 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                           )}
                         </div>
                         */}
-                      </div>
-                    );
-                  })
-                )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 

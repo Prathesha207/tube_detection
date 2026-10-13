@@ -14,7 +14,6 @@ import { CameraOfflineCard } from './canvas/CameraOfflineCard';
 import { CameraStandbyCard } from './canvas/CameraStandbyCard';
 import { TopToolbar } from './canvas/TopToolbar';
 // import { StatusBar } from './canvas/StatusBar';
-import { LoadingOverlay } from './canvas/LoadingOverlay';
 import { ZoomControls } from './canvas/ZoomControls';
 
 // Extracted Canvas Hooks
@@ -671,16 +670,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )}
 
-      <LoadingOverlay
-        isStarting={isStarting}
-        isCameraSource={isCameraSource}
-        isVideoSource={isVideoSource}
-        cameraStartingState={cameraStartingState}
-        hasActiveVideo={hasActiveVideo}
-        isRunning={isRunning}
-        isFirstFrameLoaded={isFirstFrameLoaded || framesProcessed > 0 || Boolean(lastVideoFrame) || Boolean(lastCameraFrame)}
-        isCameraConnected={isCameraConnected}
-      />
 
       {!isOverlayShowing && (
         <TopToolbar

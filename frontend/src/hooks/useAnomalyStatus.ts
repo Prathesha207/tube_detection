@@ -85,17 +85,6 @@ export function useAnomalyStatus({
       };
     }
 
-    // Warming up ONLY for the 2 frames defined in config.yaml (min_frames: 2) to confirm initial tracking sightings
-    if (isRunning && hasActiveStream && framesProcessed < 2 && tubes.length === 0) {
-      return {
-        isAnomaly: false,
-        type: 'NONE',
-        message: 'WARMING UP',
-        subMessage: `Calibrating ML tracking (${framesProcessed}/2 frames)...`,
-        headsCount: 0,
-        tailsCount: 0,
-      };
-    }
 
     // Dynamic counts straight from ML output
     const headsCount = Number(backendStats.heads_count ?? tubes.filter(d => d.role === 'HEAD').length);

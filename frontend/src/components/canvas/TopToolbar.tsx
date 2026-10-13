@@ -88,11 +88,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
                   <span>LOADING MODEL...</span>
                 </div>
-              ) : (anomalyStatus.message === 'WARMING UP' || anomalyStatus.message === 'WARMING') ? (
-                <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
-                  <span>WARMING UP ({framesProcessed}/2)...</span>
-                </div>
+
               ) : isRunning ? (
                 <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">
                   <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">

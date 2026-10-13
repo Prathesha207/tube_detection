@@ -1363,8 +1363,8 @@ class OakCameraService:
                 # ── GPU usage (sampled every result, cheap if nvidia-smi absent) ─
                 gpu_pct = self._gpu_usage
 
-                # ── Attach metrics to result ──────────────────────────────────
                 result["frame_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
+                result["frames_processed"] = result.get("frames_processed") or result["frame_seq"] or 1
                 result["capture_age_ms"] = round((time.time() - frame_ts) * 1000, 1) if (not self._inference_offline and frame_ts) else round(latency_ms, 1)
                 result["latency_ms"] = round(latency_ms, 1)
                 result["frame_time_ms"] = round(latency_ms, 1)

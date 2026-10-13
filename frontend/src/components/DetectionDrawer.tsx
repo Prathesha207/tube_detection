@@ -55,9 +55,9 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   };
 
   const displayFps = isRunning ? (mlStats.fps > 0 ? mlStats.fps : metrics.fps) : 0;
-  const displayFrames = mlStats.status !== 'idle' && mlStats.status !== 'stopped' && mlStats.frames_processed > 0
-    ? mlStats.frames_processed
-    : (isRunning ? metrics.framesProcessed : 0);
+  const displayFrames = mlStats.status !== 'idle' && mlStats.status !== 'stopped' && ((mlStats.frames_processed ?? 0) > 0 || (mlStats.frame ?? 0) > 0 || (mlStats.frame_seq ?? 0) > 0)
+    ? (mlStats.frames_processed || mlStats.frame || mlStats.frame_seq || 1)
+    : (isRunning ? Math.max(1, metrics.framesProcessed || 0) : 0);
   const displayProgress = mlStats.status !== 'idle' && mlStats.status !== 'stopped' ? (mlStats.progress ?? 0) : 0;
   const latencyMs = mlStats.latency_ms ?? mlStats.frame_time_ms ?? metrics.latencyMs ?? metrics.inferenceTimeMs;
 

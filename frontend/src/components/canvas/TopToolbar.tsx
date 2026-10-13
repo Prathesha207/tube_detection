@@ -49,6 +49,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onToggleFullscreen,
   showHUD,
   onToggleHUD,
+  backendStatus,
   isCameraSource,
   isVideoSource: _isVideoSource,
   hasCameraRecording,
@@ -67,6 +68,8 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
   onToggleRoi,
 }) => {
   const latencyMs = useInferenceStore((state) => state.stats.latency_ms ?? state.stats.frame_time_ms);
+  const storeStatus = useInferenceStore((state) => state.stats.status);
+  const effectiveStatus = backendStatus || storeStatus;
   const isMediaActive = isRunning || hasActiveVideo || Boolean(hasCameraRecording) || (isCameraSource && isStreaming);
   if (!isMediaActive) return null;
 
@@ -80,7 +83,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         {!isRoiActive && (
           showInferenceStatus ? (
             <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
-              {(anomalyStatus.message === 'LOADING MODEL' || backendStats.status === 'LOADING_MODEL') ? (
+              {(anomalyStatus.message === 'LOADING MODEL' || effectiveStatus === 'LOADING_MODEL') ? (
                 <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
                   <span>LOADING MODEL...</span>

@@ -415,16 +415,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
   }, [isCameraSource, effectiveFramesProcessed, onCaptureCameraFrame, onCaptureVideoFrame]);
 
-  // When inference starts, clear any stale captured frame
-  useEffect(() => {
-    if (isRunning) {
-      if (!isCameraSource) {
-        onCaptureVideoFrame?.(undefined as any);
-      } else {
-        onCaptureCameraFrame?.(undefined as any);
-      }
-    }
-  }, [isRunning, isCameraSource, onCaptureVideoFrame, onCaptureCameraFrame]);
+  // Reset video aspect or clear frames when source or mode changes if needed
 
   // When inference stops, capture the current frame
   useEffect(() => {
@@ -568,10 +559,10 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 src={
                   isCameraSource
                     ? (isRunning && feedMode === 'inference'
-                        ? (lastCameraFrame || effectiveBackdrop || '')
+                        ? (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')
                         : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
                     : (isRunning && feedMode === 'inference'
-                        ? (lastVideoFrame || effectiveBackdrop || '')
+                        ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
                         : effectiveVideoUrl)
                 }
                 className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-fill ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
@@ -584,9 +575,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                     setVideoAspect((prev) => (prev !== aspect ? aspect : prev));
                   }
                   setStreamError(false);
-                  if (hasDetections || effectiveFramesProcessed >= 15 || !isRunning) {
-                    setIsFirstFrameLoaded(true);
-                  }
+                  setIsFirstFrameLoaded(true);
                   if (!isRunning && effectiveFramesProcessed > 0) {
                     captureFrame();
                   }

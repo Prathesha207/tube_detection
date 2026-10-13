@@ -686,12 +686,21 @@ class OakCameraService:
 
                 pkt = self._mjpeg_dai_queue.tryGet()
                 if pkt is None:
-                    # Watchdog: detect frozen camera if no frames from camera for 6.0s after streaming begins
-                    if not self._mjpeg_stop.is_set() and frames > 0 and (time.time() - last_frame_ts > 6.0):
-                        logger.warning("[MJPEG] Watchdog: No MJPEG frames from camera for 6.0s — device connection frozen")
-                        self._on_device_lost("No MJPEG frames from camera for 6.0s")
+                    # Watchdog: ONLY monitor frozen camera if streaming is actively desired with subscribers,
+                    # and allow 15.0s to accommodate DepthAI hardware auto-reconnect (10s internal timeout).
+                    # Never trigger watchdog teardown when stream is stopped or has 0 subscribers!
+                    has_subscribers = bool(self._stream_subscribers) or (self._stream_queue is not None)
+                    if (
+                        not self._mjpeg_stop.is_set()
+                        and self._is_streaming
+                        and has_subscribers
+                        and frames > 0
+                        and (time.time() - last_frame_ts > 15.0)
+                    ):
+                        logger.warning("[MJPEG] Watchdog: No MJPEG frames from camera for 15.0s during active stream — device connection frozen")
+                        self._on_device_lost("No MJPEG frames from camera for 15.0s")
                         break
-                    time.sleep(0.001)
+                    time.sleep(0.005)
                     continue
 
                 last_frame_ts = time.time()
@@ -770,7 +779,7 @@ class OakCameraService:
 
                 pkt = self._raw_dai_queue.tryGet()
                 if pkt is None:
-                    time.sleep(0.001)
+                    time.sleep(0.005)
                     continue
 
                 try:
@@ -1874,12 +1883,11 @@ class OakCameraService:
 
         streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
         recording_active = self._active_recording is not None
-        # Keep capture threads alive if streaming or camera pipeline is running
-        if not streaming_active and not recording_active and not self._is_running:
-            logger.info("[INFERENCE] Camera not streaming or running — stopping capture threads")
+        if not streaming_active and not recording_active:
+            logger.info("[INFERENCE] No active streaming or recording — stopping capture threads")
             self._stop_capture_threads()
         else:
-            logger.info(f"[INFERENCE] Camera active (streaming={streaming_active}, recording={recording_active}, running={self._is_running}) — keeping capture threads running")
+            logger.info(f"[INFERENCE] Camera active (streaming={streaming_active}, recording={recording_active}) — keeping capture threads running")
 
         logger.info("[INFERENCE] Stopped")
         self._stop_gpu_sampler()
@@ -2031,13 +2039,14 @@ class OakCameraService:
         result = _stop(session_id)
         logger.info(f"[RECORD] Recording stopped and session cleared → {result}")
 
-        # Stop capture threads only if streaming and pipeline are also not active
+        # Stop capture threads only if streaming and inference are also not active
         streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
-        if not streaming_active and not self._is_running:
-            logger.info("[RECORD] No active streaming or running pipeline — stopping capture threads")
+        inference_active = bool(self._inference_thread and self._inference_thread.is_alive())
+        if not streaming_active and not inference_active:
+            logger.info("[RECORD] No active streaming or inference — stopping capture threads")
             self._stop_capture_threads()
         else:
-            logger.info("[RECORD] Streaming/pipeline still active — keeping capture threads running")
+            logger.info(f"[RECORD] Streaming or inference active (streaming={streaming_active}, inference={inference_active}) — keeping capture threads running")
 
         return result
 

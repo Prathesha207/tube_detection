@@ -124,7 +124,6 @@ export function useInferenceLoop({
                   try {
                     await img.decode();
                   } catch (_) {
-                    if (isMounted && thisSeq === renderSeq) setTubes([]);
                     return;
                   }
                 }
@@ -133,8 +132,9 @@ export function useInferenceLoop({
                 setLastCameraFrame(data.frame);
                 setTubes(incomingTubes);
               } else {
-                // Without the matching image, never place these detections over an older frame.
-                if (thisSeq === renderSeq) setTubes([]);
+                if (isMounted && thisSeq === renderSeq) {
+                  setTubes(incomingTubes);
+                }
               }
             }
           } catch (e) { }

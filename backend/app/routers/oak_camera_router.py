@@ -546,12 +546,6 @@ async def inference_ws(websocket: WebSocket, session_id: str):
                     _, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 75, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
                     return "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii")
                 ws_result["frame"] = await loop.run_in_executor(_inference_encoder_pool, _encode)
-
-            # Drop-stale guard: If a newer inference result was computed while encoding,
-            # discard this frame to ensure the frontend only renders freshest synchronized frame.
-            if not client_queue.empty() and not ws_result.get("done"):
-                continue
-
             await websocket.send_json(ws_result)
 
     except WebSocketDisconnect:

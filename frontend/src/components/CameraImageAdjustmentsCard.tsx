@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SlidersHorizontal, RotateCcw, Focus, Sun, Zap, CheckCircle2, RefreshCw } from 'lucide-react';
+import { SlidersHorizontal, RotateCcw, Focus, Sun, Zap, CheckCircle2, RefreshCw, Save } from 'lucide-react';
 import { CameraConfig } from '../types';
 import { cameraService } from './service/cameraService';
 
@@ -27,6 +27,9 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   const [syncStatus, setSyncStatus] = useState<'synced' | 'adjusting'>('synced');
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const presetRef = useRef({ exposure: config?.exposure ?? 8, gain: config?.gain ?? 400, focus: config?.focus ?? 0, brightness: config?.brightness ?? 0, contrast: config?.contrast ?? 50 });
 
   // Network queuing & pacing refs for ultra-smooth responsiveness
@@ -248,6 +251,53 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     });
   };
 
+  // Save current manual settings to database as permanent defaults
+  const handleSaveAsDefault = async () => {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      // 1. Dispatch latest values live with save_to_db flag
+      await cameraService.updateLiveControls(cameraId || config?.id, {
+        control_mode: 'manual',
+        exposure,
+        gain,
+        focus,
+        brightness,
+        contrast,
+        auto_exposure: false,
+        auto_focus: false,
+        save_to_db: true,
+      });
+
+      // 2. Also call explicit save endpoint to guarantee vision_ai.db persistence
+      await cameraService.saveLiveControls();
+
+      // 3. Update local presetRef so Reset will now revert to these saved values
+      presetRef.current = { exposure, gain, focus, brightness, contrast };
+
+      // 4. Update parent config state
+      onUpdateConfig?.({
+        controlMode: 'manual',
+        exposure,
+        gain,
+        focus,
+        brightness,
+        contrast,
+        autoExposure: false,
+        autoFocus: false,
+      });
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || 'Failed to save settings';
+      setSaveError(msg);
+      setTimeout(() => setSaveError(null), 3000);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleCalibrate = async () => {
     setCalibrating(true);
     setCalibrationError(null);
@@ -368,14 +418,14 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
               </span>
             </div>
             <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
-              The displayed preset values are locked. Calibrate briefly lets the camera choose exposure and focus, then saves and locks those readings.
+              The displayed preset values are locked. Calibrate automatically tunes exposure and gain (lighting) while keeping your sharp focus locked in place.
             </p>
             <div className="flex items-center gap-2 mt-1">
-              <button type="button" onClick={handleCalibrate} disabled={calibrating || !isLive} className="inline-flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-[11px] font-semibold disabled:opacity-50">
+              <button type="button" onClick={handleCalibrate} disabled={calibrating || !isLive} className="inline-flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-[11px] font-semibold disabled:opacity-50 cursor-pointer">
                 <RefreshCw className={`w-3 h-3 ${calibrating ? 'animate-spin' : ''}`} />
-                {calibrating ? 'Calibrating...' : 'Calibrate'}
+                {calibrating ? 'Calibrating...' : 'Calibrate Lighting'}
               </button>
-              <span className="text-[10px] text-[var(--text-muted)] italic">Focus may be off? Press Calibrate</span>
+              <span className="text-[10px] text-[var(--text-muted)] italic">Lighting changed? Press Calibrate</span>
             </div>
             {calibrationError && <p className="text-[11px] text-red-500">{calibrationError}</p>}
           </div>
@@ -507,16 +557,45 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
             </div>
           </div>
 
-          {/* --- 5. Reset Action --- */}
-          <div className="pt-2 flex items-center gap-2 border-t border-[var(--border-color)]">
-            <button
-              type="button"
-              onClick={handleResetDefaults}
-              className="flex-1 h-7 rounded-xl border border-[var(--border-color)] hover:bg-[var(--btn-secondary-hover)] text-[var(--text-secondary)] text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Reset Default Calibration
-            </button>
+          {/* --- 5. Save as Default & Reset Actions --- */}
+          <div className="pt-2 flex flex-col gap-1.5 border-t border-[var(--border-color)]">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveAsDefault}
+                disabled={isSaving || !isLive}
+                title="Save current exposure, gain, focus, brightness, and contrast as default to database"
+                className="flex-1 h-8 rounded-xl bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-all hover:opacity-95 active:scale-98 cursor-pointer disabled:opacity-50"
+              >
+                {isSaving ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : saveSuccess ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Saved as Default!</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save as Default</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleResetDefaults}
+                title="Reset sliders to default calibration"
+                className="h-8 px-3 rounded-xl border border-[var(--border-color)] hover:bg-[var(--btn-secondary-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset</span>
+              </button>
+            </div>
+            {saveError && <p className="text-[10px] text-red-500 font-medium text-center">{saveError}</p>}
           </div>
         </div>
       </fieldset>

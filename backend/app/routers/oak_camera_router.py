@@ -337,6 +337,7 @@ class CameraControlsRequest(BaseModel):
     auto_exposure: Optional[bool] = None
     autoExposure: Optional[bool] = None
     reset: Optional[bool] = None
+    save_to_db: Optional[bool] = None
 
 @router.post("/controls/reset")
 def reset_camera_controls():
@@ -347,6 +348,16 @@ def reset_camera_controls():
         logger.error(f"[API ERROR] POST /oak/controls/reset: {e}", exc_info=True)
         realtime_log_service.add_log("camera", "CRASH", f"Camera controls reset failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to reset controls: {e}")
+
+@router.post("/controls/save")
+def save_camera_controls():
+    """Save the current active runtime camera controls (exposure, gain, focus, etc.) directly to the database."""
+    try:
+        return oak_camera_service.save_current_controls_to_db(control_mode="manual")
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /oak/controls/save: {e}", exc_info=True)
+        realtime_log_service.add_log("camera", "ERROR", f"Failed to save camera controls: {e}", "error")
+        raise HTTPException(status_code=500, detail=f"Failed to save camera controls to database: {e}")
 
 @router.post("/controls")
 def update_controls(
@@ -360,6 +371,7 @@ def update_controls(
     auto_focus: bool | None = None,
     auto_exposure: bool | None = None,
     reset: bool | None = None,
+    save_to_db: bool | None = None,
 ):
     try:
         is_reset = (body.reset if body and body.reset is not None else reset)
@@ -374,6 +386,7 @@ def update_controls(
         mode = body.control_mode if body and body.control_mode is not None else control_mode
         af = (body.auto_focus if body and body.auto_focus is not None else (body.autoFocus if body and body.autoFocus is not None else auto_focus))
         ae = (body.auto_exposure if body and body.auto_exposure is not None else (body.autoExposure if body and body.autoExposure is not None else auto_exposure))
+        should_save = (body.save_to_db if body and body.save_to_db is not None else save_to_db)
 
         oak_camera_service.update_controls(
             exposure=exp,
@@ -386,6 +399,10 @@ def update_controls(
             control_mode=mode,
             reset=is_reset,
         )
+
+        if should_save:
+            oak_camera_service.save_current_controls_to_db(control_mode=mode or "manual")
+
         return {"status": "ok"}
     except HTTPException:
         raise

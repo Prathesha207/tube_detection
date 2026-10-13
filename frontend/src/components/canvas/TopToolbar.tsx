@@ -91,10 +91,17 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
               ) : isRunning ? (
                 <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">
-                  <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
-                    <span>LIVE</span>
-                  </div>
+                  {(!latencyMs || Number(latencyMs) <= 0) ? (
+                    <div className="flex items-center gap-1.5 text-amber-500 font-bold">
+                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(245,158,11,0.5)]" />
+                      <span>WARMING</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
+                      <span>LIVE</span>
+                    </div>
+                  )}
                   {latencyMs !== undefined && latencyMs !== null && Number(latencyMs) > 0 ? (
                     <span className="inline-flex items-center px-1.5 sm:px-2 py-0.5 rounded-lg text-xs font-mono font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 shadow-xs">
                       {Number(latencyMs).toFixed(1)} ms
@@ -205,11 +212,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             onClick={onToggleRoi}
             aria-label={isRoiActive ? "Close ROI Mask Editor" : "Open ROI Mask Editor"}
             title={isRoiActive ? "Close ROI Mask Editor (🎯)" : "Region of Interest Mask Editor (🎯)"}
-            className={`w-7 sm:w-8 h-7 sm:h-8 flex items-center justify-center rounded-xl backdrop-blur-md border active:scale-95 shrink-0 shadow-xs cursor-pointer transition-all ${
-              isRoiActive
-                ? 'bg-cyan-500/25 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.5)] ring-1 ring-cyan-400/50'
-                : 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-primary)] hover:text-cyan-400 hover:bg-[var(--btn-secondary-hover)] hover:border-cyan-500/30'
-            }`}
+            className={`w-7 sm:w-8 h-7 sm:h-8 flex items-center justify-center rounded-xl backdrop-blur-md border active:scale-95 shrink-0 shadow-xs cursor-pointer transition-all ${isRoiActive
+              ? 'bg-cyan-500/25 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.5)] ring-1 ring-cyan-400/50'
+              : 'bg-[var(--btn-secondary-bg)] border-[var(--btn-secondary-border)] text-[var(--text-primary)] hover:text-cyan-400 hover:bg-[var(--btn-secondary-hover)] hover:border-cyan-500/30'
+              }`}
           >
             <Target className={`w-4 h-4 transition-transform ${isRoiActive ? 'scale-110 text-cyan-300' : 'text-[var(--text-primary)] dark:text-white'}`} />
           </button>

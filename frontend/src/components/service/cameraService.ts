@@ -121,6 +121,11 @@ export const cameraService = {
     return res.data;
   },
 
+  async saveLiveControls() {
+    const res = await api.post("/oak/controls/save");
+    return res.data;
+  },
+
    async updateInferenceMode(mode: "testing" | "production") {
     const res = await api.patch("/camera/inference-mode", { mode });
     return res.data;

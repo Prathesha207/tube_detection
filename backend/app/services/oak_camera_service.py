@@ -1149,11 +1149,21 @@ class OakCameraService:
             settle = dai.CameraControl()
             settle.setAutoExposureEnable()
             settle.setAutoExposureLimit(10000)
-            try:
-                settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.AUTO)
-                settle.setAutoFocusTrigger()
-            except Exception as e:
-                logger.info(f"[CALIBRATION] Autofocus unavailable; exposure only: {e}")
+
+            # PRESERVE MANUAL SHARP FOCUS:
+            # If the user has already dialled in a manual focus (or one is loaded from DB),
+            # DO NOT allow autofocus hunting to blur the lens. Keep the sharp focus locked
+            # and calibrate Exposure & Gain (ambient lighting) only.
+            if self.current_focus is not None:
+                settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+                settle.setManualFocus(self.current_focus)
+                logger.info(f"[CALIBRATION] Preserving sharp manual focus: {self.current_focus}; calibrating lighting/exposure only")
+            else:
+                try:
+                    settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.AUTO)
+                    settle.setAutoFocusTrigger()
+                except Exception as e:
+                    logger.info(f"[CALIBRATION] Autofocus unavailable; exposure only: {e}")
             self._control_queue.send(settle)
             
             # Wait 1.5s for frames to arrive and settle while background threads keep running
@@ -1166,16 +1176,19 @@ class OakCameraService:
             
             lock = dai.CameraControl()
             lock.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-            if lens is not None:
-                lock.setManualFocus(lens)
+
+            # Keep existing sharp focus if set; only adopt lens if current_focus was unset
+            final_focus = self.current_focus if self.current_focus is not None else lens
+            if final_focus is not None:
+                lock.setManualFocus(final_focus)
             lock.setManualExposure(exp_us, iso)
             self._control_queue.send(lock)
             locked = True
             
             self.current_exposure_us = exp_us
             self.current_gain = max(100, min(1600, iso))
-            self.current_focus = lens
-            self.focus_available = lens is not None
+            self.current_focus = final_focus
+            self.focus_available = final_focus is not None
             self.control_mode = "auto"
             self.current_brightness, self.current_contrast = 0, 50
             self.auto_exposure_enabled = self.auto_focus_enabled = False
@@ -1211,6 +1224,38 @@ class OakCameraService:
                 camera.brightness, camera.contrast = self.current_brightness, self.current_contrast
                 camera.auto_exposure = camera.auto_focus = False
                 db.commit()
+                logger.info(f"[CALIBRATION] Saved calibrated preset to DB: exp={camera.exposure}ms, gain={camera.gain}, focus={camera.focus}")
+        finally:
+            db.close()
+
+    def save_current_controls_to_db(self, control_mode: str = "manual") -> dict:
+        """Persist current runtime controls (exposure, gain, focus, etc.) directly to vision_ai.db."""
+        from app.core.database import SessionLocal
+        from app.models.camera_model import Camera
+        db = SessionLocal()
+        try:
+            camera = db.query(Camera).filter(Camera.id == self._active_camera_id).first() if self._active_camera_id else None
+            camera = camera or db.query(Camera).first()
+            if camera:
+                camera.control_mode = control_mode
+                camera.exposure = round(self.current_exposure_us / 1000, 3)
+                camera.gain = float(self.current_gain)
+                camera.focus = self.current_focus
+                camera.brightness = self.current_brightness
+                camera.contrast = self.current_contrast
+                camera.auto_exposure = False
+                camera.auto_focus = False
+                db.commit()
+                logger.info(
+                    f"[CONTROL] Saved {control_mode} controls to DB: "
+                    f"exp={camera.exposure}ms, gain={camera.gain}, focus={camera.focus}, "
+                    f"brightness={camera.brightness}, contrast={camera.contrast}"
+                )
+                return {"status": "ok", "message": "Settings saved to database", **self._camera_settings()}
+            return {"status": "error", "message": "No camera found in database"}
+        except Exception as e:
+            logger.error(f"[CONTROL] Failed to save controls to DB: {e}")
+            raise
         finally:
             db.close()
 

@@ -75,7 +75,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   const isWarming = anomalyStatus.message === 'WARMING';
 
   // Construct frame numbers and verdict
-  const frameNumber = mlStats.frame || mlStats.frames_processed || metrics.framesProcessed || 0;
+  const frameNumber = typeof mlStats.frame === 'number' ? mlStats.frame : (mlStats.frame_seq ?? mlStats.frames_processed ?? metrics.framesProcessed ?? 0);
   const bigger = mlStats.bigger_tube;
   const smaller = mlStats.smaller_tube;
 
@@ -242,8 +242,8 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                 )}
               </div>
 
-              {/* TOP FRAME BANNER */}
-              <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[var(--bg-card-subtle)] text-[var(--text-primary)] font-mono text-xs border border-[var(--border-color)] shadow-xs">
+              {/* TOP FRAME BANNER (commented out per request) */}
+              {/* <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[var(--bg-card-subtle)] text-[var(--text-primary)] font-mono text-xs border border-[var(--border-color)] shadow-xs">
                 <div className="flex items-center gap-2">
                   <span className="text-[var(--accent-pond)] font-bold">
                     Frame {frameNumber}:
@@ -255,7 +255,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     TAILS={anomalyStatus.tailsCount}
                   </span>
                 </div>
-              </div>
+              </div> */}
 
               {/* DETECTIONS LIST */}
               <div className="space-y-1.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] p-2">

@@ -172,37 +172,35 @@ export default function App() {
   // ─── 8. Camera Pipeline (startCameraPipeline / stopCameraPipeline) ─
   const startCameraPipeline = async (): Promise<boolean> => {
     setTubes([]);
-    setLastCameraFrame(undefined);
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
-    camera.setCameraStartingState('waking_camera');
     setIsStarting(true);
-    addLog('Step 1/3: Starting OAK Camera device (POST /oak/start)...', 'info');
 
     try {
       camera.setCameraError(null);
-      const startRes = await cameraService.start();
-      if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
-      camera.setIsCameraDeviceActive(true);
+      if (!camera.isCameraDeviceActive) {
+        camera.setCameraStartingState('waking_camera');
+        addLog('Waking OAK Camera device...', 'info');
+        const startRes = await cameraService.start();
+        if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
+        camera.setIsCameraDeviceActive(true);
+      }
 
-      const streamRes = await cameraService.startStream();
-      if (streamRes?.status === 'error') throw new Error(streamRes.message || 'Stream start failed');
-      camera.setIsStreaming(true);
+      if (!camera.isStreaming) {
+        const streamRes = await cameraService.startStream();
+        if (streamRes?.status === 'error') throw new Error(streamRes.message || 'Stream start failed');
+        camera.setIsStreaming(true);
+      }
 
       const inferenceRes = await cameraService.startLiveInference('live');
       if (inferenceRes?.status === 'error') throw new Error(inferenceRes.message || 'Inference start failed');
-
-      camera.setCameraStartingState('waiting_frame');
-      addLog('Step 2/3: Stream started • Waiting for camera sensor to warm up...', 'info');
-
-      await new Promise((resolve) => setTimeout(resolve, 150));
 
       camera.setCameraStartingState('ready');
       setIsStarting(false);
       setIsRunning(true);
       camera.setCameraError(null);
       showToast('success', 'Camera inference started');
-      addLog('Step 3/3: Camera stream & AI inference active • YOLO running.', 'success');
+      addLog('Camera stream & AI inference active • YOLO running.', 'success');
       return true;
     } catch (error: any) {
       console.error('Failed to start camera pipeline:', error);
@@ -416,10 +414,11 @@ export default function App() {
 
     if (isTargetCamera) {
       camera.setCameraStartingState('ready');
-      camera.setIsStreaming(false);
       addLog(`Stream source switched to: ${targetType.toUpperCase()}`, 'info');
       showToast('info', 'Switched to OAK Camera mode');
-      // No auto-start — CameraStandbyCard renders until user clicks Start Stream.
+      if (camera.isCameraDeviceActive && !camera.isStreaming) {
+        camera.startCameraStream();
+      }
     } else {
       camera.setCameraStartingState('ready');
       if (video.customVideoUrl) {

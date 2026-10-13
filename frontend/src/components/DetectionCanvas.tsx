@@ -504,7 +504,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           onCanvasClick={handleCanvasClick}
           errorMessage={cameraError}
           isDeviceDetected={isDeviceDetected}
-          isConnecting={cameraStartingState === 'waking_camera'}
+          isConnecting={cameraStartingState === 'waking_camera' || cameraStartingState === 'waiting_frame'}
         />
       )}
 

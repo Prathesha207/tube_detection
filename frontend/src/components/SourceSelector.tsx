@@ -137,7 +137,7 @@ export const SourceSelector: React.FC<SourceSelectorProps> = ({
           {/* Stream Play/Stop Controls */}
           {hasMediaToPlay && (
             <div className="flex items-center gap-1 sm:gap-1.5 pl-1.5 sm:pl-4 border-l border-[var(--border-color)]">
-              {isCameraMode && cameraStartingState !== 'ready' ? (
+              {isCameraMode && (cameraStartingState === 'waking_camera' || cameraStartingState === 'waiting_frame') ? (
                 /* When Camera is Actively Waking up or Warming: provide busy state */
                 <button
                   disabled

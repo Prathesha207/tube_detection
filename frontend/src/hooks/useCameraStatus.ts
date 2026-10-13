@@ -15,7 +15,7 @@ export function useCameraStatus(
   });
   const [isCameraDeviceActive, setIsCameraDeviceActive] = useState<boolean>(false);
   const [isDeviceDetected, setIsDeviceDetected] = useState<boolean>(false);
-  const [cameraStartingState, setCameraStartingState] = useState<'idle' | 'waking_camera' | 'waiting_frame' | 'ready'>('idle');
+  const [cameraStartingState, setCameraStartingState] = useState<'idle' | 'waking_camera' | 'waiting_frame' | 'ready'>('ready');
   const [cameraConnected, setCameraConnected] = useState<boolean | null>(null);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -114,23 +114,34 @@ export function useCameraStatus(
               setCameraStartingState((prev) => prev !== 'idle' ? 'idle' : prev);
 
               // Auto-connect when hardware is detected in camera mode and no error occurred
+              // Auto-connect and start stream when hardware is detected in camera mode and no error occurred
               const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
               if (isDetected && isCameraMode && !autoConnectAttemptedRef.current && !data.last_error) {
                 autoConnectAttemptedRef.current = true;
-                cameraService.start().then((startRes) => {
+                cameraService.start().then(async (startRes) => {
                   if (startRes?.status === 'started' || startRes?.status === 'already_running') {
                     setIsCameraDeviceActive(true);
                     setCameraConnected(true);
                     setCameraError(null);
+                    // Automatically stream immediately so the user sees live video right away
+                    try {
+                      await cameraService.startStream();
+                      setIsStreaming(true);
+                      setCameraStartingState('ready');
+                    } catch (streamErr) {
+                      console.warn('Auto-stream on device detection failed:', streamErr);
+                    }
                   } else if (startRes?.status === 'error') {
                     setIsCameraDeviceActive(false);
                     setCameraConnected(false);
                     setCameraError(startRes.message || 'Camera connection failed');
+                    setCameraStartingState('ready');
                   }
                 }).catch((err) => {
                   console.warn('Auto-connect on device detection failed:', err);
                   setIsCameraDeviceActive(false);
                   setCameraConnected(false);
+                  setCameraStartingState('ready');
                 });
               }
             }
@@ -142,7 +153,7 @@ export function useCameraStatus(
             setCameraConnected(false);
             setIsStreaming(false);
             setIsDeviceDetected(false);
-            setCameraStartingState('idle');
+            setCameraStartingState('ready');
           }
         }
       } catch {
@@ -152,7 +163,7 @@ export function useCameraStatus(
           setCameraConnected(false);
           setIsStreaming(false);
           setIsDeviceDetected(false);
-          setCameraStartingState('idle');
+          setCameraStartingState('ready');
         }
       }
     }
@@ -189,7 +200,7 @@ export function useCameraStatus(
       showToast('success', 'Camera stream started');
       addLog('Camera stream started. Ready for display or inference.', 'success');
     } catch (error: any) {
-      setCameraStartingState('idle');
+      setCameraStartingState('ready');
       setIsStreaming(false);
       setIsCameraDeviceActive(false);
       setCameraConnected(false);

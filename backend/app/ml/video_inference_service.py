@@ -117,6 +117,14 @@ class VideoInferenceService:
     def _acquire_analyzer(self) -> Tuple[TubeAnalyzer, bool]:
         """(analyzer, owned). An analyzer injected with _set_shared_analyzer() is reused and never
         freed by us; otherwise a fresh one is created and the job frees it when it ends."""
+        if self._shared_analyzer is None:
+            try:
+                from app.ml.camera_inference_service import _shared_camera_analyzer
+                if _shared_camera_analyzer is not None:
+                    self._shared_analyzer = _shared_camera_analyzer
+            except Exception:
+                pass
+
         if self._shared_analyzer is not None:
             if getattr(self._shared_analyzer, "has_weights_changed", lambda: False)():
                 logger.info(f"[HOT-RELOAD] Detected updated weights at {self._shared_analyzer.model_path}. Reloading TubeAnalyzer for video...")
@@ -144,7 +152,13 @@ class VideoInferenceService:
             device=default_device(),
             draw_overlay=False,
         )
-        return analyzer, True
+        self._shared_analyzer = analyzer
+        try:
+            from app.ml.camera_inference_service import _set_camera_analyzer
+            _set_camera_analyzer(analyzer)
+        except Exception:
+            pass
+        return analyzer, False
 
     def _get_or_create_analyzer(self) -> TubeAnalyzer:
         """Return an analyzer for one-off frame processing (e.g. frame 0 preview on upload)."""
@@ -480,7 +494,8 @@ class VideoInferenceService:
                 writer.release()
             session["analyzer"] = None
             analyzer = last_stats = None                      # drop our references to the model
-            release_gpu_memory()                              # VRAM back BEFORE the claim is released
+            if owns_analyzer:
+                release_gpu_memory()                          # VRAM back BEFORE the claim is released
             app_state.exit_inference("video")
             session["is_task_active"] = False
             if self._is_current_run(session_id, run_seq):

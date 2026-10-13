@@ -74,16 +74,24 @@ export function useAnomalyStatus({
       };
     }
 
-    if (isRunning && hasActiveStream && (isStarting || backendStatus === 'LOADING_MODEL' || (framesProcessed < 2 && tubes.length === 0))) {
-      const isModelLoading = isStarting || backendStatus === 'LOADING_MODEL';
-      const isWarming = framesProcessed > 0 && framesProcessed < 2 && tubes.length === 0;
+    if (isRunning && hasActiveStream && backendStatus === 'LOADING_MODEL') {
       return {
         isAnomaly: false,
         type: 'NONE',
-        message: isModelLoading ? 'LOADING MODEL' : 'WARMING UP',
-        subMessage: isModelLoading
-          ? 'Loading YOLOv8 weights into GPU memory...'
-          : `Calibrating ML tracking (${framesProcessed}/2)...`,
+        message: 'LOADING MODEL',
+        subMessage: 'Loading YOLOv8 weights into GPU memory...',
+        headsCount: 0,
+        tailsCount: 0,
+      };
+    }
+
+    // Warming up ONLY for the 2 frames defined in config.yaml (min_frames: 2) to confirm initial tracking sightings
+    if (isRunning && hasActiveStream && framesProcessed < 2 && tubes.length === 0) {
+      return {
+        isAnomaly: false,
+        type: 'NONE',
+        message: 'WARMING UP',
+        subMessage: `Calibrating ML tracking (${framesProcessed}/2 frames)...`,
         headsCount: 0,
         tailsCount: 0,
       };

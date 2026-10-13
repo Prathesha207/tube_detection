@@ -109,6 +109,14 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
 
         # Fast path & hot-reload: Check if preloaded analyzer model file changed on disk
         global _shared_camera_analyzer
+        if _shared_camera_analyzer is None:
+            try:
+                from app.ml.video_inference_service import video_inference_service
+                if video_inference_service._shared_analyzer is not None:
+                    _shared_camera_analyzer = video_inference_service._shared_analyzer
+            except Exception:
+                pass
+
         if _shared_camera_analyzer is not None:
             if getattr(_shared_camera_analyzer, "has_weights_changed", lambda: False)():
                 logger.info(f"[HOT-RELOAD] Detected updated weights at {_shared_camera_analyzer.model_path}. Hot-reloading TubeAnalyzer...")

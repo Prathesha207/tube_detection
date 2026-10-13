@@ -678,7 +678,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         cameraStartingState={cameraStartingState}
         hasActiveVideo={hasActiveVideo}
         isRunning={isRunning}
-        isFirstFrameLoaded={isFirstFrameLoaded}
+        isFirstFrameLoaded={isFirstFrameLoaded || framesProcessed > 0 || Boolean(lastVideoFrame) || Boolean(lastCameraFrame)}
         isCameraConnected={isCameraConnected}
       />
 

@@ -80,10 +80,15 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         {!isRoiActive && (
           showInferenceStatus ? (
             <div className="flex items-center h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
-              {(anomalyStatus.message === 'WARMING' || anomalyStatus.message === 'WARMING UP' || anomalyStatus.message === 'LOADING MODEL' || (isRunning && (!isCameraSource || isStreaming) && framesProcessed === 0)) ? (
+              {(anomalyStatus.message === 'LOADING MODEL' || backendStats.status === 'LOADING_MODEL') ? (
                 <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
-                  <span>{anomalyStatus.message === 'LOADING MODEL' ? 'LOADING MODEL...' : 'WARMING UP...'}</span>
+                  <span>LOADING MODEL...</span>
+                </div>
+              ) : (anomalyStatus.message === 'WARMING UP' || anomalyStatus.message === 'WARMING') ? (
+                <div className="flex items-center gap-1.5 text-amber-500 font-bold text-xs sm:text-sm animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500 shrink-0" />
+                  <span>WARMING UP ({framesProcessed}/2)...</span>
                 </div>
               ) : isRunning ? (
                 <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">

@@ -1150,23 +1150,16 @@ class OakCameraService:
             settle.setAutoExposureEnable()
             settle.setAutoExposureLimit(10000)
 
-            # PRESERVE MANUAL SHARP FOCUS:
-            # If the user has already dialled in a manual focus (or one is loaded from DB),
-            # DO NOT allow autofocus hunting to blur the lens. Keep the sharp focus locked
-            # and calibrate Exposure & Gain (ambient lighting) only.
+            # Calibrate LIGHTING ONLY (Auto-Exposure and ISO Gain).
+            # Industrial cameras looking at conveyors/tables should NEVER autofocus-hunt
+            # because specular glare and smooth surfaces cause DepthAI autofocus to blur the lens.
+            # We strictly keep the lens focus fixed and untouched.
+            settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             if self.current_focus is not None:
-                settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
                 settle.setManualFocus(self.current_focus)
-                logger.info(f"[CALIBRATION] Preserving sharp manual focus: {self.current_focus}; calibrating lighting/exposure only")
-            else:
-                try:
-                    settle.setAutoFocusMode(dai.CameraControl.AutoFocusMode.AUTO)
-                    settle.setAutoFocusTrigger()
-                except Exception as e:
-                    logger.info(f"[CALIBRATION] Autofocus unavailable; exposure only: {e}")
             self._control_queue.send(settle)
             
-            # Wait 1.5s for frames to arrive and settle while background threads keep running
+            # Wait 1.5s for frames to arrive and settle auto-exposure while background threads keep running
             time.sleep(1.5)
             
             latest = self._latest_metadata
@@ -1176,19 +1169,15 @@ class OakCameraService:
             
             lock = dai.CameraControl()
             lock.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-
-            # Keep existing sharp focus if set; only adopt lens if current_focus was unset
-            final_focus = self.current_focus if self.current_focus is not None else lens
-            if final_focus is not None:
-                lock.setManualFocus(final_focus)
+            if self.current_focus is not None:
+                lock.setManualFocus(self.current_focus)
             lock.setManualExposure(exp_us, iso)
             self._control_queue.send(lock)
             locked = True
             
             self.current_exposure_us = exp_us
             self.current_gain = max(100, min(1600, iso))
-            self.current_focus = final_focus
-            self.focus_available = final_focus is not None
+            # Keep current focus intact - never overwrite with lens position
             self.control_mode = "auto"
             self.current_brightness, self.current_contrast = 0, 50
             self.auto_exposure_enabled = self.auto_focus_enabled = False

@@ -38,27 +38,26 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   const throttleTimerRef = useRef<any>(null);
   const lastSentTimeRef = useRef<number>(0);
 
-  // Sync internal state when external config loads or changes
+  // Sync internal state ONLY on initial load or when switching camera devices
+  const initialCameraIdRef = useRef<any>(null);
   useEffect(() => {
-    if (config) {
-      if (config.controlMode !== 'manual') {
-        presetRef.current = { exposure: config.exposure ?? 8, gain: config.gain ?? 400, focus: config.focus ?? 0, brightness: config.brightness ?? 0, contrast: config.contrast ?? 50 };
-        if (typeof config.exposure === 'number') setExposure(config.exposure);
-        if (typeof config.gain === 'number') setGain(config.gain);
-        if (typeof config.focus === 'number') setFocus(config.focus);
-        if (typeof config.brightness === 'number') setBrightness(config.brightness);
-        if (typeof config.contrast === 'number') setContrast(config.contrast);
-        setMode('auto');
-      } else {
-        if (typeof config.exposure === 'number') setExposure(config.exposure);
-        if (typeof config.gain === 'number') setGain(config.gain);
-        if (typeof config.focus === 'number') setFocus(config.focus);
-        if (typeof config.brightness === 'number') setBrightness(config.brightness);
-        if (typeof config.contrast === 'number') setContrast(config.contrast);
-        setMode('manual');
-      }
+    if (config && initialCameraIdRef.current !== config.id) {
+      initialCameraIdRef.current = config.id;
+      presetRef.current = {
+        exposure: config.exposure ?? 8,
+        gain: config.gain ?? 400,
+        focus: config.focus ?? 0,
+        brightness: config.brightness ?? 0,
+        contrast: config.contrast ?? 50,
+      };
+      if (typeof config.exposure === 'number') setExposure(config.exposure);
+      if (typeof config.gain === 'number') setGain(config.gain);
+      if (typeof config.focus === 'number') setFocus(config.focus);
+      if (typeof config.brightness === 'number') setBrightness(config.brightness);
+      if (typeof config.contrast === 'number') setContrast(config.contrast);
+      setMode(config.controlMode === 'manual' ? 'manual' : 'auto');
     }
-  }, [config?.id, config?.exposure, config?.gain, config?.focus, config?.brightness, config?.contrast, config?.controlMode]);
+  }, [config?.id]);
 
   // Actual network dispatch with in-flight queuing
   const dispatchToBackend = useCallback(async (payload: any) => {
@@ -121,10 +120,17 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     if (newMode === 'auto') {
       onUpdateConfig?.({ controlMode: 'auto', exposure, gain, focus, brightness, contrast, autoExposure: false, autoFocus: false });
       scheduleDispatch({
-        control_mode: 'auto', exposure, gain, focus: config?.focus ?? focus,
-        brightness, contrast, auto_exposure: false, auto_focus: false,
+        control_mode: 'auto',
+        exposure,
+        gain,
+        focus,
+        brightness,
+        contrast,
+        auto_exposure: false,
+        auto_focus: false,
       });
     } else {
+      onUpdateConfig?.({ controlMode: 'manual', exposure, gain, focus, brightness, contrast, autoExposure: false, autoFocus: false });
       scheduleDispatch({
         control_mode: 'manual',
         exposure,
@@ -304,18 +310,25 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     setSyncStatus('adjusting');
     try {
       const settings = await cameraService.recalibrateControls();
-      presetRef.current = { exposure: settings.exposure, gain: settings.gain, focus: settings.focus ?? undefined, brightness: settings.brightness ?? 0, contrast: settings.contrast ?? 50 };
+      const sharpFocus = (typeof settings.focus === 'number' && settings.focus > 0) ? settings.focus : focus;
+      presetRef.current = { exposure: settings.exposure, gain: settings.gain, focus: sharpFocus, brightness: settings.brightness ?? 0, contrast: settings.contrast ?? 50 };
       setExposure(settings.exposure);
       setGain(settings.gain);
-      setFocus(settings.focus ?? 0);
+      setFocus(sharpFocus);
       setBrightness(settings.brightness ?? 0);
       setContrast(settings.contrast ?? 50);
       setMode('auto');
       onUpdateConfig?.({
-        controlMode: 'auto', exposure: settings.exposure, gain: settings.gain,
-        iso: settings.gain, focus: settings.focus ?? undefined,
-        focusAvailable: Boolean(settings.focus_available), brightness: settings.brightness ?? 0,
-        contrast: settings.contrast ?? 50, autoExposure: false, autoFocus: false,
+        controlMode: 'auto',
+        exposure: settings.exposure,
+        gain: settings.gain,
+        iso: settings.gain,
+        focus: sharpFocus,
+        focusAvailable: Boolean(settings.focus_available),
+        brightness: settings.brightness ?? 0,
+        contrast: settings.contrast ?? 50,
+        autoExposure: false,
+        autoFocus: false,
       });
       setSyncStatus('synced');
     } catch (err: any) {

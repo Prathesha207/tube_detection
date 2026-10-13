@@ -12,6 +12,7 @@ export interface InferenceStats {
   session_id: string;
   status: SessionLifecycleStatus | FrameStatus;
   frame?: number;
+  frame_seq?: number;
   frames_processed: number;
   total_frames: number;
   progress: number;

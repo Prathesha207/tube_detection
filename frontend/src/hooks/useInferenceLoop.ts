@@ -105,7 +105,8 @@ export function useInferenceLoop({
 
             if (data.status !== 'queued' && data.status !== 'idle') {
               setFps(data.metrics?.fps || data.fps || 0);
-              setFramesProcessed(data.frames_processed || data.frame || data.frame_seq || 1);
+              const count = data.frames_processed ?? data.frame_seq ?? 0;
+              setFramesProcessed(count);
 
               if (data.video_width && data.video_height) {
                 setVideoDimensions({ width: data.video_width, height: data.video_height });

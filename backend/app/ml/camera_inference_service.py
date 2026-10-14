@@ -53,6 +53,43 @@ def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
     logger.info("Preloaded TubeAnalyzer registered into camera_inference_service — ready for instant inference")
 
 
+_prewarm_lock = threading.Lock()
+_model_prewarmed: bool = False
+
+
+def prewarm_camera_model() -> None:
+    """Pre-warm TubeAnalyzer on GPU in the background when camera connects or stream starts."""
+    global _shared_camera_analyzer, _model_prewarmed
+    if _model_prewarmed and _shared_camera_analyzer is not None:
+        return
+    with _prewarm_lock:
+        if _model_prewarmed and _shared_camera_analyzer is not None:
+            return
+        try:
+            if _shared_camera_analyzer is None:
+                try:
+                    from app.ml.video_inference_service import video_inference_service
+                    if video_inference_service._shared_analyzer is not None:
+                        _shared_camera_analyzer = video_inference_service._shared_analyzer
+                except Exception:
+                    pass
+
+            if _shared_camera_analyzer is None:
+                logger.info("[PREWARM] Preloading TubeAnalyzer for camera in background...")
+                _shared_camera_analyzer = TubeAnalyzer(
+                    model_path=_DEFAULT_MODEL_PATH,
+                    config_path=_CONFIG_PATH,
+                    device=default_device(),
+                    draw_overlay=False,
+                )
+            # Pre-warm directly with full 1080p frame so CUDA kernels and cuDNN graphs compile
+            _shared_camera_analyzer.warm_up((1080, 1920))
+            _model_prewarmed = True
+            logger.info("[PREWARM] TubeAnalyzer fully pre-warmed on GPU — ready for instant 0.0s camera inference.")
+        except Exception as e:
+            logger.warning(f"[PREWARM] Background prewarm skipped or failed: {e}")
+
+
 # ------------------------------------------------------------------ sessions
 def _start_idle_sweeper_once() -> None:
     """Background thread that closes idle sessions. Without it, a browser tab that is simply

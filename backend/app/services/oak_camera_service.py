@@ -1398,7 +1398,9 @@ class OakCameraService:
                 gpu_pct = self._gpu_usage
 
                 result["frame_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
-                result["frames_processed"] = result.get("frames_processed") or result["frame_seq"] or 1
+                _fp = result.get("frames_processed")
+                _seq = result["frame_seq"]
+                result["frames_processed"] = _fp if _fp is not None else (_seq if _seq is not None else 0)
                 result["capture_age_ms"] = round((time.time() - frame_ts) * 1000, 1) if (not self._inference_offline and frame_ts) else round(latency_ms, 1)
                 result["latency_ms"] = round(latency_ms, 1)
                 result["frame_time_ms"] = round(latency_ms, 1)
@@ -2154,6 +2156,14 @@ class OakCameraService:
                     "Application initialized successfully",
                     "success"
                 )
+
+                # Pre-warm CUDA in background as soon as camera is ready
+                try:
+                    from app.ml.camera_inference_service import prewarm_camera_model
+                    threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
+                except Exception as _e:
+                    logger.warning(f"[PREWARM] Failed to start prewarm thread: {_e}")
+
                 return {"status": "started"}
 
             except Exception as e:
@@ -2237,6 +2247,14 @@ class OakCameraService:
             "Video stream initialized successfully",
             "success"
         )
+
+        # Pre-warm CUDA in background when stream starts so Start Inference has 0.0s delay
+        try:
+            from app.ml.camera_inference_service import prewarm_camera_model
+            threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
+        except Exception as _e:
+            logger.warning(f"[PREWARM] Failed to start prewarm thread: {_e}")
+
         return {"status": "streaming"}
 
     async def stop_streaming(self) -> dict:

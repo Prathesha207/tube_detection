@@ -125,7 +125,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
   tubes,
   selectedTubeId,
   onSelectTube,
-  labelMode = 'compact',
+  labelMode = 'hidden',
 }) => {
   const [hoveredTubeId, setHoveredTubeId] = useState<string | null>(null);
 
@@ -284,9 +284,8 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               height: `${tube.height}%`,
               zIndex: effectiveZIndex,
             }}
-            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-colors duration-75 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${
-              isCoasting ? 'border-dashed opacity-70' : 'border-solid'
-            }`}
+            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-colors duration-75 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${isCoasting ? 'border-dashed opacity-70' : 'border-solid'
+              }`}
           >
             {/* Corner Crosshair Brackets (High contrast for pinpoint accuracy) */}
             <span className={`absolute -top-1 -left-1 w-2.5 h-2.5 border-t-2 border-l-2 ${bracketColor}`} />
@@ -296,19 +295,17 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
 
             {/* Subtle center reticle dot */}
             <span
-              className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full ${
-                isHead ? 'bg-cyan-300/80 shadow-[0_0_4px_cyan]' : 'bg-amber-300/80 shadow-[0_0_4px_orange]'
-              }`}
+              className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full ${isHead ? 'bg-cyan-300/80 shadow-[0_0_4px_cyan]' : 'bg-amber-300/80 shadow-[0_0_4px_orange]'
+                }`}
             />
 
             {/* 3. PINS MODE: Minimalist, non-intrusive numbered circle pins */}
             {labelMode === 'pins' && (
               <div
-                className={`absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full flex items-center justify-center font-mono font-black text-[10px] shadow-md border pointer-events-none transition-transform ${
-                  isHead
+                className={`absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full flex items-center justify-center font-mono font-black text-[10px] shadow-md border pointer-events-none transition-transform ${isHead
                     ? 'bg-cyan-500 text-slate-950 border-cyan-200'
                     : 'bg-amber-500 text-slate-950 border-amber-200'
-                } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}
+                  } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}
               >
                 {tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}
               </div>
@@ -318,20 +315,18 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {labelMode === 'compact' && (
               <div
                 style={placement.containerStyle}
-                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${
-                  isHead
+                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${isHead
                     ? 'bg-slate-950/90 text-cyan-200 border-cyan-500/70'
                     : 'bg-slate-950/90 text-amber-200 border-amber-500/70'
-                } ${isHovered || isSelected ? 'scale-105 border-white text-white z-50 shadow-lg' : ''}`}
+                  } ${isHovered || isSelected ? 'scale-105 border-white text-white z-50 shadow-lg' : ''}`}
               >
                 {/* Connecting guide line straight to the box edge */}
                 <span style={placement.stemStyle} />
 
                 <span className="font-bold flex items-center gap-1">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isHead ? 'bg-cyan-400' : 'bg-amber-400'
-                    }`}
+                    className={`w-1.5 h-1.5 rounded-full ${isHead ? 'bg-cyan-400' : 'bg-amber-400'
+                      }`}
                   />
                   <span>#{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
                   <span className={isHead ? 'text-cyan-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
@@ -372,17 +367,17 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                     {typeof tube.width_px === 'number'
                       ? `${tube.width_px.toFixed(1)}px`
                       : typeof tube.width_mm === 'number'
-                      ? `${tube.width_mm.toFixed(2)}mm`
-                      : 'null'}
+                        ? `${tube.width_mm.toFixed(2)}mm`
+                        : 'null'}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-slate-300">
+                {/* <div className="flex items-center justify-between text-slate-300">
                   <span>Pair:</span>
                   <span className={tube.pair_id != null ? 'text-emerald-400 font-bold font-mono' : 'text-slate-400 font-mono'}>
                     {tube.pair_id != null ? `Tube #${tube.pair_id}` : 'null'}
                   </span>
-                </div>
+                </div> */}
 
                 {tube.size && (
                   <div className="flex items-center justify-between text-slate-300">

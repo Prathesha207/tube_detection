@@ -124,7 +124,22 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showHUD, setShowHUD] = useState(true);
-  const [labelMode, setLabelMode] = useState<LabelMode>('compact');
+  const [labelMode, setLabelMode] = useState<LabelMode>(() => {
+    try {
+      const saved = localStorage.getItem('vision_ai_label_mode');
+      if (saved === 'compact' || saved === 'pins' || saved === 'hidden') {
+        return saved as LabelMode;
+      }
+    } catch { }
+    return 'hidden'; // Default is always clean 'Boxes' mode
+  });
+
+  const handleLabelModeChange = (mode: LabelMode) => {
+    setLabelMode(mode);
+    try {
+      localStorage.setItem('vision_ai_label_mode', mode);
+    } catch { }
+  };
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
   const [isFirstFrameLoaded, setIsFirstFrameLoaded] = useState<boolean>(false);
   const [streamCacheBuster, setStreamCacheBuster] = useState<number>(Date.now());
@@ -690,7 +705,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           framesProcessed={effectiveFramesProcessed}
           onClearCustomVideo={onClearCustomVideo}
           labelMode={labelMode}
-          onLabelModeChange={setLabelMode}
+          onLabelModeChange={handleLabelModeChange}
           zoom={zoom}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}

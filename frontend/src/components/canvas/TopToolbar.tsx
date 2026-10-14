@@ -133,7 +133,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('compact')}
             title="Quadrant Labels: labels point into North, South, East, West with zero overlap"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'compact') === 'compact'
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'compact'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}
@@ -146,7 +146,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('pins')}
             title="Pins Mode: tiny numbered circle pins (#1, #2) with zero obstruction"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${labelMode === 'pins'
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'pins'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}
@@ -159,7 +159,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             type="button"
             onClick={() => onLabelModeChange('hidden')}
             title="Boxes Mode: pure bounding boxes with crosshairs and 0 text"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${labelMode === 'hidden'
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'hidden'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}

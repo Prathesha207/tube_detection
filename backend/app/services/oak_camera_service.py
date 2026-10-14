@@ -1257,8 +1257,6 @@ class OakCameraService:
 
     def _inference_worker(self, session_id: str) -> None:
         from app.ml.camera_inference_service import analyze_camera_frame
-        from app.services.inference_recording_service import InferenceRecorder, draw_overlay
-        import base64
 
         logger.info(f"[INFERENCE] Thread running — session: {session_id}")
 
@@ -1279,8 +1277,6 @@ class OakCameraService:
             except Exception:
                 return -1.0
 
-        recorder: InferenceRecorder | None = None
-        recording_active = False
         last_seen_seq = -1
 
         try:
@@ -1439,38 +1435,9 @@ class OakCameraService:
                         self._inference_loop,
                     )
 
-                # ── Feed frames to video recorder ─────────────────────────────
-                record_flag = result.get("record", False)
-                should_record = record_flag
-
-                if should_record and not recording_active:
-                    h, w = frame.shape[:2]
-                    rec_fmt = self._resolve_recording_format()
-                    recorder = InferenceRecorder(
-                        session_id=f"{session_id}_{int(time.time())}",
-                        width=w,
-                        height=h,
-                        fps=self._configured_fps,
-                        recording_format=rec_fmt,
-                    )
-                    recording_active = True
-                    logger.info(f"[INFERENCE] Tube recording started (format={rec_fmt})")
-                elif not should_record and recording_active:
-                    if recorder:
-                        recorder.stop()
-                    recorder = None
-                    recording_active = False
-                    logger.info("[INFERENCE] Tube recording stopped")
-
-                if recording_active and recorder:
-                    recorder.write(frame, result)
-
         except Exception as e:
             logger.error(f"[INFERENCE] Thread error: {e}", exc_info=True)
         finally:
-            if recorder:
-                logger.info("[INFERENCE] Stopping recorder on thread exit")
-                recorder.stop()
             logger.info(f"[INFERENCE] Thread ended — session: {session_id}")
 
     def _inference_watchdog(self, session_id: str) -> None:

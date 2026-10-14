@@ -1759,6 +1759,13 @@ class OakCameraService:
 
         logger.info(f"[INFERENCE] Mode: {'OFFLINE' if offline else 'ONLINE'} — session: {session_id}")
 
+        # Ensure CUDA is pre-warmed on GPU
+        try:
+            from app.ml.camera_inference_service import prewarm_camera_model
+            threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
+        except Exception as _e:
+            logger.warning(f"[PREWARM] Failed to start prewarm thread in start_inference: {_e}")
+
         # Set up queue and loop FIRST so the WebSocket can connect even if validation fails.
         # Validation errors are pushed as a result so the WS receives them before closing.
         self._inference_session_id = session_id

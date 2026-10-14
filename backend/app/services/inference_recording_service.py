@@ -58,49 +58,18 @@ logger = logging.getLogger("inference-recorder")
 # Overlay helpers
 # ---------------------------------------------------------------------------
 
-def _draw_rounded_rect(
-    img: np.ndarray,
-    x1: int, y1: int, x2: int, y2: int,
-    radius: int,
-    color: tuple,
-    alpha: float = 0.72,
-) -> None:
-    overlay = img.copy()
-    cv2.circle(overlay, (x1 + radius, y1 + radius), radius, color, -1)
-    cv2.circle(overlay, (x2 - radius, y1 + radius), radius, color, -1)
-    cv2.circle(overlay, (x1 + radius, y2 - radius), radius, color, -1)
-    cv2.circle(overlay, (x2 - radius, y2 - radius), radius, color, -1)
-    cv2.rectangle(overlay, (x1 + radius, y1), (x2 - radius, y2), color, -1)
-    cv2.rectangle(overlay, (x1, y1 + radius), (x2, y2 - radius), color, -1)
-    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
-
-
-def _draw_hourglass(img: np.ndarray, cx: int, cy: int, r: int, color: tuple) -> None:
-    pts_top = np.array([[cx - r, cy - r], [cx + r, cy - r], [cx, cy]], np.int32)
-    pts_bot = np.array([[cx - r, cy + r], [cx + r, cy + r], [cx, cy]], np.int32)
-    cv2.fillPoly(img, [pts_top], color)
-    cv2.fillPoly(img, [pts_bot], color)
-
-
-# ---------------------------------------------------------------------------
-# Public draw_overlay
-# ---------------------------------------------------------------------------
-
 def draw_overlay(
-    frame,
-    detections,
-    status,
-):
+    frame: np.ndarray,
+    detections: list,
+    status: str = "",
+) -> np.ndarray:
+    """Draw clean bounding boxes on recorded frames without artificial badges."""
+    if frame is None:
+        return frame
     overlay_frame = frame.copy()
 
-    # ── Bounding boxes ─────────────────────────────────────────────────
-    for d in detections:
-        # Check if it's the old contour style or new bbox style
-        contour = d.get("contour")
-        if contour and len(contour) > 2:
-            pts = np.array(contour, np.int32)
-            cv2.polylines(overlay_frame, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
-            
+    # ── Draw detected tube bounding boxes cleanly ─────────────────────
+    for d in (detections or []):
         bbox = d.get("bbox") or d.get("box")
         if bbox and len(bbox) == 4:
             b0, b1, b2, b3 = map(int, bbox)
@@ -109,61 +78,28 @@ def draw_overlay(
                 x1, y1, x2, y2 = b0, b1, b0 + b2, b1 + b3
             else:
                 x1, y1, x2, y2 = b0, b1, b2, b3
-            
-            role = d.get("role") or d.get("class") or "TUBE"
-            is_head = role == "HEAD"
-            is_anomaly = status_val != "OK"
-            
-            # Color: Cyan for HEAD, Indigo for TAIL, Red for Alert
-            if is_anomaly:
-                color = (50, 50, 255)
-            elif is_head:
-                color = (255, 200, 0)
-            else:
-                color = (255, 100, 100)
-            
-            cv2.rectangle(overlay_frame, (x1, y1), (x2, y2), color, 2)
-            
-            text_parts = [f"#{d.get('id', '')} {role}"]
-            if d.get("width_mm") is not None:
-                text_parts.append(f"{d['width_mm']:.1f}mm")
-            elif d.get("width_px") is not None:
-                text_parts.append(f"{d['width_px']:.0f}px")
-            if d.get("size"):
-                text_parts.append(f"[{d['size']}]")
-            if d.get("pair_id") is not None:
-                text_parts.append(f"tube#{d['pair_id']}")
-                
-            text = " ".join(text_parts)
-            cv2.putText(overlay_frame, text, (x1, max(y1 - 5, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
-    # ── Status badge ────────────────────────────────────────
-    STATUS_STYLES = {
-        "NORMAL":  {"dot": (57, 255, 20),  "text": (57, 255, 20),  "bg": (30, 27, 40)},
-        "ANOMALY": {"dot": (50, 50, 255),  "text": (50, 50, 255),  "bg": (30, 27, 40)},
-        "PENDING": {"dot": (250, 204, 21), "text": (250, 204, 21), "bg": (30, 27, 40)},
-    }
-    style = STATUS_STYLES.get(status, {"dot": (220, 220, 220), "text": (220, 220, 220), "bg": (30, 27, 40)})
-    FS_STATUS = 1.0
-    FT_STATUS = 2
-    (sw, sh), _ = cv2.getTextSize(status, cv2.FONT_HERSHEY_PLAIN, FS_STATUS, FT_STATUS)
-    PAD_X_S, PAD_Y_S = 20, 12
-    DOT_R_S = 8
-    
-    H, W = frame.shape[:2]
-    sx1 = W // 2 - sw // 2 - PAD_X_S - DOT_R_S - 10
-    sy1 = 14
-    sx2 = W // 2 + sw // 2 + PAD_X_S
-    sy2 = sy1 + sh + PAD_Y_S * 2
-    
-    _draw_rounded_rect(overlay_frame, sx1, sy1, sx2, sy2, 14, style["bg"], alpha=0.92)
-    cv2.rectangle(overlay_frame, (sx1 + 2, sy1 + 2), (sx2 - 2, sy2 - 2), style["dot"], 2)
-    s_dot_x = sx1 + PAD_X_S + DOT_R_S
-    s_dot_y = (sy1 + sy2) // 2
-    cv2.circle(overlay_frame, (s_dot_x, s_dot_y), DOT_R_S, style["dot"], -1)
-    cv2.circle(overlay_frame, (s_dot_x, s_dot_y), DOT_R_S + 3, style["dot"], 1)
-    cv2.putText(overlay_frame, status, (s_dot_x + DOT_R_S + 10, s_dot_y + sh // 2),
-                cv2.FONT_HERSHEY_PLAIN, FS_STATUS, style["text"], FT_STATUS, cv2.LINE_AA)
+            role = str(d.get("role") or d.get("class") or "TUBE").upper()
+            is_head = role == "HEAD"
+
+            # Color: Cyan for HEAD, Amber for TAIL (BGR format)
+            color = (255, 200, 0) if is_head else (0, 165, 255)
+
+            cv2.rectangle(overlay_frame, (x1, y1), (x2, y2), color, 2)
+
+            # Clean ID & Role label
+            tid = d.get("id")
+            label = f"#{tid} {role}" if tid is not None else role
+            cv2.putText(
+                overlay_frame,
+                label,
+                (x1, max(y1 - 6, 14)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
 
     return overlay_frame
 

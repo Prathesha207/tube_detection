@@ -303,12 +303,12 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                           {/* Width, Pair & Confidence */}
                           <div className="flex items-center gap-2.5 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
                             <span>w: <strong className="text-[var(--text-primary)]">{typeof d.width_px === 'number' ? `${d.width_px.toFixed(1)}px` : 'null'}</strong></span>
-                            {/* <span>pair: <strong className="text-[var(--text-primary)]">{d.pair_id != null ? `tube#${d.pair_id}` : 'null'}</strong></span>
+                            {/* <span>pair: <strong className="text-[var(--text-primary)]">{d.pair_id != null ? `tube#${d.pair_id}` : 'null'}</strong></span> */}
                             {d.confidence != null ? (
                               <span className="text-[11px] text-[var(--text-secondary)] font-medium">
                                 {Math.round(Number(d.confidence) <= 1 ? Number(d.confidence) * 100 : Number(d.confidence))}%
                               </span>
-                            ) : null} */}
+                            ) : null}
                           </div>
 
                           {/* COMMENTED OUT: width and unpaired / pair tags

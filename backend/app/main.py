@@ -138,14 +138,11 @@ def _preload_model_background():
 
         ml_dir = os.path.join(os.path.dirname(__file__), "ml")
         model_candidates = [
-            resource_path("app/ml/model/best_15.10.pt"),
-            os.path.join(ml_dir, "model", "best_15.10.pt"),
             resource_path("app/ml/model/best.pt"),
             os.path.join(ml_dir, "model", "best.pt"),
         ]
         if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best_15.10.pt"))
-            model_candidates.insert(1, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
+            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
 
         resolved_model = next((c for c in model_candidates if c and os.path.exists(c)), None)
 

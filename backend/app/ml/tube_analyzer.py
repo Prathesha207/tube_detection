@@ -97,7 +97,7 @@ if rvf is None:
 logger = logging.getLogger("tube-analyzer")
 
 _ML_DIR = Path(__file__).resolve().parent
-MODEL_PATH = str(_ML_DIR / "model" / "best_15.10.pt") if (_ML_DIR / "model" / "best_15.10.pt").exists() else str(_ML_DIR / "model" / "best.pt")
+MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
 CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 ROI_JSON = str(_ML_DIR / "config" / "roi.json")
 

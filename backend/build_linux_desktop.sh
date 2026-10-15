@@ -46,6 +46,14 @@ python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$BACKEND_DIR/requirements.txt"
+WHL_DIR="$BACKEND_DIR/app/ml/whl"
+if [[ -d "$WHL_DIR" ]]; then
+  LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
+  if [[ -n "$LATEST_WHL" ]]; then
+    echo "Installing ML wheel: $(basename "$LATEST_WHL")..."
+    python -m pip install --force-reinstall --no-deps "$LATEST_WHL"
+  fi
+fi
 
 if [[ "${USE_CUDA:-0}" == "1" || ( "${USE_CUDA:-auto}" == "auto" && -n "$(command -v nvidia-smi 2>/dev/null || true)" ) ]]; then
   echo "NVIDIA GPU detected/requested; installing CUDA-enabled PyTorch..."

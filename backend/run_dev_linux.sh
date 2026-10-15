@@ -20,12 +20,14 @@ if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, ya
   "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
 fi
 
-if ! "$BACKEND_DIR/.venv/bin/python" -c "import head_tail_analyzer" 2>/dev/null; then
-  WHL_DIR="$BACKEND_DIR/app/ml/whl"
-  if [[ -d "$WHL_DIR" ]]; then
-    LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
-    if [[ -n "$LATEST_WHL" ]]; then
-      echo "Installing ML wheel: $(basename "$LATEST_WHL")..."
+WHL_DIR="$BACKEND_DIR/app/ml/whl"
+if [[ -d "$WHL_DIR" ]]; then
+  LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
+  if [[ -n "$LATEST_WHL" ]]; then
+    INSTALLED_VER=$("$BACKEND_DIR/.venv/bin/python" -c "import importlib.metadata as md; print(md.version('head_tail_analyzer'))" 2>/dev/null || true)
+    WHL_NAME="$(basename "$LATEST_WHL")"
+    if [[ -z "$INSTALLED_VER" || "$WHL_NAME" != *"-$INSTALLED_VER-"* ]]; then
+      echo "Installing / updating ML wheel: $WHL_NAME..."
       "$BACKEND_DIR/.venv/bin/python" -m pip install --force-reinstall --no-deps "$LATEST_WHL"
     fi
   fi

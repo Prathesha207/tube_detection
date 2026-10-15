@@ -1,6 +1,6 @@
 # config.yaml - settings for run_video_frames.py / head_tail_analyzer
 # Relative paths are relative to THIS file's folder.
-model_path: ../model/best_15.10.pt
+model_path: ../model/best.pt
 video: null
 device: "0"                    # "0" = first GPU, "cpu" = CPU
 

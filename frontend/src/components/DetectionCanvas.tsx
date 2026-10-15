@@ -574,11 +574,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 src={
                   isCameraSource
                     ? (isRunning && feedMode === 'inference'
-                        ? (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')
-                        : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
+                      ? (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')
+                      : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
                     : (isRunning && feedMode === 'inference'
-                        ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
-                        : effectiveVideoUrl)
+                      ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
+                      : effectiveVideoUrl)
                 }
                 className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-fill ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
                   }`}

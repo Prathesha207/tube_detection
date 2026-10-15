@@ -66,17 +66,38 @@ except Exception:
 
 _CUDA_KERNELS_USABLE: Optional[bool] = None
 
+_REQUIRED_WHEEL_FUNCS = (
+    "detect", "update_tracks", "assign_sizes", "build_frame_result",
+    "tubing_id_from_names", "role_ids_from_names", "in_roi",
+    "cap_per_role", "draw"
+)
+
+rvf = None
+_WHEEL_ERROR = None
+
+# 1. Try importing from installed wheel package first
 try:
-    from head_tail_analyzer import run_video_frames as rvf
-    _WHEEL_ERROR = None
-except ImportError as e:
-    rvf = None
+    from head_tail_analyzer import run_video_frames as _wheel_rvf
+    if all(hasattr(_wheel_rvf, n) for n in _REQUIRED_WHEEL_FUNCS):
+        rvf = _wheel_rvf
+        logging.getLogger("tube-analyzer").info("Using installed head_tail_analyzer wheel")
+except Exception as e:
     _WHEEL_ERROR = e
+
+# 2. If wheel is missing or an older build without assign_sizes, load from local test_inference
+if rvf is None:
+    try:
+        from app.ml.test_inference import run_video_frames as _local_rvf
+        rvf = _local_rvf
+        _WHEEL_ERROR = None
+        logging.getLogger("tube-analyzer").info("Using local app.ml.test_inference.run_video_frames (full width & size measurement enabled)")
+    except Exception as e:
+        logging.getLogger("tube-analyzer").error("Could not import local run_video_frames: %s", e)
 
 logger = logging.getLogger("tube-analyzer")
 
 _ML_DIR = Path(__file__).resolve().parent
-MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
+MODEL_PATH = str(_ML_DIR / "model" / "best_15.10.pt") if (_ML_DIR / "model" / "best_15.10.pt").exists() else str(_ML_DIR / "model" / "best.pt")
 CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 ROI_JSON = str(_ML_DIR / "config" / "roi.json")
 
@@ -283,14 +304,23 @@ def _load_yolo_model(path: str):
     return model
 
 #################### 3. Data Formatting ####################
+_WIDTH_DETECTION_KEYS = (
+    "width_px", "width_mm", "width_now_px", "width_spread_px",
+    "width_source", "size"
+)
+
 # ------------------------------------------------------ what the frontend gets
 def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     """Wheel result dict -> the dict the frontend / API returns (one place, used by both services).
     These functions prepare the raw ML data so the React frontend can understand it.
     Adds: per-detection ``confidence`` / ``class`` / ``status`` aliases, ``total_count``
     (heads + tails visible in THIS frame; use heads_total + tails_total for the running
-    total), and the always-None ``bigger_tube`` / ``smaller_tube`` the frontend expects.
-    An empty result ({} for an empty frame) gives all-zero counts."""
+    total), and passes through ``bigger_tube`` from rvf.assign_sizes().
+
+    Width fields (``width_px``, ``width_mm``, ``width_now_px``, ``width_spread_px``,
+    ``width_source``, ``size``) are guaranteed to exist on every detection (None when not
+    measured), and ``bigger_tube`` is passed through from the wheel (None only for an empty
+    frame). An empty result ({} for an empty frame) gives all-zero counts."""
     heads = result.get("heads_count", 0)
     tails = result.get("tails_count", 0)
     detections = []
@@ -299,6 +329,8 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         det["confidence"] = det.get("conf", 1.0)
         det["class"] = det.get("role", "HEAD")
         det["status"] = d.get("status", "OK")
+        for key in _WIDTH_DETECTION_KEYS:          # stable schema even if nothing was measured
+            det.setdefault(key, None)
         detections.append(det)
     return {
         **result,
@@ -309,7 +341,7 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         "heads_visible": result.get("heads_visible", heads),
         "tails_visible": result.get("tails_visible", tails),
         "total_count": heads + tails,
-        "bigger_tube": None,
+        "bigger_tube": result.get("bigger_tube"),   # from rvf.assign_sizes(); None for an empty frame
         "smaller_tube": None,
         "detections": detections,
     }
@@ -369,7 +401,12 @@ def _build_settings(config_path: Optional[str], model_path: str, device: str,
         logger.warning(f"TubeAnalyzer ignoring settings the wheel does not have: {unknown}")
     cfg.update({k: v for k, v in extra.items() if k in cfg and v is not None})
 
-    cfg.update(model_path=model_path, device=device, tile=int(cfg["tile"] or 0),
+    if cfg.get("width_method") not in ("auto", "tubing", "mask", "off"):
+        raise ValueError(f"width_method must be auto/tubing/mask/off, got {cfg.get('width_method')!r}")
+    if cfg.get("width_from") not in ("tail", "all"):
+        raise ValueError(f"width_from must be tail/all, got {cfg.get('width_from')!r}")
+
+    cfg.update(model_path=model_path, device=device, tile=int(cfg.get("tile") or 0),
                draw_roi=draw_roi, roi_json=None)   # ROI is loaded by the analyzer, not the wheel
     return SimpleNamespace(**cfg)
 
@@ -389,16 +426,29 @@ class TubeAnalyzer:
         min_frames: Optional[int] = None,
         max_dist: Optional[float] = None,
         max_missed: Optional[int] = None,
+        scale: Optional[float] = None,
+        conf_head: Optional[float] = None,
+        conf_tail: Optional[float] = None,
+        width_method: Optional[str] = None,     # auto | tubing | mask | off
+        width_from: Optional[str] = None,       # tail | all  (which ends decide bigger_tube)
+        min_ratio: Optional[float] = None,      # width ratio needed to call one BIGGER
+        mm_per_px: Optional[float] = None,      # calibration -> width_mm
         draw_overlay: bool = False,
         draw_roi: bool = False,
         **extra: Any,
     ):
         """Settings left as None use config.yaml or the wheel's DEFAULTS. ``extra`` may carry any
-        other wheel setting (iou, merge_iou, merge_contain); unknown keys are ignored."""
+        other wheel setting (iou, merge_iou, merge_contain, max_heads, attach_gap, ...); unknown keys are ignored."""
         if rvf is None:
             raise RuntimeError(
                 f"The head-tail-analyzer wheel could not be imported: {_WHEEL_ERROR}. "
-                "Install the wheel: pip install backend/app/ml/whl/head_tail_analyzer-0.1.3-py3-none-any.whl"
+                "Install the wheel or ensure backend/app/ml/test_inference/run_video_frames.py is present."
+            )
+        missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(rvf, n)]
+        if missing:
+            raise RuntimeError(
+                f"The analyzer module is missing required functions: {missing}. "
+                "Rebuild the wheel or update run_video_frames.py."
             )
 
         path = model_path or MODEL_PATH
@@ -411,7 +461,10 @@ class TubeAnalyzer:
             target_device = "cpu"
 
         chosen = dict(conf=conf, tile=tile, tile_overlap=tile_overlap, gray=gray,
-                      min_frames=min_frames, max_dist=max_dist, max_missed=max_missed)
+                      min_frames=min_frames, max_dist=max_dist, max_missed=max_missed,
+                      scale=scale, conf_head=conf_head, conf_tail=conf_tail,
+                      width_method=width_method, width_from=width_from,
+                      min_ratio=min_ratio, mm_per_px=mm_per_px)
         self.cfg = _build_settings(config_path or CONFIG_PATH, path, target_device, draw_roi, chosen, extra)
 
         self.draw_overlay = draw_overlay
@@ -425,6 +478,8 @@ class TubeAnalyzer:
             self.role_ids = rvf.role_ids_from_names(self.model.names)
         except SystemExit as e:        # the wheel exits instead of raising; SystemExit is not an Exception
             raise RuntimeError(f"Model {path} is not usable for head/tail counting: {e}") from None
+        self.tubing_id: Optional[int] = None
+        self._setup_width_measurement()
         logger.info(f"TubeAnalyzer ready: model={path} classes={self.model.names} "
                     f"using={self.role_ids} device={self.cfg.device} tile={self.cfg.tile or 'off'}")
 
@@ -434,6 +489,7 @@ class TubeAnalyzer:
         self._pending_roi: Optional[Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]] = None
         self.tracks: list = []
         self.next_id = 1
+        self.peak: Dict[str, int] = {}
         self._last_analysis: Optional[FrameAnalysis] = None
         self._warmed_shapes: Set[Tuple[int, int]] = _GLOBAL_WARMED_SHAPES
 
@@ -458,7 +514,7 @@ class TubeAnalyzer:
             return
         try:
             dummy = np.zeros((height, width, 3), dtype=np.uint8)
-            rvf.detect(self.model, dummy, self.role_ids, self.cfg)
+            rvf.detect(self.model, dummy, self.role_ids, self.cfg, self.tubing_id)
             if cuda_is_available():
                 torch.cuda.synchronize()
             self._warmed_shapes.add((height, width))
@@ -474,6 +530,39 @@ class TubeAnalyzer:
             return os.path.getmtime(self.model_path) != self.model_mtime
         except Exception:
             return False
+
+    def _setup_width_measurement(self) -> None:
+        """Same decision run() in the wheel makes: pick the width method and find the tubing class.
+
+        width_method  auto    -> "tubing" when the model has a tubing class, else "mask"
+                      tubing  -> tube diameter behind each end (needs a tubing class)
+                      mask    -> thickness of the head/tail mask itself
+                      off     -> no width, no masks (faster)
+        A non-segmentation model has no masks, so width is switched off."""
+        cfg = self.cfg
+        self.tubing_id = None
+        if cfg.width_method != "off" and getattr(self.model, "task", "segment") != "segment":
+            logger.warning("Model is not a segmentation model -> no masks, width turned OFF")
+            cfg.width_method = "off"
+        if cfg.width_method in ("auto", "tubing"):
+            self.tubing_id = rvf.tubing_id_from_names(self.model.names)
+            if self.tubing_id is None and cfg.width_method == "tubing":
+                raise RuntimeError(f"width_method=tubing but the model has no tubing class: {self.model.names}")
+            cfg.width_method = "tubing" if self.tubing_id is not None else "mask"
+        if cfg.width_method == "mask" and cfg.width_from == "all":
+            logger.warning("width_from=all compares connector width with tube width; "
+                           "use width_from=tail for a fair 'bigger tube'")
+        logger.info(f"Width: method={cfg.width_method} tubing_id={self.tubing_id} "
+                    f"bigger_tube_from={cfg.width_from} min_ratio={cfg.min_ratio} "
+                    f"units={'mm' if cfg.mm_per_px else 'px'}")
+
+    def set_calibration(self, mm_per_px: Optional[float]) -> None:
+        """Set (or clear with None) millimetres-per-pixel. Takes effect on the next frame."""
+        if mm_per_px is not None:
+            mm_per_px = float(mm_per_px)
+            if not (mm_per_px > 0 and np.isfinite(mm_per_px)):
+                raise ValueError("mm_per_px must be a positive number")
+        self.cfg.mm_per_px = mm_per_px
 
     def reset_tracking(self) -> None:
         """Forget all tracks (call before a new video / stream).
@@ -513,11 +602,12 @@ class TubeAnalyzer:
 
     # ------------------------------------------------------------ per frame
     """ analyze_frame() This is the core ML loop that runs 30 times a second. It executes exactly in this order:
-        rvf.detect(): Scans the image to find Tubes (Heads/Tails).
+        rvf.detect(): Scans the image to find Tubes (Heads/Tails) and measures widths via masks.
         rvf.update_tracks(): Compares the Tubes found in this frame to the Tubes found in the last frame, giving them a persistent ID so they aren't double-counted.
         _drop_stale_tracks(): Clears out memory for tubes that walked off-screen.
         rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone.
-        rvf.build_frame_result(): Tallies up the final counts and builds the result dictionary."""
+        rvf.assign_sizes(): Labels each tube BIGGER / SMALLER / SAME and picks the bigger_tube.
+        rvf.build_frame_result(): Tallies up the final counts, widths and builds the result dictionary."""
     def analyze_frame(self, frame: np.ndarray, frame_number: int = 0) -> FrameAnalysis:
         """Detect -> track -> ROI filter -> result for ONE BGR frame.
 
@@ -539,23 +629,30 @@ class TubeAnalyzer:
             self.roi = new_roi
             for t in self.tracks:
                 t.in_roi_ever = False
-        #rvf.detect(): Scans the image to find Tubes (Heads/Tails).
+
+        # 1. rvf.detect(): Scans the image to find Tubes (Heads/Tails) and measures width
         try:
-            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
+            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg, self.tubing_id)
         except Exception as error:
             if not self._retry_on_cpu_after_cuda_error(error):
                 raise
-            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg)
-        #rvf.update_tracks(): Compares the Tubes found in this frame to the Tubes found in the last frame, giving them a persistent ID so they aren't double-counted.
+            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg, self.tubing_id)
+
+        # 2. rvf.update_tracks(): Track association
         self.next_id = rvf.update_tracks(self.tracks, detections, frame_number, self.next_id, self.cfg)
         self._drop_stale_tracks(frame_number)
-        #rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone.
+
+        # 3. rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone
         inside_roi = [d for d in detections if rvf.in_roi(d, self.roi)]   # ROI limits output only
         inside_roi = rvf.cap_per_role(inside_roi, self.cfg)
         for d in inside_roi:
             d["track"].in_roi_ever = True
-        #rvf.build_frame_result(): Tallies up the final counts and builds the result dictionary.
-        result = rvf.build_frame_result(frame_number, inside_roi, self.tracks)
+
+        # 4. rvf.assign_sizes(): BIGGER / SMALLER / SAME per end + bigger_tube summary
+        bigger = rvf.assign_sizes(inside_roi, self.cfg)
+
+        # 5. rvf.build_frame_result(): Tallies up final counts, widths and builds the result dictionary
+        result = rvf.build_frame_result(frame_number, inside_roi, self.tracks, bigger, self.cfg)
 
         if not hasattr(self, "peak"):
             self.peak = {}

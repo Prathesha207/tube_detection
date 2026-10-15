@@ -51,7 +51,7 @@ from .tube_analyzer import (
 logger = setup_logger("tube-video-inference")
 
 _ML_DIR = Path(__file__).resolve().parent
-_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
+_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best_15.10.pt") if (_ML_DIR / "model" / "best_15.10.pt").exists() else str(_ML_DIR / "model" / "best.pt")
 _CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 
 _FINISHED_STATES = ("completed", "stopped", "error")

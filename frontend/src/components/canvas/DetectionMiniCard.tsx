@@ -118,8 +118,23 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                     {d.role || 'END'}
                   </span>
 
-                  {/* Width minimized right next to it */}
-                  <div className="flex items-center gap-0.5 ml-auto shrink-0 text-[10px] font-mono">
+                  {/* Width minimized right next to it with size tag */}
+                  <div className="flex items-center gap-1 ml-auto shrink-0 text-[10px] font-mono">
+                    {d.size === 'BIGGER' && (
+                      <span className="px-1 py-0.2 rounded text-[7.5px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                        BIG
+                      </span>
+                    )}
+                    {d.size === 'SMALLER' && (
+                      <span className="px-1 py-0.2 rounded text-[7.5px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        SML
+                      </span>
+                    )}
+                    {d.size === 'SAME' && (
+                      <span className="px-1 py-0.2 rounded text-[7.5px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        EQ
+                      </span>
+                    )}
                     <span className="text-[var(--text-secondary)] opacity-65">w:</span>
                     <strong
                       className={`font-mono ${

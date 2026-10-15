@@ -100,14 +100,28 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   }, [isRunning, isCameraSource, isCompleted, mlStats.status, isStandby, anomalyStatus.message]);
 
   const verdictText = useMemo(() => {
-    if (bigger && smaller) {
+    if (bigger && typeof bigger === 'object') {
+      if (bigger.status === 'OK') {
+        const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(2)}mm` : '');
+        const role = bigger.role ? `${String(bigger.role).toLowerCase()} ` : '';
+        const id = bigger.id != null ? `#${bigger.id} ` : '';
+        const ratio = bigger.ratio ? ` (x${Number(bigger.ratio).toFixed(2)})` : '';
+        return `BIGGER TUBE: ${role}${id}${bw}${ratio}`.trim();
+      }
+      if (bigger.status === 'SAME') {
+        const ratio = bigger.ratio ? ` (x${Number(bigger.ratio).toFixed(2)})` : '';
+        return `TUBES SAME SIZE${ratio}`;
+      }
+      if (bigger.status === 'NOT_ENOUGH') {
+        return 'BIGGER TUBE: need 2 measured tubes';
+      }
+      if (smaller) {
+        const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
+        const sw = smaller.width_px ? `${Number(smaller.width_px).toFixed(1)}px` : (smaller.width_mm ? `${Number(smaller.width_mm).toFixed(1)}mm` : '');
+        return `BIGGER tube: ${bw} | SMALLER tube: ${sw}`;
+      }
       const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
-      const sw = smaller.width_px ? `${Number(smaller.width_px).toFixed(1)}px` : (smaller.width_mm ? `${Number(smaller.width_mm).toFixed(1)}mm` : '');
-      return `BIGGER tube: ${bw} | SMALLER tube: ${sw}`;
-    }
-    if (bigger) {
-      const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
-      return `BIGGER tube: ${bw}`;
+      if (bw) return `BIGGER tube: ${bw}`;
     }
     if ((anomalyStatus.headsCount ?? 0) === 0 && (anomalyStatus.tailsCount ?? 0) === 0 && tubes.length === 0) {
       return 'No tube ends currently detected';
@@ -300,10 +314,33 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                             </span>
                           </div>
 
-                          {/* Width, Pair & Confidence */}
-                          <div className="flex items-center gap-2.5 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
-                            <span>w: <strong className="text-[var(--text-primary)]">{typeof d.width_px === 'number' ? `${d.width_px.toFixed(1)}px` : 'null'}</strong></span>
-                            {/* <span>pair: <strong className="text-[var(--text-primary)]">{d.pair_id != null ? `tube#${d.pair_id}` : 'null'}</strong></span> */}
+                          {/* Width, Size & Confidence */}
+                          <div className="flex items-center gap-2 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
+                            <span>
+                              w:{' '}
+                              <strong className="text-[var(--text-primary)]">
+                                {typeof d.width_mm === 'number' && d.width_mm > 0
+                                  ? `${d.width_mm.toFixed(1)}mm`
+                                  : typeof d.width_px === 'number' && d.width_px > 0
+                                    ? `${d.width_px.toFixed(1)}px`
+                                    : 'null'}
+                              </strong>
+                            </span>
+                            {d.size === 'BIGGER' && (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-400 border border-rose-500/35">
+                                BIGGER
+                              </span>
+                            )}
+                            {d.size === 'SMALLER' && (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-400 border border-amber-500/35">
+                                SMALLER
+                              </span>
+                            )}
+                            {d.size === 'SAME' && (
+                              <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/35">
+                                SAME
+                              </span>
+                            )}
                             {d.confidence != null ? (
                               <span className="text-[11px] text-[var(--text-secondary)] font-medium">
                                 {Math.round(Number(d.confidence) <= 1 ? Number(d.confidence) * 100 : Number(d.confidence))}%

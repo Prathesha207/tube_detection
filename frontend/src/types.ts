@@ -16,6 +16,9 @@ export interface TubeDetection {
   bbox?: [number, number, number, number]; // [x, y, width, height] px, top-left origin
   width_px?: number | null;
   width_mm?: number | null;
+  width_now_px?: number | null;
+  width_spread_px?: number | null;
+  width_source?: string | null;
   size?: TubeSize;
   pair_id?: number | null; // ends sharing a pair_id = the same tube
   opaque?: boolean | null;
@@ -73,6 +76,9 @@ export interface TubeEntity {
   height: number;
   width_px?: number | null;
   width_mm?: number | null;
+  width_now_px?: number | null;
+  width_spread_px?: number | null;
+  width_source?: string | null;
   size?: TubeSize;
   pair_id?: number | null;
   opaque?: boolean | null;

@@ -596,6 +596,10 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                   }
                 }}
                 onError={() => {
+                  if (!isRunning && !isStreaming) {
+                    // Normal stream shutdown when user cleared or stopped video
+                    return;
+                  }
                   console.warn('[DetectionCanvas] Stream frame interrupted or reconnecting...');
                   setStreamError(true);
                   if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);

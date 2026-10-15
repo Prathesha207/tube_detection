@@ -555,7 +555,7 @@ async def stop_video(session_id: str):
     try:
         session = ml_inference_service.sessions.get(session_id)
         if not session:
-            return JSONResponse(status_code=404, content={"message": "Session not found."})
+            return {"message": "Session already stopped or inactive.", "status": "stopped"}
         
         # BUGFIX: bound the wait so a wedged task can't hang this request
         # (see stop_session() docstring in video_inference_service.py).

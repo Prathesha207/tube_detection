@@ -568,7 +568,6 @@ export default function App() {
     video.handleClearVideo();
     clearSessionState();
     if (sid) {
-      fetch(`${getApiBaseUrl()}/video/stop/${sid}`, { method: 'POST' }).catch(() => { });
       fetch(`${getApiBaseUrl()}/video/clear/${sid}`, { method: 'POST' }).catch(() => { });
     }
     showToast('info', 'Video cleared. Select or upload a new video.');

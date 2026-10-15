@@ -15,6 +15,7 @@ import { CameraStandbyCard } from './canvas/CameraStandbyCard';
 import { TopToolbar } from './canvas/TopToolbar';
 // import { StatusBar } from './canvas/StatusBar';
 import { ZoomControls } from './canvas/ZoomControls';
+import { DetectionMiniCard } from './canvas/DetectionMiniCard';
 
 // Extracted Canvas Hooks
 import { useFullscreen } from '../hooks/useFullscreen';
@@ -735,6 +736,18 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
           tubes={tubes}
         />
       )} */}
+
+      {/* Floating Bottom-Left Corner Detection Mini Card: Neat card showing ID, HEAD/TAIL, and Width */}
+      {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (isRunning || hasInferenceResult || tubes.length > 0) && (
+        <div className="absolute bottom-3.5 left-3.5 sm:bottom-4 sm:left-4 z-30 pointer-events-auto">
+          <DetectionMiniCard
+            tubes={tubes}
+            selectedTubeId={selectedTubeId}
+            onSelectTube={onSelectTube}
+            isRunning={isRunning}
+          />
+        </div>
+      )}
 
       {/* Floating Bottom-Right Corner Zoom Controls: Always prominent and accessible on canvas */}
       {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (

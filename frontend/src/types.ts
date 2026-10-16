@@ -25,6 +25,7 @@ export interface TubeDetection {
   colour?: { saturation: number; hue: number | null; coloured: boolean } | null;
   is_coasting?: boolean;
   missed_frames?: number;
+  ratio?: number | null;
 }
 
 export interface TubeFrameResult {

@@ -118,6 +118,7 @@ class OakCameraService:
         self._inference_subscribers: set[asyncio.Queue] = set()
         self._inference_loop: asyncio.AbstractEventLoop | None = None
         self._inference_session_id: str | None = None
+        self._latest_inference_result: dict | None = None
 
         # ---- Offline inference ----
         self._offline_thread: threading.Thread | None = None
@@ -1650,6 +1651,11 @@ class OakCameraService:
     def subscribe_inference(self) -> asyncio.Queue:
         # maxsize=1 ensures clients always receive the freshest frame with zero backlog/drift
         q: asyncio.Queue = asyncio.Queue(maxsize=1)
+        if self._latest_inference_result is not None:
+            try:
+                q.put_nowait(self._latest_inference_result)
+            except Exception:
+                pass
         self._inference_subscribers.add(q)
         logger.info(f"[INFERENCE] Client subscribed — active subscribers: {len(self._inference_subscribers)}")
         return q
@@ -1674,6 +1680,7 @@ class OakCameraService:
 
     async def _async_inference_push(self, result: dict) -> None:
         """Drop-oldest push into all client inference queues — always keeps freshest frame for zero lag."""
+        self._latest_inference_result = result
         for q in list(self._inference_subscribers):
             if q.full():
                 try:
@@ -1725,13 +1732,6 @@ class OakCameraService:
                 self._inference_thread.join(timeout=1.0)
 
         logger.info(f"[INFERENCE] Mode: {'OFFLINE' if offline else 'ONLINE'} — session: {session_id}")
-
-        # Ensure CUDA is pre-warmed on GPU
-        try:
-            from app.ml.camera_inference_service import prewarm_camera_model
-            threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
-        except Exception as _e:
-            logger.warning(f"[PREWARM] Failed to start prewarm thread in start_inference: {_e}")
 
         # Set up queue and loop FIRST so the WebSocket can connect even if validation fails.
         # Validation errors are pushed as a result so the WS receives them before closing.
@@ -1890,6 +1890,7 @@ class OakCameraService:
         self._inference_result_queue = None
         self._inference_session_id = None
         self._inference_offline = False
+        self._latest_inference_result = None
 
         streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
         recording_active = self._active_recording is not None

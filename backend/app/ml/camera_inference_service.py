@@ -45,11 +45,15 @@ _shared_camera_analyzer: Optional[TubeAnalyzer] = None
 _global_roi_points: list = []
 _global_roi_frame_size: Optional[Tuple[int, int]] = None
 
+_model_ready_event = threading.Event()
+
 ############### Setup & Lifecycle Functions ###############
 def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
     """Preloaded TubeAnalyzer from backend startup lifespan for instant zero-delay camera inference."""
-    global _shared_camera_analyzer
+    global _shared_camera_analyzer, _model_prewarmed
     _shared_camera_analyzer = analyzer
+    _model_prewarmed = True
+    _model_ready_event.set()
     logger.info("Preloaded TubeAnalyzer registered into camera_inference_service — ready for instant inference")
 
 
@@ -71,8 +75,15 @@ def prewarm_camera_model() -> None:
                     from app.ml.video_inference_service import video_inference_service
                     if video_inference_service._shared_analyzer is not None:
                         _shared_camera_analyzer = video_inference_service._shared_analyzer
+                        _model_prewarmed = True
+                        _model_ready_event.set()
                 except Exception:
                     pass
+
+            if _shared_camera_analyzer is None:
+                if _model_ready_event.wait(timeout=5.0) and _shared_camera_analyzer is not None:
+                    _model_prewarmed = True
+                    return
 
             if _shared_camera_analyzer is None:
                 logger.info("[PREWARM] Preloading TubeAnalyzer for camera in background...")
@@ -85,6 +96,7 @@ def prewarm_camera_model() -> None:
             # Pre-warm directly with full 1080p frame so CUDA kernels and cuDNN graphs compile
             _shared_camera_analyzer.warm_up((1080, 1920))
             _model_prewarmed = True
+            _model_ready_event.set()
             logger.info("[PREWARM] TubeAnalyzer fully pre-warmed on GPU — ready for instant 0.0s camera inference.")
         except Exception as e:
             logger.warning(f"[PREWARM] Background prewarm skipped or failed: {e}")
@@ -129,30 +141,22 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             active_kind = app_state.get_active_inference_kind()
             raise RuntimeError(f"GPU is currently in use by {active_kind or 'another process'} -- try again shortly")
 
-        session = {
-            "analyzer": "LOADING",
-            "frames_processed": 0,
-            "last_active": time.time(),
-            "inference_claimed": True,
-            "inference_lock": threading.Lock(),
-            "last_stats": new_stats(session_id=session_id, status="LOADING_MODEL"),
-            "last_annotated_frame": None,
-            "roi_points": list(_global_roi_points),
-            "roi_frame_size": _global_roi_frame_size,
-            "load_error": None,
-        }
-        _sessions[session_id] = session
-        _start_idle_sweeper_once()
-
-        # Fast path & hot-reload: Check if preloaded analyzer model file changed on disk
-        global _shared_camera_analyzer
+        # Fast path: Ensure preloaded shared analyzer is ready
+        global _shared_camera_analyzer, _model_prewarmed
         if _shared_camera_analyzer is None:
             try:
                 from app.ml.video_inference_service import video_inference_service
                 if video_inference_service._shared_analyzer is not None:
                     _shared_camera_analyzer = video_inference_service._shared_analyzer
+                    _model_prewarmed = True
+                    _model_ready_event.set()
             except Exception:
                 pass
+
+        if _shared_camera_analyzer is None:
+            # Wait up to 10 seconds for background startup preload to finish
+            if _model_ready_event.wait(timeout=10.0) and _shared_camera_analyzer is not None:
+                _model_prewarmed = True
 
         if _shared_camera_analyzer is not None:
             if getattr(_shared_camera_analyzer, "has_weights_changed", lambda: False)():
@@ -176,19 +180,48 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
 
         if _shared_camera_analyzer is not None:
             _shared_camera_analyzer.reset_tracking()
-            if session.get("roi_points"):
+            if _global_roi_points:
                 try:
-                    _shared_camera_analyzer.set_roi(session["roi_points"], session["roi_frame_size"])
+                    _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
                 except Exception as e:
                     logger.warning(f"Stored ROI invalid: {e}")
-            session["analyzer"] = _shared_camera_analyzer
-            session["last_stats"] = new_stats(session_id=session_id, status="running")
+
+            session = {
+                "analyzer": _shared_camera_analyzer,
+                "frames_processed": 0,
+                "last_active": time.time(),
+                "inference_claimed": True,
+                "inference_lock": threading.Lock(),
+                "last_stats": new_stats(session_id=session_id, status="running"),
+                "last_annotated_frame": None,
+                "roi_points": list(_global_roi_points),
+                "roi_frame_size": _global_roi_frame_size,
+                "load_error": None,
+            }
+            _sessions[session_id] = session
+            _start_idle_sweeper_once()
             logger.info(f"Reusing preloaded TubeAnalyzer for camera session {session_id} — instantaneous GPU start")
             return session
 
+        # Fallback path if model not preloaded
+        session = {
+            "analyzer": "LOADING",
+            "frames_processed": 0,
+            "last_active": time.time(),
+            "inference_claimed": True,
+            "inference_lock": threading.Lock(),
+            "last_stats": new_stats(session_id=session_id, status="LOADING_MODEL"),
+            "last_annotated_frame": None,
+            "roi_points": list(_global_roi_points),
+            "roi_frame_size": _global_roi_frame_size,
+            "load_error": None,
+        }
+        _sessions[session_id] = session
+        _start_idle_sweeper_once()
+
         def _load_model():
             try:
-                logger.info(f"Creating TubeAnalyzer asynchronously for camera session {session_id}")
+                logger.info(f"Creating TubeAnalyzer for camera session {session_id}")
                 analyzer = TubeAnalyzer(
                     model_path=model_path or _DEFAULT_MODEL_PATH,
                     config_path=_CONFIG_PATH,
@@ -201,14 +234,16 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                     except ValueError as e:
                         logger.warning(f"Stored ROI invalid: {e}")
                 with session["inference_lock"]:
-                    if session.get("analyzer") == "LOADING":
-                        session["analyzer"] = analyzer
-                        global _shared_camera_analyzer
-                        if _shared_camera_analyzer is None:
-                            _shared_camera_analyzer = analyzer
-                        logger.info(f"TubeAnalyzer loaded successfully for session {session_id}")
+                    session["analyzer"] = analyzer
+                    session["last_stats"] = new_stats(session_id=session_id, status="running")
+                    global _shared_camera_analyzer
+                    if _shared_camera_analyzer is None:
+                        _shared_camera_analyzer = analyzer
+                        _model_prewarmed = True
+                        _model_ready_event.set()
+                    logger.info(f"TubeAnalyzer loaded successfully for session {session_id}")
             except Exception as e:
-                logger.error(f"Failed to load camera analyzer asynchronously: {e}", exc_info=True)
+                logger.error(f"Failed to load camera analyzer: {e}", exc_info=True)
                 with session["inference_lock"]:
                     session["analyzer"] = "ERROR"
                     session["load_error"] = str(e)

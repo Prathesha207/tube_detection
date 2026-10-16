@@ -92,9 +92,9 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
               ) : isRunning ? (
                 <div className="flex items-center gap-2 font-bold text-xs sm:text-sm">
                   {(!latencyMs || Number(latencyMs) <= 0) ? (
-                    <div className="flex items-center gap-1.5 text-amber-500 font-bold">
-                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0 shadow-[0_0_6px_rgba(245,158,11,0.5)]" />
-                      <span>WARMING</span>
+                    <div className="flex items-center gap-1.5 text-sky-400 font-bold">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      <span>STARTING...</span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">

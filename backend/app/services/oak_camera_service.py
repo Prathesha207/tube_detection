@@ -51,6 +51,8 @@ class OakCameraService:
         self._is_running: bool = False
         self._pipeline_lock = threading.Lock()
         self._lifecycle_lock = asyncio.Lock()
+        self._streaming_lock = asyncio.Lock()
+        self._capture_lock = threading.Lock()
         self._camera_calibration_lock = threading.Lock()
         self._calibrating = False
         self._active_camera_id: int | None = None
@@ -595,69 +597,71 @@ class OakCameraService:
     # ==================== Capture Threads ====================
 
     def _start_capture_threads(self) -> bool:
-        if not self._is_running or not self.is_connected or self._mjpeg_dai_queue is None:
-            logger.warning("[CAPTURE] Cannot start — pipeline or device queue not running")
-            return False
+        with self._capture_lock:
+            if not self._is_running or not self.is_connected or self._mjpeg_dai_queue is None:
+                logger.warning("[CAPTURE] Cannot start — pipeline or device queue not running")
+                return False
 
-        mjpeg_alive = self._mjpeg_thread and self._mjpeg_thread.is_alive()
-        hires_alive = self._hires_thread and self._hires_thread.is_alive()
-        convert_alive = self._convert_thread and self._convert_thread.is_alive()
+            mjpeg_alive = self._mjpeg_thread and self._mjpeg_thread.is_alive()
+            hires_alive = self._hires_thread and self._hires_thread.is_alive()
+            convert_alive = self._convert_thread and self._convert_thread.is_alive()
 
-        if not mjpeg_alive:
-            self._mjpeg_stop.clear()
-            self._mjpeg_thread = threading.Thread(
-                target=self._mjpeg_loop, name="oak-mjpeg", daemon=True
-            )
-            self._mjpeg_thread.start()
-            logger.info("[CAPTURE] MJPEG thread started")
+            if not mjpeg_alive:
+                self._mjpeg_stop.clear()
+                self._mjpeg_thread = threading.Thread(
+                    target=self._mjpeg_loop, name="oak-mjpeg", daemon=True
+                )
+                self._mjpeg_thread.start()
+                logger.info("[CAPTURE] MJPEG thread started")
 
-        if not hires_alive:
-            self._hires_stop.clear()
-            self._hires_thread = threading.Thread(
-                target=self._hires_loop, name="oak-hires", daemon=True
-            )
-            self._hires_thread.start()
-            logger.info("[CAPTURE] Hi-res thread started")
+            if not hires_alive:
+                self._hires_stop.clear()
+                self._hires_thread = threading.Thread(
+                    target=self._hires_loop, name="oak-hires", daemon=True
+                )
+                self._hires_thread.start()
+                logger.info("[CAPTURE] Hi-res thread started")
 
-        if not convert_alive:
-            self._convert_stop.clear()
-            self._convert_thread = threading.Thread(
-                target=self._convert_loop, name="oak-convert", daemon=True
-            )
-            self._convert_thread.start()
-            logger.info("[CAPTURE] Converter thread started")
+            if not convert_alive:
+                self._convert_stop.clear()
+                self._convert_thread = threading.Thread(
+                    target=self._convert_loop, name="oak-convert", daemon=True
+                )
+                self._convert_thread.start()
+                logger.info("[CAPTURE] Converter thread started")
 
-        return True
+            return True
 
     def _stop_capture_threads(self) -> None:
-        logger.info("[CAPTURE] Stopping threads...")
+        with self._capture_lock:
+            logger.info("[CAPTURE] Stopping threads...")
 
-        # Signal all
-        self._mjpeg_stop.set()
-        self._hires_stop.set()
-        self._convert_stop.set()
+            # Signal all
+            self._mjpeg_stop.set()
+            self._hires_stop.set()
+            self._convert_stop.set()
 
-        # Join converter first — it consumes from hires_packet_queue.
-        # If we join producers first they block trying to put into a full queue.
-        if self._convert_thread and self._convert_thread.is_alive():
-            self._convert_thread.join(timeout=5.0)
-        self._convert_thread = None
+            # Join converter first — it consumes from hires_packet_queue.
+            # If we join producers first they block trying to put into a full queue.
+            if self._convert_thread and self._convert_thread.is_alive():
+                self._convert_thread.join(timeout=3.0)
+            self._convert_thread = None
 
-        if self._mjpeg_thread and self._mjpeg_thread.is_alive():
-            self._mjpeg_thread.join(timeout=3.0)
-        self._mjpeg_thread = None
+            if self._mjpeg_thread and self._mjpeg_thread.is_alive():
+                self._mjpeg_thread.join(timeout=2.0)
+            self._mjpeg_thread = None
 
-        if self._hires_thread and self._hires_thread.is_alive():
-            self._hires_thread.join(timeout=3.0)
-        self._hires_thread = None
+            if self._hires_thread and self._hires_thread.is_alive():
+                self._hires_thread.join(timeout=2.0)
+            self._hires_thread = None
 
-        self._latest_bgr = None
-        self._latest_bgr_seq = -1
-        self._latest_frame_data = None
-        self._latest_jpeg = None
-        self._drain_hires_packet_queue()
+            self._latest_bgr = None
+            self._latest_bgr_seq = -1
+            self._latest_frame_data = None
+            self._latest_jpeg = None
+            self._drain_hires_packet_queue()
 
-        logger.info("[CAPTURE] Threads stopped")
+            logger.info("[CAPTURE] Threads stopped")
 
     def _drain_hires_packet_queue(self) -> None:
         drained = 0
@@ -1281,6 +1285,7 @@ class OakCameraService:
                 return -1.0
 
         last_seen_seq = -1
+        _live_frame_count = 0
 
         try:
             while not self._inference_stop.is_set():
@@ -1324,6 +1329,7 @@ class OakCameraService:
                                     "fps": round(current_fps, 1),
                                     "gpu_pct": round(self._gpu_usage, 1),
                                     "latency_ms": 0,
+                                    "frames_processed": self._offline_total_frames,
                                 },
                             }
                             if self._inference_result_queue is not None and self._inference_loop is not None:
@@ -1340,6 +1346,7 @@ class OakCameraService:
                         continue
                     frame, frame_seq, frame_ts = frame_data
                     last_seen_seq = frame_seq
+                    _live_frame_count += 1
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:
@@ -1359,7 +1366,7 @@ class OakCameraService:
                     session_id,
                     video_name=self._current_video_name,
                     wait_for_model=self._inference_offline,
-                    frame_seq=frame_seq if not self._inference_offline else None,
+                    frame_seq=self._offline_frame_index if self._inference_offline else _live_frame_count,
                 )
                 latency_ms = (time.perf_counter() - t_start) * 1000
 
@@ -1396,10 +1403,11 @@ class OakCameraService:
                 # ── GPU usage (sampled every result, cheap if nvidia-smi absent) ─
                 gpu_pct = self._gpu_usage
 
-                result["frame_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
+                result["frame_seq"] = _live_frame_count if not self._inference_offline else self._offline_frame_index
+                result["camera_packet_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
                 _fp = result.get("frames_processed")
-                _seq = result["frame_seq"]
-                result["frames_processed"] = _fp if _fp is not None else (_seq if _seq is not None else 0)
+                result["frames_processed"] = _live_frame_count if not self._inference_offline else (_fp if _fp is not None else self._offline_frame_index)
+                result["frame"] = result["frames_processed"]
                 result["capture_age_ms"] = round((time.time() - frame_ts) * 1000, 1) if (not self._inference_offline and frame_ts) else round(latency_ms, 1)
                 result["latency_ms"] = round(latency_ms, 1)
                 result["frame_time_ms"] = round(latency_ms, 1)
@@ -1894,13 +1902,9 @@ class OakCameraService:
         self._inference_offline = False
         self._latest_inference_result = None
 
-        streaming_active = bool(self._is_streaming or self._stream_subscribers or (self._stream_queue is not None))
-        recording_active = self._active_recording is not None
-        if not streaming_active and not recording_active:
-            logger.info("[INFERENCE] No active streaming or recording — stopping capture threads")
-            self._stop_capture_threads()
-        else:
-            logger.info(f"[INFERENCE] Camera active (streaming={streaming_active}, recording={recording_active}) — keeping capture threads running")
+        # Keep capture threads running while camera pipeline is active
+        # to ensure DepthAI hardware XLink queues are continuously drained without overflow.
+        logger.info("[INFERENCE] Stopped (capture threads continue draining hardware queues)")
 
         logger.info("[INFERENCE] Stopped")
         self._stop_gpu_sampler()
@@ -2118,6 +2122,9 @@ class OakCameraService:
                 self._pipeline.start()
                 self._is_running = True
 
+                # Immediately launch capture threads so DepthAI hardware queues are continuously drained
+                self._start_capture_threads()
+
                 if self._legacy_preset_migration:
                     self._save_calibrated_preset()
                     self._legacy_preset_migration = False
@@ -2204,58 +2211,58 @@ class OakCameraService:
     # ==================== Stream Lifecycle (capture threads) ====================
 
     async def start_streaming(self) -> dict:
-        """User clicks Start Streaming — start the 3 capture threads."""
-        if not self._is_running or not self.is_connected or self.device is None:
-            return {"status": "error", "message": "Cannot stream: OAK camera is not connected — call /oak/start first"}
+        """User clicks Start Streaming — subscribe streaming clients and ensure capture threads are active."""
+        async with self._streaming_lock:
+            if not self._is_running or not self.is_connected or self.device is None:
+                return {"status": "error", "message": "Cannot stream: OAK camera is not connected — call /oak/start first"}
 
-        if not self._start_capture_threads():
-            return {"status": "error", "message": "Capture threads failed to start"}
+            if not self._start_capture_threads():
+                return {"status": "error", "message": "Capture threads failed to start"}
 
-        # Re-apply fixed controls now that the runtime queue is available.
-        logger.info(f"[STREAMING] Step 1 — capture threads started")
-        self._enforce_fixed_controls()
-        logger.info("[STREAMING] Step 2 — fixed camera controls enforced")
+            # Re-apply fixed controls now that the runtime queue is available.
+            logger.info("[STREAMING] Step 1 — capture threads started / confirmed")
+            self._enforce_fixed_controls()
+            logger.info("[STREAMING] Step 2 — fixed camera controls enforced")
 
-        self._is_streaming = True
-        logger.info("[STREAMING] Started")
-        realtime_log_service.add_log(
-            "stream",
-            "STREAM",
-            "Video stream initialized successfully",
-            "success"
-        )
+            self._is_streaming = True
+            logger.info("[STREAMING] Started")
+            realtime_log_service.add_log(
+                "stream",
+                "STREAM",
+                "Video stream initialized successfully",
+                "success"
+            )
 
-        # Pre-warm CUDA in background when stream starts so Start Inference has 0.0s delay
-        try:
-            from app.ml.camera_inference_service import prewarm_camera_model
-            threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
-        except Exception as _e:
-            logger.warning(f"[PREWARM] Failed to start prewarm thread: {_e}")
+            # Pre-warm CUDA in background when stream starts so Start Inference has 0.0s delay
+            try:
+                from app.ml.camera_inference_service import prewarm_camera_model
+                threading.Thread(target=prewarm_camera_model, daemon=True, name="oak-prewarm-model").start()
+            except Exception as _e:
+                logger.warning(f"[PREWARM] Failed to start prewarm thread: {_e}")
 
-        return {"status": "streaming"}
+            return {"status": "streaming"}
 
     async def stop_streaming(self) -> dict:
-        """User clicks Stop Streaming — close stream queue, stop threads if recording and inference also inactive."""
-        self._is_streaming = False
-        self._latest_jpeg = None
-        for q in list(self._stream_subscribers):
-            try:
-                q.put_nowait(None)
-            except Exception:
-                pass
-        self._stream_subscribers.clear()
-        self._stream_queue = None
+        """User clicks Stop Streaming — close client stream queues without interrupting hardware capture."""
+        async with self._streaming_lock:
+            self._is_streaming = False
+            self._latest_jpeg = None
+            for q in list(self._stream_subscribers):
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            self._stream_subscribers.clear()
+            self._stream_queue = None
 
-        recording_active = self._active_recording is not None
-        inference_active = bool(self._inference_thread and self._inference_thread.is_alive())
-        if not recording_active and not inference_active:
-            logger.info("[STREAMING] No active recording or inference — stopping capture threads")
-            await asyncio.to_thread(self._stop_capture_threads)
-        else:
-            logger.info(f"[STREAMING] Keeping capture threads running (recording={recording_active}, inference={inference_active})")
-
-        logger.info("[STREAMING] Stopped")
-        return {"status": "stopped"}
+            # CRITICAL STABILITY FIX:
+            # We intentionally DO NOT stop capture threads here.
+            # The DepthAI camera continuously pushes frames into hardware XLink queues.
+            # Leaving capture threads running ensures DepthAI queues never overflow,
+            # prevents camera disconnection/crash on USB 2.0/3.0, and makes re-starting
+            # the stream instantaneous without thread destruction races.
+            logger.info("[STREAMING] Stopped (subscribers disconnected; capture threads keep draining camera queues)")
+            return {"status": "stopped"}
 
     def _refresh_device_detection_async(self):
         """Asynchronously probe DepthAI devices without blocking health polling."""

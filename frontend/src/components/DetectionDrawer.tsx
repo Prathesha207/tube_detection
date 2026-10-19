@@ -55,7 +55,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   };
 
   const displayFps = isRunning ? (mlStats.fps > 0 ? mlStats.fps : metrics.fps) : 0;
-  const rawBackendFrames = mlStats.frames_processed ?? mlStats.frame_seq ?? mlStats.frame;
+  const rawBackendFrames = mlStats.frames_processed ?? mlStats.frame ?? mlStats.frame_seq;
   const displayFrames = mlStats.status !== 'idle' && mlStats.status !== 'stopped' && rawBackendFrames !== undefined
     ? rawBackendFrames
     : (isRunning ? (metrics.framesProcessed || 0) : 0);
@@ -76,7 +76,9 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   const isWarming = anomalyStatus.message === 'WARMING';
 
   // Construct frame numbers and verdict
-  const frameNumber = typeof mlStats.frame === 'number' ? mlStats.frame : (mlStats.frame_seq ?? mlStats.frames_processed ?? metrics.framesProcessed ?? 0);
+  const frameNumber = typeof mlStats.frames_processed === 'number'
+    ? mlStats.frames_processed
+    : (typeof mlStats.frame === 'number' ? mlStats.frame : (metrics.framesProcessed ?? 0));
   const bigger = mlStats.bigger_tube;
   const smaller = mlStats.smaller_tube;
 

@@ -100,6 +100,8 @@ def model_status():
         "in_memory_mtime": in_memory_mtime,
         "cached_yolo_mtime": cached_mtime,
         "needs_reload": needs_reload,
+        "has_shared_camera_analyzer": bool(_shared_camera_analyzer is not None),
+        "has_video_shared_analyzer": bool(getattr(video_inference_service, "_shared_analyzer", None) is not None),
         "active_classes": getattr(shared_analyzer.model, "names", None) if shared_analyzer and hasattr(shared_analyzer, "model") else None,
         "device": getattr(getattr(shared_analyzer, "cfg", None), "device", None) if shared_analyzer else None,
     }

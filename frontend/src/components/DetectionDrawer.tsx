@@ -279,9 +279,9 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                   <span>Confidence</span>
                 </div>
 
-                <div className="flex flex-col gap-1.5 max-h-[260px] overflow-y-auto invisible-scrollbar">
+                <div className="flex flex-col gap-1 h-[122px] overflow-hidden justify-start">
                   {tubes.length === 0 ? (
-                    <div className="py-6 text-center text-xs font-mono text-[var(--text-secondary)] opacity-80">
+                    <div className="h-full flex items-center justify-center text-center text-xs font-mono text-[var(--text-secondary)] opacity-80">
                       No tube ends detected in frame
                     </div>
                   ) : (
@@ -297,7 +297,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                           onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
                           role="button"
                           tabIndex={0}
-                          className={`flex items-center justify-between p-2 rounded-lg font-mono text-xs border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-xs transition-all cursor-pointer ${isSelected ? 'ring-2 ring-[var(--accent-pond)] shadow-sm' : 'hover:border-[var(--accent-pond)]'
+                          className={`flex items-center justify-between px-2 py-1 rounded-lg font-mono text-xs border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-xs transition-all cursor-pointer shrink-0 ${isSelected ? 'ring-2 ring-[var(--accent-pond)] shadow-sm' : 'hover:border-[var(--accent-pond)]'
                             }`}
                         >
                           {/* Index -> Class -> Tracker ID */}

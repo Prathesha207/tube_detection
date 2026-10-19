@@ -81,7 +81,7 @@ def prewarm_camera_model() -> None:
                     pass
 
             if _shared_camera_analyzer is None:
-                if _model_ready_event.wait(timeout=5.0) and _shared_camera_analyzer is not None:
+                if _model_ready_event.wait(timeout=0.2) and _shared_camera_analyzer is not None:
                     _model_prewarmed = True
                     return
 
@@ -154,9 +154,32 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 pass
 
         if _shared_camera_analyzer is None:
-            # Wait up to 10 seconds for background startup preload to finish
-            if _model_ready_event.wait(timeout=10.0) and _shared_camera_analyzer is not None:
+            # Quick check (max 0.2s) in case startup thread is just about to finish setting the analyzer
+            if _model_ready_event.wait(timeout=0.2) and _shared_camera_analyzer is not None:
                 _model_prewarmed = True
+
+        if _shared_camera_analyzer is None:
+            # Synchronously load the model immediately so the session starts in ~1.5s instead of hanging for 10-12s
+            logger.info("Shared analyzer not preloaded — loading TubeAnalyzer synchronously for instant camera start")
+            try:
+                _shared_camera_analyzer = TubeAnalyzer(
+                    model_path=model_path or _DEFAULT_MODEL_PATH,
+                    config_path=_CONFIG_PATH,
+                    device=default_device(),
+                    draw_overlay=False,
+                )
+                _model_prewarmed = True
+                _model_ready_event.set()
+                try:
+                    from app.ml.video_inference_service import _set_shared_analyzer
+                    _set_shared_analyzer(_shared_camera_analyzer)
+                except Exception:
+                    pass
+            except Exception as load_err:
+                logger.error(f"Failed to load camera analyzer synchronously: {load_err}", exc_info=True)
+                if app_state.get_active_inference_kind() == "camera":
+                    app_state.exit_inference("camera")
+                raise RuntimeError(f"Failed to initialize AI model for camera: {load_err}")
 
         if _shared_camera_analyzer is not None:
             if getattr(_shared_camera_analyzer, "has_weights_changed", lambda: False)():
@@ -178,39 +201,20 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 except Exception as reload_err:
                     logger.error(f"[HOT-RELOAD] Failed to hot-reload updated model: {reload_err}", exc_info=True)
 
-        if _shared_camera_analyzer is not None:
-            _shared_camera_analyzer.reset_tracking()
-            if _global_roi_points:
-                try:
-                    _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
-                except Exception as e:
-                    logger.warning(f"Stored ROI invalid: {e}")
+        _shared_camera_analyzer.reset_tracking()
+        if _global_roi_points:
+            try:
+                _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
+            except Exception as e:
+                logger.warning(f"Stored ROI invalid: {e}")
 
-            session = {
-                "analyzer": _shared_camera_analyzer,
-                "frames_processed": 0,
-                "last_active": time.time(),
-                "inference_claimed": True,
-                "inference_lock": threading.Lock(),
-                "last_stats": new_stats(session_id=session_id, status="running"),
-                "last_annotated_frame": None,
-                "roi_points": list(_global_roi_points),
-                "roi_frame_size": _global_roi_frame_size,
-                "load_error": None,
-            }
-            _sessions[session_id] = session
-            _start_idle_sweeper_once()
-            logger.info(f"Reusing preloaded TubeAnalyzer for camera session {session_id} — instantaneous GPU start")
-            return session
-
-        # Fallback path if model not preloaded
         session = {
-            "analyzer": "LOADING",
+            "analyzer": _shared_camera_analyzer,
             "frames_processed": 0,
             "last_active": time.time(),
             "inference_claimed": True,
             "inference_lock": threading.Lock(),
-            "last_stats": new_stats(session_id=session_id, status="LOADING_MODEL"),
+            "last_stats": new_stats(session_id=session_id, status="running"),
             "last_annotated_frame": None,
             "roi_points": list(_global_roi_points),
             "roi_frame_size": _global_roi_frame_size,
@@ -218,40 +222,7 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
         }
         _sessions[session_id] = session
         _start_idle_sweeper_once()
-
-        def _load_model():
-            try:
-                logger.info(f"Creating TubeAnalyzer for camera session {session_id}")
-                analyzer = TubeAnalyzer(
-                    model_path=model_path or _DEFAULT_MODEL_PATH,
-                    config_path=_CONFIG_PATH,
-                    device=default_device(),
-                    draw_overlay=False,
-                )
-                if session["roi_points"]:
-                    try:
-                        analyzer.set_roi(session["roi_points"], session["roi_frame_size"])
-                    except ValueError as e:
-                        logger.warning(f"Stored ROI invalid: {e}")
-                with session["inference_lock"]:
-                    session["analyzer"] = analyzer
-                    session["last_stats"] = new_stats(session_id=session_id, status="running")
-                    global _shared_camera_analyzer
-                    if _shared_camera_analyzer is None:
-                        _shared_camera_analyzer = analyzer
-                        _model_prewarmed = True
-                        _model_ready_event.set()
-                    logger.info(f"TubeAnalyzer loaded successfully for session {session_id}")
-            except Exception as e:
-                logger.error(f"Failed to load camera analyzer: {e}", exc_info=True)
-                with session["inference_lock"]:
-                    session["analyzer"] = "ERROR"
-                    session["load_error"] = str(e)
-                    if session.get("inference_claimed"):
-                        app_state.exit_inference("camera")
-                        session["inference_claimed"] = False
-
-        threading.Thread(target=_load_model, name=f"load-model-{session_id}", daemon=True).start()
+        logger.info(f"Reusing TubeAnalyzer for camera session {session_id} — instantaneous GPU start")
         return session
 
 

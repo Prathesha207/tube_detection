@@ -79,9 +79,9 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
 
       {/* Body: Compact List of detected tube ends */}
       {!isCollapsed && (
-        <div className="p-1 max-h-44 overflow-y-auto invisible-scrollbar flex flex-col gap-1">
+        <div className="p-1 h-[104px] overflow-hidden flex flex-col gap-0.5 justify-start">
           {tubes.length === 0 ? (
-            <div className="px-2 py-1.5 text-[10px] font-mono text-[var(--text-secondary)] flex items-center gap-1.5">
+            <div className="h-full flex items-center justify-center px-2 py-1.5 text-[10px] font-mono text-[var(--text-secondary)] gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
               <span>Scanning...</span>
             </div>
@@ -98,7 +98,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                   onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
                   role="button"
                   tabIndex={0}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded-lg font-mono text-[11px] border transition-all cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg font-mono text-[11px] border transition-all cursor-pointer shrink-0 ${
                     isSelected
                       ? 'bg-cyan-500/20 border-cyan-400/90 text-[var(--text-primary)] shadow-xs ring-1 ring-cyan-400/50'
                       : 'bg-[var(--bg-card)]/60 hover:bg-[var(--bg-card)] border-[var(--border-color)]/70 text-[var(--text-primary)] hover:border-cyan-500/50'

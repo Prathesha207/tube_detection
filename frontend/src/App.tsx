@@ -685,11 +685,8 @@ export default function App() {
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
 
-    // Stop camera streaming if it's a live camera source
-    if (isCameraSource && camera.isStreaming) {
-      camera.setIsStreaming(false);
-      try { await cameraService.stopStream(); } catch { }
-    }
+    // Keep camera stream warm so preview remains active and next inference start is instant (0.0s).
+    // The user can explicitly stop streaming with the dedicated STOP STREAM button if desired.
 
     const sid = video.videoSessionId;
 

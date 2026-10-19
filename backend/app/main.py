@@ -171,27 +171,26 @@ def _preload_model_background():
             # Instantiating TubeAnalyzer loads YOLO weights + optionally CUDA
             _analyzer = TubeAnalyzer(model_path=resolved_model, device=device_val)
 
-            # Warm up for standard resolutions so live camera / video starts with zero delay
-            for h_w in [(1080, 1920), (720, 1280)]:
-                try:
-                    _analyzer.warm_up(h_w)
-                    logger.info(f"[STARTUP] ML model warm-up complete — {h_w[1]}x{h_w[0]} CUDA kernels compiled (device={device_val}).")
-                except Exception as warm_err:
-                    logger.warning(f"[STARTUP] Warm-up inference failed for {h_w}: {warm_err}")
-
-            # Store it as the shared analyzer so VideoInferenceService reuses it
+            # Store it as the shared analyzer IMMEDIATELY so Video & Camera inference can start in 0.0s
             try:
                 from app.ml.video_inference_service import _set_shared_analyzer
                 _set_shared_analyzer(_analyzer)
             except Exception:
                 pass
 
-            # Also inject into camera_inference_service so live camera sessions don't reload either
             try:
                 from app.ml.camera_inference_service import _set_camera_analyzer
                 _set_camera_analyzer(_analyzer)
             except Exception:
                 pass
+
+            # Warm up for standard resolutions in the background so kernels compile
+            for h_w in [(1080, 1920), (720, 1280)]:
+                try:
+                    _analyzer.warm_up(h_w)
+                    logger.info(f"[STARTUP] ML model warm-up complete — {h_w[1]}x{h_w[0]} CUDA kernels compiled (device={device_val}).")
+                except Exception as warm_err:
+                    logger.warning(f"[STARTUP] Warm-up inference failed for {h_w}: {warm_err}")
         else:
             logger.info("[STARTUP] TubeAnalyzer or model best.pt not found — skipping preload.")
     except Exception as e:

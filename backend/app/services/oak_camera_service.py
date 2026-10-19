@@ -652,6 +652,8 @@ class OakCameraService:
         self._hires_thread = None
 
         self._latest_bgr = None
+        self._latest_bgr_seq = -1
+        self._latest_frame_data = None
         self._latest_jpeg = None
         self._drain_hires_packet_queue()
 

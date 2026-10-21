@@ -25,6 +25,14 @@ export function useCameraStatus(
   useEffect(() => {
     async function loadSavedCamera() {
       try {
+        const storageRes = await cameraService.getStoragePath().catch(() => null);
+        if (storageRes?.storage_path) {
+          setCameraConfig((prev) => ({
+            ...prev,
+            recordingVideoPath: storageRes.storage_path,
+          }));
+        }
+
         const cameras = await cameraService.checkCamera();
         if (Array.isArray(cameras) && cameras.length > 0) {
           const activeCamera =
@@ -49,7 +57,7 @@ export function useCameraStatus(
               autoFocus: false,
               autoExposure: false,
               recordingFormat: (activeCamera.recording_format as any) || prev.recordingFormat || 'MP4',
-              recordingVideoPath: activeCamera.recording_video_path || prev.recordingVideoPath,
+              recordingVideoPath: activeCamera.recording_video_path || storageRes?.storage_path || prev.recordingVideoPath,
             }));
             addLog(`Loaded camera "${activeCamera.name}" from database [${activeCamera.resolution || '1080p'} @ ${activeCamera.fps || 30}fps]`, 'info');
           }

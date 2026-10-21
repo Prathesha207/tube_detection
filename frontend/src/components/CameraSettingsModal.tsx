@@ -116,10 +116,8 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       setErrorCameraId(null);
       return;
     }
+
     setLocalConfig({ ...config, targetFps: config.targetFps || 30 });
-    if (config.recordingVideoPath) {
-      setStoragePath(config.recordingVideoPath);
-    }
 
     cameraService
       .getStoragePath()
@@ -128,10 +126,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
           setDefaultDesktopPath(res.default_path);
         }
         if (res?.storage_path) {
-          setStoragePath((prev) => prev || res.storage_path);
+          setStoragePath(res.storage_path);
           setLocalConfig((prev) => ({
             ...prev,
-            recordingVideoPath: prev.recordingVideoPath || res.storage_path,
+            recordingVideoPath: res.storage_path,
           }));
         }
       })
@@ -144,7 +142,8 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     }
     refreshAll();
     scanUsbDevices();
-  }, [isOpen, config.connected, config.id, refreshAll, scanUsbDevices, config]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   // Connect to a SAVED camera row
   const handleConnectSaved = async (row: SavedCameraRow) => {

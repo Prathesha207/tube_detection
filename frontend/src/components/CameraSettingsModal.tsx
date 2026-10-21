@@ -155,6 +155,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     setConnectingId(row.id);
     setErrorMessage(null);
     setErrorCameraId(null);
+    if (storagePath && storagePath.trim()) {
+      await cameraService.setStoragePath(storagePath.trim()).catch(() => {});
+    }
     const updated: CameraConfig = {
       ...localConfig,
       id: row.id,
@@ -221,6 +224,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       return;
     }
 
+    if (storagePath && storagePath.trim()) {
+      await cameraService.setStoragePath(storagePath.trim()).catch(() => {});
+    }
     setConnectingId('new');
     setErrorMessage(null);
     setErrorCameraId(null);
@@ -273,6 +279,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         const chosenPath = res.path;
         setStoragePath(chosenPath);
         setLocalConfig((prev) => ({ ...prev, recordingVideoPath: chosenPath }));
+        await cameraService.setStoragePath(chosenPath).catch(() => {});
       }
     } catch (err: any) {
       console.error('Failed to browse folder', err);
@@ -281,10 +288,13 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     }
   };
 
-  const handleResetDesktop = () => {
+  const handleResetDesktop = async () => {
     const p = defaultDesktopPath || '';
     setStoragePath(p);
     setLocalConfig((prev) => ({ ...prev, recordingVideoPath: p }));
+    if (p) {
+      await cameraService.setStoragePath(p).catch(() => {});
+    }
   };
 
   const handleSave = async () => {
@@ -477,6 +487,11 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                         onChange={(e) => {
                           setStoragePath(e.target.value);
                           setLocalConfig((prev) => ({ ...prev, recordingVideoPath: e.target.value }));
+                        }}
+                        onBlur={async () => {
+                          if (storagePath.trim()) {
+                            await cameraService.setStoragePath(storagePath.trim()).catch(() => {});
+                          }
                         }}
                         placeholder={defaultDesktopPath || "C:\\Users\\...\\Desktop"}
                         className="w-full text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-pond)] focus:ring-1 focus:ring-[var(--accent-pond)] transition-all"

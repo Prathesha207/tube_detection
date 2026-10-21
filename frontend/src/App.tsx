@@ -1054,6 +1054,10 @@ export default function App() {
               is_enabled: true,
             };
 
+            if (targetConfig.recordingVideoPath) {
+              await cameraService.setStoragePath(targetConfig.recordingVideoPath).catch(() => {});
+            }
+
             const savedCamera = targetConfig.id
               ? await cameraService.updateCamera(targetConfig.id, payload)
               : await cameraService.createCamera(payload);

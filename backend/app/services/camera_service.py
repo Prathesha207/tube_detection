@@ -75,7 +75,7 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
         for key, value in update_data.items():
             setattr(camera, key, value)
 
-        if "recording_video_path" in update_data:
+        if "recording_video_path" in update_data and update_data["recording_video_path"]:
             from app.core.app_paths import set_configured_storage_dir
             set_configured_storage_dir(update_data["recording_video_path"])
 

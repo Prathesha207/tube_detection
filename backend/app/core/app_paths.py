@@ -127,15 +127,17 @@ def get_configured_storage_dir() -> Path:
     return get_desktop_dir()
 
 
-def set_configured_storage_dir(path_str: str | None) -> str:
-    """Save storage path to DB and config. If None or empty, reverts to Desktop."""
+def set_configured_storage_dir(path_str: str | None, allow_reset_to_desktop: bool = False) -> str:
+    """Save storage path to DB and config. Preserves existing path if None or empty (unless allow_reset_to_desktop=True)."""
     import json
-    if path_str and path_str.strip():
-        target = Path(path_str.strip()).resolve()
+    if path_str and str(path_str).strip():
+        target = Path(str(path_str).strip()).resolve()
         target.mkdir(parents=True, exist_ok=True)
         final_str = str(target)
-    else:
+    elif allow_reset_to_desktop:
         final_str = str(get_desktop_dir())
+    else:
+        return str(get_configured_storage_dir())
 
     # 1. Update basic_config.json
     cfg_file = APP_DIR / "basic_config.json"

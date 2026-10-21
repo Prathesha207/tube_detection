@@ -281,7 +281,13 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                   <span>Confidence</span>
                 </div>
 
-                <div className="flex flex-col gap-1 h-[122px] overflow-hidden justify-start">
+                <div
+                  className={`flex flex-col gap-1 justify-start pr-0.5 transition-all duration-200 ${
+                    tubes.length > 4
+                      ? 'h-auto max-h-[380px] overflow-y-auto invisible-scrollbar'
+                      : 'h-[122px] overflow-hidden'
+                  }`}
+                >
                   {tubes.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-center text-xs font-mono text-[var(--text-secondary)] opacity-80">
                       No tube ends detected in frame

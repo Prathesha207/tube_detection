@@ -24,6 +24,10 @@ logger = logging.getLogger("oak-camera")
 router = APIRouter()
 _inference_encoder_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inf_ws_enc")
 
+# Prevents concurrent /oak/start requests from racing into DepthAI
+# device enumeration simultaneously — the XLink native layer segfaults
+# when getAllAvailableDevices() is called from multiple threads at once.
+_start_lock = asyncio.Lock()
 
 
 class StartCameraPayload(BaseModel):
@@ -35,42 +39,47 @@ class StartCameraPayload(BaseModel):
 @router.post("/start")
 async def start_camera(payload: Optional[StartCameraPayload] = None, db: Session = Depends(get_db)):
     """App startup — connect device and build pipeline."""
-    camera = None
-    if payload and payload.camera_id:
-        camera = db.query(Camera).filter(Camera.id == payload.camera_id).first()
-    elif payload and payload.ip_address:
-        camera = db.query(Camera).filter(Camera.ip_address == payload.ip_address).first()
+    if _start_lock.locked():
+        logger.info("[API] POST /oak/start — already in progress, skipping duplicate request")
+        return {"status": "already_starting", "message": "Camera start already in progress"}
 
-    if not camera:
-        camera = camera_service.get_camera_config(db)
+    async with _start_lock:
+        camera = None
+        if payload and payload.camera_id:
+            camera = db.query(Camera).filter(Camera.id == payload.camera_id).first()
+        elif payload and payload.ip_address:
+            camera = db.query(Camera).filter(Camera.ip_address == payload.ip_address).first()
 
-    if not camera or not camera.ip_address:
+        if not camera:
+            camera = camera_service.get_camera_config(db)
+
+        if not camera or not camera.ip_address:
+            try:
+                loop = asyncio.get_running_loop()
+                device_info = await loop.run_in_executor(None, oak_camera_service._resolve_device_info, "usb")
+                mxid = str(getattr(device_info, "mxid", "") or "")
+                if not mxid:
+                    mxid = "usb"
+                
+                if not camera:
+                    from app.schemas.camera_schema import CameraCreate
+                    new_cam = CameraCreate(name="Auto USB Camera", ip_address=mxid, control_mode="auto")
+                    camera = camera_service.create_camera(db, new_cam)
+                else:
+                    from app.schemas.camera_schema import CameraUpdate
+                    camera = camera_service.update_camera_partial(db, camera.id, CameraUpdate(ip_address=mxid))
+            except Exception as e:
+                logger.warning(f"[OAK DEVICE ENUM] {e}")
+                realtime_log_service.add_log("camera", "WARN", f"No camera connected: {e}", "warning")
+                return {"status": "error", "message": f"No camera connected: {str(e)}"}
+
         try:
-            loop = asyncio.get_running_loop()
-            device_info = await loop.run_in_executor(None, oak_camera_service._resolve_device_info, "usb")
-            mxid = str(getattr(device_info, "mxid", "") or "")
-            if not mxid:
-                mxid = "usb"
-            
-            if not camera:
-                from app.schemas.camera_schema import CameraCreate
-                new_cam = CameraCreate(name="Auto USB Camera", ip_address=mxid, control_mode="auto")
-                camera = camera_service.create_camera(db, new_cam)
-            else:
-                from app.schemas.camera_schema import CameraUpdate
-                camera = camera_service.update_camera_partial(db, camera.id, CameraUpdate(ip_address=mxid))
+            result = await oak_camera_service.start(camera)
+            return result
         except Exception as e:
-            logger.warning(f"[OAK DEVICE ENUM] {e}")
-            realtime_log_service.add_log("camera", "WARN", f"No camera connected: {e}", "warning")
-            return {"status": "error", "message": f"No camera connected: {str(e)}"}
-
-    try:
-        result = await oak_camera_service.start(camera)
-        return result
-    except Exception as e:
-        logger.error(f"[API ERROR] POST /oak/start: {e}", exc_info=True)
-        realtime_log_service.add_log("camera", "CRASH", f"Start camera failed: {e}", "error")
-        raise HTTPException(status_code=500, detail=f"Failed to start camera: {e}")
+            logger.error(f"[API ERROR] POST /oak/start: {e}", exc_info=True)
+            realtime_log_service.add_log("camera", "CRASH", f"Start camera failed: {e}", "error")
+            raise HTTPException(status_code=500, detail=f"Failed to start camera: {e}")
 
 
 @router.post("/stop")
@@ -287,7 +296,13 @@ async def get_available_devices():
     devices = []
     loop = asyncio.get_running_loop()
     try:
-        raw_devices = await loop.run_in_executor(None, dai.Device.getAllAvailableDevices)
+        from app.services.oak_camera_service import _depthai_device_enum_lock
+
+        def _enum_devices():
+            with _depthai_device_enum_lock:
+                return dai.Device.getAllAvailableDevices()
+
+        raw_devices = await loop.run_in_executor(None, _enum_devices)
         for d in raw_devices:
             mxid = str(getattr(d, "mxid", "") or "")
             name = str(getattr(d, "name", "") or "")

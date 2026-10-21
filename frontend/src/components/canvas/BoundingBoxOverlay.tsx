@@ -302,7 +302,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {/* 3. PINS MODE: Minimalist, non-intrusive numbered circle pins */}
             {labelMode === 'pins' && (
               <div
-                className={`absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full flex items-center justify-center font-mono font-black text-[10px] shadow-md border pointer-events-none transition-transform ${isHead
+                className={`absolute -top-2.5 -left-2.5 min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center font-mono font-black text-[9.5px] shadow-md border pointer-events-none transition-transform ${isHead
                     ? 'bg-cyan-500 text-slate-950 border-cyan-200'
                     : 'bg-amber-500 text-slate-950 border-amber-200'
                   } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}

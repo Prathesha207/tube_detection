@@ -222,6 +222,8 @@ Write-Host "[4/7] Verifying PyTorch, torchvision, and hardware acceleration..." 
 # 1. Comprehensive NVIDIA hardware and driver detection
 $HasNvidia = $false
 $ComputeCap = 0.0
+$DriverVersion = $null
+$DetectedGpuName = $null
 
 # Try nvidia-smi first (extracts compute capability for exact CUDA version matching)
 $SmiPath = "nvidia-smi"
@@ -236,15 +238,25 @@ if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
     }
 }
 if ($SmiPath -ne "nvidia-smi" -or (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
-    $SmiOutput = & $SmiPath --query-gpu=name,compute_cap --format=csv,noheader 2>$null
+    $SmiOutput = & $SmiPath --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>$null
     if ($LASTEXITCODE -eq 0 -and $null -ne $SmiOutput) {
         $HasNvidia = $true
-        $ComputeCaps = $SmiOutput | ForEach-Object {
+        $GpuDetails = $SmiOutput | ForEach-Object {
             $parts = $_ -split ','
-            if ($parts.Count -ge 2) { [float]$parts[1].Trim() } else { 0.0 }
+            if ($parts.Count -ge 3) {
+                [PSCustomObject]@{
+                    Name = $parts[0].Trim()
+                    ComputeCap = [float]$parts[1].Trim()
+                    DriverVersion = [version]$parts[2].Trim()
+                }
+            }
         }
-        if ($ComputeCaps) { $ComputeCap = ($ComputeCaps | Measure-Object -Maximum).Maximum }
-        Write-Host "[GPU INFO] nvidia-smi detected NVIDIA GPU(s) with max Compute Capability: $ComputeCap" -ForegroundColor Cyan
+        if ($GpuDetails) {
+            $ComputeCap = ($GpuDetails | Measure-Object -Property ComputeCap -Maximum).Maximum
+            $DriverVersion = ($GpuDetails | Select-Object -First 1).DriverVersion
+            $DetectedGpuName = ($GpuDetails | Select-Object -First 1).Name
+        }
+        Write-Host "[GPU INFO] nvidia-smi detected NVIDIA GPU(s) with max Compute Capability: $ComputeCap; driver: $DriverVersion" -ForegroundColor Cyan
     }
 }
 
@@ -302,35 +314,59 @@ except Exception:
 " 2>$null
 } catch { $null }
 
-$GpuName = if ($NvidiaGpus) { ($NvidiaGpus | Select-Object -First 1).Name } else { 'NVIDIA GPU' }
+$GpuName = if ($DetectedGpuName) {
+    $DetectedGpuName
+} elseif ($NvidiaGpus) {
+    ($NvidiaGpus | Select-Object -First 1).Name
+} else {
+    'NVIDIA GPU'
+}
 
 if ($TorchCheck -like 'CUDA_OPERATIONAL*' -and $TorchVisionCheck -eq 'TV_OK') {
     Write-Host "[OK] PyTorch and torchvision are already installed and verified operational on $GpuName (GPU Accelerated)." -ForegroundColor Green
 } elseif ($HasNvidia) {
     Write-Host "[INFO] NVIDIA GPU detected ($GpuName). Installing CUDA-accelerated PyTorch and torchvision..." -ForegroundColor Cyan
+    if (-not $DriverVersion -or $ComputeCap -le 0) {
+        throw "Could not determine the NVIDIA driver version and compute capability from nvidia-smi. Update/install the NVIDIA driver and ensure nvidia-smi is available, then run setup.bat again."
+    }
     if ($ComputeCap -ge 12.0) {
+        if ($DriverVersion -lt [version]'580.65') {
+            throw "NVIDIA driver $DriverVersion is too old for the CUDA 13.0 wheel required by this GPU. Update the NVIDIA driver, then run setup.bat again."
+        }
         # Blackwell GPUs (sm_120), including RTX 50-series, need a wheel
         # containing compatible kernels. The old cu126 selection could see
         # the device but fail at the first model operation.
         $TargetCuda = 'cu130'
         $CudaIndex = 'https://download.pytorch.org/whl/cu130'
     } elseif ($ComputeCap -ge 8.9) {
-        $TargetCuda = 'cu124'
-        $CudaIndex = 'https://download.pytorch.org/whl/cu124'
+        if ($DriverVersion -ge [version]'551.61') {
+            $TargetCuda = 'cu124'
+            $CudaIndex = 'https://download.pytorch.org/whl/cu124'
+        } elseif ($DriverVersion -ge [version]'452.39') {
+            $TargetCuda = 'cu118'
+            $CudaIndex = 'https://download.pytorch.org/whl/cu118'
+            Write-Host "[GPU INFO] Driver $DriverVersion cannot run CUDA 12.4. Selecting CUDA 11.8 for NVIDIA 11.x minor-version compatibility." -ForegroundColor Yellow
+        } else {
+            throw "NVIDIA driver $DriverVersion is too old for supported CUDA inference. Update the NVIDIA driver, then run setup.bat again."
+        }
     } else {
-        $TargetCuda = 'cu121'
-        $CudaIndex = 'https://download.pytorch.org/whl/cu121'
+        if ($DriverVersion -ge [version]'527.41') {
+            $TargetCuda = 'cu121'
+            $CudaIndex = 'https://download.pytorch.org/whl/cu121'
+        } elseif ($DriverVersion -ge [version]'452.39') {
+            $TargetCuda = 'cu118'
+            $CudaIndex = 'https://download.pytorch.org/whl/cu118'
+            Write-Host "[GPU INFO] Driver $DriverVersion cannot run CUDA 12.1. Selecting CUDA 11.8 for NVIDIA 11.x minor-version compatibility." -ForegroundColor Yellow
+        } else {
+            throw "NVIDIA driver $DriverVersion is too old for supported CUDA inference. Update the NVIDIA driver, then run setup.bat again."
+        }
     }
     if ($env:PYTORCH_CUDA_INDEX) { $CudaIndex = $env:PYTORCH_CUDA_INDEX }
     Write-Host "[GPU INFO] Targeting CUDA $TargetCuda for maximum compatibility/performance." -ForegroundColor Cyan
     Write-Host "Fetching CUDA wheels from $CudaIndex..."
     & $VenvPython -m pip install --upgrade --force-reinstall --index-url $CudaIndex torch torchvision
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[WARN] $TargetCuda install returned non-zero; retrying with cu128 fallback..." -ForegroundColor Yellow
-        & $VenvPython -m pip install --upgrade --force-reinstall --index-url https://download.pytorch.org/whl/cu128 torch torchvision
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install CUDA PyTorch and torchvision."
-        }
+        throw "Failed to install CUDA $TargetCuda PyTorch and torchvision from $CudaIndex."
     }
 } elseif ($TorchCheck -eq 'CPU_OPERATIONAL' -and $TorchVisionCheck -eq 'TV_OK') {
     Write-Host "[OK] CPU PyTorch and torchvision are already installed and operational for CPU inference." -ForegroundColor Green
@@ -362,6 +398,9 @@ $CudaFinalCheck = try {
     & $VenvPython -c "
 import torch
 if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    probe = torch.ones((1,), device='cuda:0')
+    assert (probe + 1).item() == 2
+    torch.cuda.synchronize(0)
     print('CUDA_ACTIVE:' + torch.cuda.get_device_name(0))
 else:
     print('CPU_ONLY')
@@ -372,7 +411,7 @@ if ($CudaFinalCheck -like 'CUDA_ACTIVE:*') {
     $activeGpu = $CudaFinalCheck.Substring(12)
     Write-Host "[GPU SUCCESS] Hardware Acceleration Confirmed: $activeGpu is ready for ML inference!" -ForegroundColor Green
 } elseif ($HasNvidia) {
-    Write-Host "[WARNING] NVIDIA GPU hardware was detected on this PC, but PyTorch is in CPU mode. Please verify NVIDIA driver is installed." -ForegroundColor Yellow
+    throw "[GPU ERROR] NVIDIA GPU hardware was detected, but PyTorch could not execute a CUDA kernel. Update the NVIDIA driver or select a compatible PYTORCH_CUDA_INDEX, then run setup.bat again."
 } else {
     Write-Host "[INFO] ML Inference configured for CPU mode." -ForegroundColor Cyan
 }

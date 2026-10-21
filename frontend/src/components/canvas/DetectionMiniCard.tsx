@@ -39,7 +39,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
 
   return (
     <div
-      className={`pointer-events-auto w-fit min-w-[155px] max-w-[185px] rounded-xl bg-[var(--bg-card)]/95 dark:bg-slate-900/90 backdrop-blur-md border border-[var(--border-color)] dark:border-slate-700/80 shadow-xl overflow-hidden select-none transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 ${className}`}
+      className={`pointer-events-auto w-fit min-w-[170px] max-w-[215px] rounded-xl bg-[var(--bg-card)]/95 dark:bg-slate-900/90 backdrop-blur-md border border-[var(--border-color)] dark:border-slate-700/80 shadow-xl overflow-hidden select-none transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 ${className}`}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header Bar with Counts */}
@@ -77,9 +77,15 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
         </div>
       </div>
 
-      {/* Body: Compact List of detected tube ends */}
+      {/* Body: Compact List of detected tube ends (height fits 4 items; expands when > 4) */}
       {!isCollapsed && (
-        <div className="p-1 h-[104px] overflow-hidden flex flex-col gap-0.5 justify-start">
+        <div
+          className={`p-1 flex flex-col gap-0.5 justify-start transition-all duration-200 ${
+            tubes.length > 4
+              ? 'h-auto max-h-[340px] overflow-y-auto invisible-scrollbar'
+              : 'h-[104px] overflow-hidden'
+          }`}
+        >
           {tubes.length === 0 ? (
             <div className="h-full flex items-center justify-center px-2 py-1.5 text-[10px] font-mono text-[var(--text-secondary)] gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />

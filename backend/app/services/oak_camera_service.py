@@ -15,6 +15,13 @@ from app.services.realtime_log_service import realtime_log_service
 
 logger = logging.getLogger("oak-camera")
 
+# DepthAI XLink native layer is NOT thread-safe for device enumeration.
+# Concurrent calls to dai.Device.getAllAvailableDevices() from multiple
+# threads will corrupt internal state and crash the process with a segfault
+# ("Attempt to access invalid address" in XLinkConnection).
+# This lock serialises every call that touches device discovery.
+_depthai_device_enum_lock = threading.Lock()
+
 # Sentinel placed between videos in folder mode (not the final EOF None)
 _VIDEO_BOUNDARY = object()
 
@@ -243,7 +250,8 @@ class OakCameraService:
     def _resolve_device_info(identifier: str):
         """Resolve a database value to a current USB or network DeviceInfo."""
         value = str(identifier or "").strip()
-        available = dai.Device.getAllAvailableDevices()
+        with _depthai_device_enum_lock:
+            available = dai.Device.getAllAvailableDevices()
 
         if not available:
             raise RuntimeError("No OAK device found over USB or network")
@@ -2272,7 +2280,8 @@ class OakCameraService:
 
         def _scan():
             try:
-                devs = dai.Device.getAllAvailableDevices()
+                with _depthai_device_enum_lock:
+                    devs = dai.Device.getAllAvailableDevices()
                 count = len(devs)
                 self._cached_devices_count = count
                 self._cached_device_detected = count > 0

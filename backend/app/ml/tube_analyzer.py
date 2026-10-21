@@ -47,6 +47,7 @@ import json
 import logging
 import os
 import time
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,9 +59,6 @@ import numpy as np
 
 try:
     import torch
-    if torch.cuda.is_available():
-
-        torch.backends.cudnn.benchmark = True
 except Exception:
     torch = None
 
@@ -118,13 +116,19 @@ def cuda_is_available() -> bool:
         _CUDA_KERNELS_USABLE = False
         return False
     try:
-        if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+        with warnings.catch_warnings(record=True) as cuda_warnings:
+            warnings.simplefilter("always")
+            available = torch.cuda.is_available()
+        for warning in cuda_warnings:
+            logger.warning("CUDA initialization warning: %s", warning.message)
+        if not available or torch.cuda.device_count() == 0:
             _CUDA_KERNELS_USABLE = False
             return False
         probe = torch.ones((1,), device="cuda:0")
         _ = probe + 1
         torch.cuda.synchronize(0)
         del probe
+        torch.backends.cudnn.benchmark = True
         _CUDA_KERNELS_USABLE = True
     except Exception as e:
         logger.warning("CUDA is visible but this PyTorch build cannot run GPU kernels; using CPU: %s", e)

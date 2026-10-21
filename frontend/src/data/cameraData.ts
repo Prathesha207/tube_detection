@@ -1,7 +1,7 @@
 import { CameraConfig } from '../types';
 
 export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
-  sourceName: 'OAK-D Pro Stream',
+  sourceName: '',
   resolution: '1920x1080',
   targetFps: 30,
   recordingFormat: 'MP4',
@@ -17,6 +17,5 @@ export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
   autoFocus: false,
   autoExposure: false,
   connected: false,
-  connectionQuality: 'Excellent',
-  ipAddress: '192.168.1.100',
+  ipAddress: '',
 };

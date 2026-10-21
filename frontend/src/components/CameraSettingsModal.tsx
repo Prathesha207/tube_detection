@@ -11,6 +11,8 @@ import {
   AlertCircle,
   Radio,
   Trash2,
+  FolderOpen,
+  HardDrive,
 } from 'lucide-react';
 import { Modal, Button } from './ui';
 import { cameraService, type CameraData } from './service/cameraService';
@@ -72,6 +74,11 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
   const [newIp, setNewIp] = useState('');
   const [detectedUsb, setDetectedUsb] = useState<HwDevice | null>(null);
 
+  // Storage path state
+  const [storagePath, setStoragePath] = useState<string>('');
+  const [defaultDesktopPath, setDefaultDesktopPath] = useState<string>('');
+  const [isBrowsingFolder, setIsBrowsingFolder] = useState<boolean>(false);
+
   const onReconnectRef = useRef(onReconnect);
   onReconnectRef.current = onReconnect;
 
@@ -110,6 +117,26 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       return;
     }
     setLocalConfig({ ...config, targetFps: config.targetFps || 30 });
+    if (config.recordingVideoPath) {
+      setStoragePath(config.recordingVideoPath);
+    }
+
+    cameraService
+      .getStoragePath()
+      .then((res) => {
+        if (res?.default_path) {
+          setDefaultDesktopPath(res.default_path);
+        }
+        if (res?.storage_path) {
+          setStoragePath((prev) => prev || res.storage_path);
+          setLocalConfig((prev) => ({
+            ...prev,
+            recordingVideoPath: prev.recordingVideoPath || res.storage_path,
+          }));
+        }
+      })
+      .catch(() => { });
+
     if (config.connected && config.id) {
       setActiveCameraId(typeof config.id === 'number' ? config.id : parseInt(String(config.id), 10) || null);
     } else {
@@ -135,6 +162,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       ipAddress: row.ip_address,
       resolution: (row.resolution as any) || localConfig.resolution || '1920x1080',
       targetFps: row.fps || localConfig.targetFps || 30,
+      recordingVideoPath: storagePath || localConfig.recordingVideoPath,
       connected: true,
     };
     setLocalConfig(updated);
@@ -210,6 +238,8 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         contrast: localConfig.contrast ?? 50,
         auto_focus: false,
         auto_exposure: false,
+        recording_format: localConfig.recordingFormat || 'MP4',
+        recording_video_path: storagePath || undefined,
       };
       const saved = await cameraService.createCamera(payload);
       const updated: CameraConfig = {
@@ -217,6 +247,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         id: saved?.id,
         sourceName: name,
         ipAddress,
+        recordingVideoPath: storagePath || localConfig.recordingVideoPath,
         connected: true,
       };
       setLocalConfig(updated);
@@ -234,8 +265,41 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     }
   };
 
-  const handleSave = () => {
-    onSaveConfig(localConfig);
+  const handleBrowseFolder = async () => {
+    setIsBrowsingFolder(true);
+    try {
+      const res = await cameraService.browseFolder(storagePath || defaultDesktopPath);
+      if (res && res.path && !res.canceled) {
+        const chosenPath = res.path;
+        setStoragePath(chosenPath);
+        setLocalConfig((prev) => ({ ...prev, recordingVideoPath: chosenPath }));
+      }
+    } catch (err: any) {
+      console.error('Failed to browse folder', err);
+    } finally {
+      setIsBrowsingFolder(false);
+    }
+  };
+
+  const handleResetDesktop = () => {
+    const p = defaultDesktopPath || '';
+    setStoragePath(p);
+    setLocalConfig((prev) => ({ ...prev, recordingVideoPath: p }));
+  };
+
+  const handleSave = async () => {
+    const finalPath = storagePath.trim() || defaultDesktopPath || '';
+    if (finalPath) {
+      try {
+        await cameraService.setStoragePath(finalPath);
+      } catch (e) {
+        console.error('Failed to set storage path:', e);
+      }
+    }
+    onSaveConfig({
+      ...localConfig,
+      recordingVideoPath: finalPath,
+    });
     onClose();
   };
 
@@ -387,6 +451,66 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                         </button>
                       );
                     })}
+                  </div>
+                </div>
+
+                {/* ── Storage Directory (Recordings & ML Inference) ── */}
+                <div className="sm:col-span-2 space-y-1.5 pt-2 border-t border-[var(--border-color)]/60">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <FolderOpen className="w-3.5 h-3.5 text-[var(--accent-pond)]" />
+                      <span className="text-[10px] font-bold text-[var(--text-secondary)]">Output Storage Directory</span>
+                    </div>
+                    <span className="text-[10px] font-semibold text-[var(--accent-pond)] flex items-center gap-1">
+                      <HardDrive className="w-3 h-3" />
+                      {storagePath && defaultDesktopPath && storagePath.toLowerCase() === defaultDesktopPath.toLowerCase()
+                        ? 'Default (Desktop)'
+                        : 'Custom PC Folder'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={storagePath}
+                        onChange={(e) => {
+                          setStoragePath(e.target.value);
+                          setLocalConfig((prev) => ({ ...prev, recordingVideoPath: e.target.value }));
+                        }}
+                        placeholder={defaultDesktopPath || "C:\\Users\\...\\Desktop"}
+                        className="w-full text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-pond)] focus:ring-1 focus:ring-[var(--accent-pond)] transition-all"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleBrowseFolder}
+                      disabled={isBrowsingFolder}
+                      title="Select folder from PC"
+                      className="px-2.5 py-1 rounded-lg bg-[var(--bg-card)] hover:bg-[var(--accent-pond-subtle)] text-[var(--accent-pond)] border border-[var(--border-color)] hover:border-[var(--accent-pond)] text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap active:scale-95 disabled:opacity-50"
+                    >
+                      {isBrowsingFolder ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <FolderOpen className="w-3 h-3" />
+                      )}
+                      <span>Browse...</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleResetDesktop}
+                      title="Reset to default Desktop folder"
+                      className="px-2 py-1 rounded-lg bg-[var(--bg-card)] hover:bg-[var(--bg-card-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-color)] text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap active:scale-95"
+                    >
+                      Desktop
+                    </button>
+                  </div>
+
+                  <div className="text-[10px] text-[var(--text-muted)] flex items-center justify-between">
+                    <span>Camera recordings and inference outputs save here automatically.</span>
+                    {/* <span className="font-semibold text-emerald-600 dark:text-emerald-400">Persisted in database</span> */}
                   </div>
                 </div>
               </div>

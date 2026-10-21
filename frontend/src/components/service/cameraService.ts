@@ -16,6 +16,8 @@ export interface CameraData {
   auto_focus?: boolean;
   auto_exposure?: boolean;
   is_enabled?: boolean;
+  recording_format?: string;
+  recording_video_path?: string | null;
 }
 
 export const cameraService = {
@@ -138,6 +140,21 @@ export const cameraService = {
     } catch {
       return [];
     }
+  },
+
+  async getStoragePath(): Promise<{ storage_path: string; default_path: string }> {
+    const res = await api.get("/camera/storage-path");
+    return res.data;
+  },
+
+  async setStoragePath(path: string | null): Promise<{ storage_path: string; default_path: string }> {
+    const res = await api.post("/camera/storage-path", { path });
+    return res.data;
+  },
+
+  async browseFolder(initialDir?: string): Promise<{ path: string | null; canceled: boolean }> {
+    const res = await api.post("/camera/browse-folder", { initial_dir: initialDir });
+    return res.data;
   },
 };
 

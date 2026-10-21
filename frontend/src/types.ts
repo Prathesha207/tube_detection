@@ -112,6 +112,7 @@ export interface CameraConfig {
   resolution: '1920x1080' | '1280x720';
   targetFps: number;
   recordingFormat?: 'AVI' | 'MP4' | 'FFV1';
+  recordingVideoPath?: string | null;
   rotationAngle?: number;
   controlMode?: 'auto' | 'manual';
   exposure: number; // 0 - 100
@@ -124,7 +125,7 @@ export interface CameraConfig {
   autoFocus: boolean;
   autoExposure?: boolean;
   connected: boolean;
-  connectionQuality: 'Excellent' | 'Good' | 'Fair' | 'Poor';
+  connectionQuality?: 'Excellent' | 'Good' | 'Fair' | 'Poor';
   ipAddress: string;
 }
 

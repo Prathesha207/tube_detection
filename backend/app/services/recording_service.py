@@ -43,8 +43,7 @@ class RecordingSession:
     ):
         now = datetime.now()
         if not root_path:
-            desktop = get_desktop_dir()
-            root_path = str(desktop / "recordings")
+            root_path = _get_default_recording_path()
         folder = os.path.join(root_path, now.strftime("%Y-%m-%d"))
         os.makedirs(folder, exist_ok=True)
 
@@ -276,34 +275,14 @@ class RecordingSession:
 
 
 def _get_default_recording_path() -> str:
-    desktop = get_desktop_dir()
-    return str(desktop / "recordings")
+    from app.core.app_paths import get_configured_storage_dir
+    return str(get_configured_storage_dir() / "recordings")
 
 
 def _resolve_recording_path(root_path: str = None) -> str:
-    if root_path:
-        return root_path
-    try:
-        from app.core.database import SessionLocal
-        from app.services.camera_service import get_camera_config, _load_stored_config
-
-        db = SessionLocal()
-        try:
-            camera = get_camera_config(db)
-            cfg = _load_stored_config()
-            mode = cfg.get("inference", {}).get("mode", "production")
-            path = (
-                getattr(camera, "recording_video_testing_path", None)
-                if mode == "testing"
-                else None
-            ) or getattr(camera, "recording_video_path", None)
-            default_path = _get_default_recording_path()
-            return path or default_path
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"[RECORD] Could not resolve path from DB: {e}")
-        return _get_default_recording_path()
+    if root_path and root_path.strip():
+        return root_path.strip()
+    return _get_default_recording_path()
 
 
 def start_recording(

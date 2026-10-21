@@ -1007,7 +1007,11 @@ export default function App() {
               brightness: cfg.brightness, contrast: cfg.contrast,
               auto_focus: false, auto_exposure: false,
               recording_format: cfg.recordingFormat || 'MP4',
+              recording_video_path: cfg.recordingVideoPath,
             };
+            if (cfg.recordingVideoPath !== undefined) {
+              await cameraService.setStoragePath(cfg.recordingVideoPath).catch(() => {});
+            }
             const savedCamera = cfg.id
               ? await cameraService.updateCamera(cfg.id, payload)
               : await cameraService.createCamera(payload);
@@ -1045,6 +1049,8 @@ export default function App() {
               contrast: targetConfig.contrast,
               auto_focus: false,
               auto_exposure: false,
+              recording_format: targetConfig.recordingFormat || 'MP4',
+              recording_video_path: targetConfig.recordingVideoPath,
               is_enabled: true,
             };
 

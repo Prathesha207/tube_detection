@@ -87,11 +87,105 @@ DATABASE_PATH = APP_DIR / "vision_ai.db"
 from datetime import datetime
 
 
+def get_configured_storage_dir() -> Path:
+    """Return the active storage directory: from basic_config / DB if configured, otherwise Desktop."""
+    try:
+        import json
+        cfg_file = APP_DIR / "basic_config.json"
+        if cfg_file.exists():
+            try:
+                with open(cfg_file, "r") as f:
+                    cfg = json.load(f)
+                    p_str = cfg.get("recording_video_path")
+                    if p_str and p_str.strip():
+                        p = Path(p_str.strip())
+                        p.mkdir(parents=True, exist_ok=True)
+                        return p
+            except Exception:
+                pass
+
+        from app.core.database import SessionLocal
+        from app.models.camera_model import Camera
+
+        db = SessionLocal()
+        try:
+            cam = (
+                db.query(Camera)
+                .filter(Camera.recording_video_path.isnot(None), Camera.recording_video_path != "")
+                .order_by(Camera.id.desc())
+                .first()
+            )
+            if cam and cam.recording_video_path and cam.recording_video_path.strip():
+                p = Path(cam.recording_video_path.strip())
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return get_desktop_dir()
+
+
+def set_configured_storage_dir(path_str: str | None) -> str:
+    """Save storage path to DB and config. If None or empty, reverts to Desktop."""
+    import json
+    if path_str and path_str.strip():
+        target = Path(path_str.strip()).resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        final_str = str(target)
+    else:
+        final_str = str(get_desktop_dir())
+
+    # 1. Update basic_config.json
+    cfg_file = APP_DIR / "basic_config.json"
+    cfg = {}
+    if cfg_file.exists():
+        try:
+            with open(cfg_file, "r") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+    cfg["recording_video_path"] = final_str
+    try:
+        with open(cfg_file, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+    # 2. Update all Camera records in DB
+    try:
+        from app.core.database import SessionLocal
+        from app.models.camera_model import Camera
+        db = SessionLocal()
+        try:
+            cams = db.query(Camera).all()
+            if cams:
+                for c in cams:
+                    c.recording_video_path = final_str
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return final_str
+
+
 def get_ml_output_dir() -> Path:
-    """Return the output directory for ML inference sessions (videos, thumbnails, results.json) directly on Desktop."""
-    desktop = get_desktop_dir()
+    """Return the output directory for ML inference sessions (videos, thumbnails, results.json) in configured storage."""
+    base_dir = get_configured_storage_dir()
     today_str = datetime.now().strftime("%Y-%m-%d")
-    out = desktop / "inference_results" / today_str
+    out = base_dir / "inference_results" / today_str
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def get_recordings_output_dir() -> Path:
+    """Return the output directory for video recordings in configured storage."""
+    base_dir = get_configured_storage_dir()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    out = base_dir / "recordings" / today_str
     out.mkdir(parents=True, exist_ok=True)
     return out
 

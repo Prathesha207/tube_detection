@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Literal
+from typing import List, Literal, Optional
 from sqlalchemy.orm import Session
 from app.dependencies import get_db
 from app.schemas.camera_schema import CameraCreate, CameraResponse, CameraUpdate
@@ -159,3 +159,89 @@ def update_live_controls(camera_id: int, data: CameraLiveControl):
     except Exception as e:
         logger.error(f"[LIVE CONTROLS] Failed: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+class StoragePathUpdate(BaseModel):
+    path: Optional[str] = None
+
+
+class StoragePathResponse(BaseModel):
+    storage_path: str
+    default_path: str
+    status: str = "success"
+
+
+class BrowseFolderRequest(BaseModel):
+    initial_dir: Optional[str] = None
+
+
+@router.get("/storage-path", response_model=StoragePathResponse)
+def get_storage_path():
+    try:
+        from app.core.app_paths import get_configured_storage_dir, get_desktop_dir
+        return StoragePathResponse(
+            storage_path=str(get_configured_storage_dir()),
+            default_path=str(get_desktop_dir()),
+            status="success",
+        )
+    except Exception as e:
+        logger.error(f"[API ERROR] GET /camera/storage-path: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/storage-path", response_model=StoragePathResponse)
+def set_storage_path(data: StoragePathUpdate):
+    try:
+        from app.core.app_paths import set_configured_storage_dir, get_desktop_dir
+        final_path = set_configured_storage_dir(data.path)
+        realtime_log_service.add_log(
+            "camera",
+            "CONFIG",
+            f"Storage path updated: {final_path}",
+            "success",
+        )
+        return StoragePathResponse(
+            storage_path=final_path,
+            default_path=str(get_desktop_dir()),
+            status="success",
+        )
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /camera/storage-path: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/browse-folder")
+def browse_folder(data: Optional[BrowseFolderRequest] = None):
+    try:
+        import concurrent.futures
+        import os
+        from app.core.app_paths import get_configured_storage_dir, get_desktop_dir
+
+        req_dir = data.initial_dir if data and data.initial_dir else None
+        start_dir = req_dir or str(get_configured_storage_dir()) or str(get_desktop_dir())
+
+        def _open_dialog():
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.wm_attributes("-topmost", 1)
+            selected = filedialog.askdirectory(
+                initialdir=start_dir,
+                title="Select Directory for Recordings & Inference Results",
+            )
+            root.destroy()
+            return selected
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_open_dialog)
+            selected_path = future.result(timeout=120.0)
+
+        if selected_path:
+            norm_path = os.path.normpath(selected_path)
+            return {"path": norm_path, "canceled": False}
+        return {"path": None, "canceled": True}
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /camera/browse-folder: {e}", exc_info=True)
+        return {"path": None, "canceled": True, "error": str(e)}
+

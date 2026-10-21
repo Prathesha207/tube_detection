@@ -34,6 +34,10 @@ def create_camera(db: Session, data: CameraCreate):
         db.commit()
         db.refresh(camera)
 
+        if camera.recording_video_path:
+            from app.core.app_paths import set_configured_storage_dir
+            set_configured_storage_dir(camera.recording_video_path)
+
         logger.info(f"[CREATE_CAMERA] Created camera ID: {camera.id}")
         realtime_log_service.add_log(
             "camera",
@@ -70,6 +74,10 @@ def update_camera_partial(db: Session, camera_id: int, data: CameraUpdate):
 
         for key, value in update_data.items():
             setattr(camera, key, value)
+
+        if "recording_video_path" in update_data:
+            from app.core.app_paths import set_configured_storage_dir
+            set_configured_storage_dir(update_data["recording_video_path"])
 
         if camera.exposure is None:
             camera.exposure = 8
@@ -316,6 +324,9 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
                 cam_data = data.camera.model_dump(exclude_unset=True)
                 for key, value in cam_data.items():
                     setattr(camera, key, value)
+                if "recording_video_path" in cam_data:
+                    from app.core.app_paths import set_configured_storage_dir
+                    set_configured_storage_dir(cam_data["recording_video_path"])
 
         if camera.exposure is None:
             camera.exposure = 8

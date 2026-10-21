@@ -49,6 +49,7 @@ export function useCameraStatus(
               autoFocus: false,
               autoExposure: false,
               recordingFormat: (activeCamera.recording_format as any) || prev.recordingFormat || 'MP4',
+              recordingVideoPath: activeCamera.recording_video_path || prev.recordingVideoPath,
             }));
             addLog(`Loaded camera "${activeCamera.name}" from database [${activeCamera.resolution || '1080p'} @ ${activeCamera.fps || 30}fps]`, 'info');
           }

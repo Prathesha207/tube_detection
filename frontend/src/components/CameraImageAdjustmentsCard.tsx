@@ -38,26 +38,29 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
   const throttleTimerRef = useRef<any>(null);
   const lastSentTimeRef = useRef<number>(0);
 
-  // Sync internal state ONLY on initial load or when switching camera devices
-  const initialCameraIdRef = useRef<any>(null);
+  // Sync internal state with loaded database config (updates when camera config arrives from DB)
   useEffect(() => {
-    if (config && initialCameraIdRef.current !== config.id) {
-      initialCameraIdRef.current = config.id;
-      presetRef.current = {
-        exposure: config.exposure ?? 8,
-        gain: config.gain ?? 400,
-        focus: config.focus ?? 0,
-        brightness: config.brightness ?? 0,
-        contrast: config.contrast ?? 50,
-      };
+    if (!config) return;
+
+    // Update presetRef to whatever the database/parent config holds as default
+    presetRef.current = {
+      exposure: config.exposure ?? 8,
+      gain: config.gain ?? 400,
+      focus: config.focus ?? 0,
+      brightness: config.brightness ?? 0,
+      contrast: config.contrast ?? 50,
+    };
+
+    // If user is not currently in the middle of dragging a slider, update displayed values
+    if (!inFlightRef.current && !pendingUpdateRef.current) {
       if (typeof config.exposure === 'number') setExposure(config.exposure);
       if (typeof config.gain === 'number') setGain(config.gain);
       if (typeof config.focus === 'number') setFocus(config.focus);
       if (typeof config.brightness === 'number') setBrightness(config.brightness);
       if (typeof config.contrast === 'number') setContrast(config.contrast);
-      setMode(config.controlMode === 'manual' ? 'manual' : 'auto');
+      if (config.controlMode) setMode(config.controlMode === 'manual' ? 'manual' : 'auto');
     }
-  }, [config?.id]);
+  }, [config?.id, config?.exposure, config?.gain, config?.focus, config?.brightness, config?.contrast, config?.controlMode]);
 
   // Actual network dispatch with in-flight queuing
   const dispatchToBackend = useCallback(async (payload: any) => {

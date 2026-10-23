@@ -164,6 +164,12 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       ipAddress: row.ip_address,
       resolution: (row.resolution as any) || localConfig.resolution || '1920x1080',
       targetFps: row.fps || localConfig.targetFps || 30,
+      controlMode: (row as any).control_mode || localConfig.controlMode || 'manual',
+      exposure: (row as any).exposure ?? localConfig.exposure,
+      gain: (row as any).gain ?? localConfig.gain,
+      focus: (row as any).focus ?? localConfig.focus,
+      brightness: (row as any).brightness ?? localConfig.brightness,
+      contrast: (row as any).contrast ?? localConfig.contrast,
       recordingVideoPath: storagePath || localConfig.recordingVideoPath,
       connected: true,
     };
@@ -305,6 +311,34 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         console.error('Failed to set storage path:', e);
       }
     }
+
+    // Persist camera controls to database if a camera row exists
+    if (localConfig.id) {
+      try {
+        await cameraService.updateCamera(localConfig.id, {
+          exposure: localConfig.exposure,
+          gain: localConfig.gain ?? localConfig.iso,
+          focus: localConfig.focus,
+          brightness: localConfig.brightness,
+          contrast: localConfig.contrast,
+          control_mode: localConfig.controlMode || 'manual',
+          resolution: localConfig.resolution,
+          fps: localConfig.targetFps,
+        });
+        await cameraService.updateLiveControls(localConfig.id, {
+          exposure: localConfig.exposure,
+          gain: localConfig.gain ?? localConfig.iso,
+          focus: localConfig.focus,
+          brightness: localConfig.brightness,
+          contrast: localConfig.contrast,
+          control_mode: localConfig.controlMode || 'manual',
+          save_to_db: true,
+        });
+      } catch (e) {
+        console.error('Failed to persist camera controls to database:', e);
+      }
+    }
+
     onSaveConfig({
       ...localConfig,
       recordingVideoPath: finalPath,

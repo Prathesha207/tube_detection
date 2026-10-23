@@ -152,6 +152,38 @@ class OakCameraService:
         self._gpu_sampler_thread: threading.Thread | None = None
         self._gpu_sampler_stop = threading.Event()
 
+        # Load persisted defaults from vision_ai.db so camera always starts with saved defaults
+        self._load_saved_db_settings()
+
+    def _load_saved_db_settings(self) -> None:
+        """Load persisted camera settings from vision_ai.db into memory."""
+        try:
+            from app.core.database import SessionLocal
+            from app.models.camera_model import Camera
+            db = SessionLocal()
+            try:
+                cam = db.query(Camera).filter(Camera.id == self._active_camera_id).first() if self._active_camera_id else None
+                cam = cam or db.query(Camera).order_by(Camera.id.desc()).first()
+                if cam:
+                    if cam.control_mode:
+                        self.control_mode = cam.control_mode
+                    if cam.exposure is not None:
+                        exp_val = float(cam.exposure)
+                        self.current_exposure_us = int(exp_val * 1000) if exp_val <= 1000 else int(exp_val)
+                    if cam.gain is not None:
+                        self.current_gain = int(cam.gain)
+                    if cam.focus is not None:
+                        self.current_focus = int(cam.focus)
+                        self.focus_available = True
+                    if cam.brightness is not None:
+                        self.current_brightness = int(cam.brightness)
+                    if cam.contrast is not None:
+                        self.current_contrast = int(cam.contrast)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug(f"[INIT] Could not load DB camera settings: {e}")
+
     @property
     def is_running(self) -> bool:
         return self._is_running
@@ -879,7 +911,7 @@ class OakCameraService:
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
                 self._latest_bgr_seq = seq_num
-                self._latest_frame_data = (display_bgr, seq_num, ts_sec)
+                self._latest_frame_data = (display_bgr, seq_num, ts_sec)  # Overwrites with newest camera frame
 
                 if self._active_recording is not None:
                     # Save the same adjusted image shown in the live stream.
@@ -1062,20 +1094,20 @@ class OakCameraService:
     # ==================== Camera Controls ====================
 
     def reset_controls(self) -> dict:
-        """Reapply the saved fixed preset without enabling camera automation."""
-        self.current_brightness = 0
-        self.current_contrast = 50
+        """Reapply the saved default preset from database."""
+        self._load_saved_db_settings()
         self.auto_exposure_enabled = self.auto_focus_enabled = False
-        self.control_mode = "auto"
         self._monitor_baseline_sharpness = None
         ctrl = dai.CameraControl()
         ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
         if self.current_focus is not None:
             ctrl.setManualFocus(self.current_focus)
         ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
+        hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
+        hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
+        ctrl.setBrightness(hw_b)
+        ctrl.setContrast(hw_c)
         try:
-            ctrl.setBrightness(0)
-            ctrl.setContrast(0)
             if self._control_queue is not None and self._is_running and self.is_connected:
                 self._control_queue.send(ctrl)
         except Exception as e:

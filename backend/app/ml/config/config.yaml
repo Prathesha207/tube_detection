@@ -8,13 +8,13 @@ device: "0"                    # "0" = first GPU, "cpu" = CPU
 
 # detection
 conf: 0.15
-conf_head: 0.4
+conf_head: 0.5
 conf_tail: 0.2
 max_heads: 0                   # e.g. 2 if the scene always has 2 heads (0 = no limit)
 max_tails: 0
 iou: 0.5
 scale: 1.0                     # shrink frames first; try 0.33-0.5 if the ends look much bigger than in training
-tile: 1280                     # the model was trained at imgsz 1280
+tile: 1280                    # the model was trained at imgsz 1280
 tile_overlap: 0.3
 merge_iou: 0.5
 merge_contain: 0.75

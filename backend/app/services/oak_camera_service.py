@@ -2231,7 +2231,7 @@ class OakCameraService:
     # ==================== Fixed-control Runtime Enforcement ====================
 
     def _enforce_fixed_controls(self) -> None:
-        """Re-send fixed focus and exposure through the runtime control queue."""
+        """Re-send fixed focus, exposure, brightness and contrast through the runtime control queue."""
         if not self._is_running or not self.is_connected or self._control_queue is None:
             return
         try:
@@ -2240,8 +2240,12 @@ class OakCameraService:
             if self.current_focus is not None:
                 ctrl.setManualFocus(self.current_focus)
             ctrl.setManualExposure(self.current_exposure_us, self.current_gain)
+            hw_b = max(-10, min(10, int(round(self.current_brightness / 5.0))))
+            hw_c = max(-10, min(10, int(round((self.current_contrast - 50) / 5.0))))
+            ctrl.setBrightness(hw_b)
+            ctrl.setContrast(hw_c)
             self._control_queue.send(ctrl)
-            logger.info("[CONTROL] Fixed focus and exposure sent after pipeline startup")
+            logger.info(f"[CONTROL] Fixed controls sent after pipeline startup — brightness={hw_b} contrast={hw_c}")
         except Exception as e:
             if "closed" in str(e).lower() or "xlink" in str(e).lower():
                 self._on_device_lost("Control queue closed during fixed-control enforcement")

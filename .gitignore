@@ -23,3 +23,4 @@ backend/app/ml/test_inference/sona_whl/
 
 
 *.whl
+inference_results/

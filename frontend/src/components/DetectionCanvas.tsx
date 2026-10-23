@@ -132,7 +132,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         return saved as LabelMode;
       }
     } catch { }
-    return 'pins'; // Default to 'pins' so every detection box shows its ID pin
+    return 'hidden'; // Default is always clean 'Boxes' mode
   });
 
   const handleLabelModeChange = (mode: LabelMode) => {

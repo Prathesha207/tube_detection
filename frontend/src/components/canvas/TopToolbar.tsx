@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2, Trash2, Tag, Hash, Target } from 'lucide-react';
+import { CheckCircle2, Minimize2, Expand, Eye, EyeOff, Video, Disc, Clock, Loader2, Trash2, Tag, Hash, Target, Square } from 'lucide-react';
 import type { AnomalyStatus, LabelMode } from '../../types';
 import { useInferenceStore } from '../../store/inferenceStore';
 
@@ -126,27 +126,27 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         )}
       </div>
 
-      {/* Top-Center: Label Mode View Switcher (Quadrant | Pins | Boxes) using App Theme */}
+      {/* Top-Center: Label Mode View Switcher (Boxes | Pins | Quadrant) using App Theme */}
       {/* {!isRoiActive && (showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
         <div className="pointer-events-auto absolute left-1/2 -translate-x-1/2 top-2 sm:top-3 flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs select-none z-30">
           <button
             type="button"
-            onClick={() => onLabelModeChange('compact')}
-            title="Quadrant Labels: labels point into North, South, East, West with zero overlap"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'pins') === 'compact'
+            onClick={() => onLabelModeChange('hidden')}
+            title="Boxes Mode: pure bounding boxes with crosshairs and 0 text"
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'hidden'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}
           >
-            <Tag className="w-3 h-3" />
-            <span>Quadrant</span>
+            <Square className="w-3 h-3" />
+            <span>Boxes</span>
           </button>
 
           <button
             type="button"
             onClick={() => onLabelModeChange('pins')}
             title="Pins Mode: tiny numbered circle pins (#1, #2) with zero obstruction"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'pins') === 'pins'
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'pins'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}
@@ -157,15 +157,15 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
           <button
             type="button"
-            onClick={() => onLabelModeChange('hidden')}
-            title="Boxes Mode: pure bounding boxes with crosshairs and 0 text"
-            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'pins') === 'hidden'
+            onClick={() => onLabelModeChange('compact')}
+            title="Quadrant Labels: labels point into North, South, East, West with zero overlap"
+            className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center gap-1 sm:gap-1.5 cursor-pointer transition-all ${(labelMode ?? 'hidden') === 'compact'
               ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
               }`}
           >
-            <EyeOff className="w-3 h-3" />
-            <span>Boxes</span>
+            <Tag className="w-3 h-3" />
+            <span>Quadrant</span>
           </button>
         </div>
       )} */}

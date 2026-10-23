@@ -119,13 +119,9 @@ async def upload_video(
         is_direct_local = bool(file_path and os.path.exists(file_path) and os.path.isfile(file_path) and not is_camera_rec)
 
         if is_camera_rec:
-            from datetime import datetime
-            today = datetime.now().strftime("%Y-%m-%d")
-            from app.core.app_paths import get_desktop_dir
-            desktop = get_desktop_dir()
-            desktop_rec_dir = desktop / "recordings" / today
-            desktop_rec_dir.mkdir(parents=True, exist_ok=True)
-            raw_save_path = str(desktop_rec_dir / video_name)
+            from app.core.app_paths import get_recordings_output_dir
+            rec_dir = get_recordings_output_dir()
+            raw_save_path = str(rec_dir / video_name)
             browser_video_path = raw_save_path
         elif is_direct_local:
             # DIRECT READING: When running in Desktop EXE / Electron, read directly from the user's hard drive!
@@ -319,14 +315,17 @@ async def _ensure_session_exists(session_id: str):
     session_dir = os.path.join(base_output_dir, session_id)
     if not os.path.isdir(session_dir):
         try:
-            desktop = get_desktop_dir()
-            archive_base = desktop / "inference_results"
-            if archive_base.exists():
-                for date_folder in sorted(archive_base.iterdir(), reverse=True):
-                    cand = date_folder / session_id
-                    if cand.is_dir():
-                        session_dir = str(cand)
-                        break
+            from app.core.app_paths import get_configured_storage_dir
+            for base in [get_configured_storage_dir(), get_desktop_dir()]:
+                archive_base = base / "inference_results"
+                if archive_base.exists():
+                    for date_folder in sorted(archive_base.iterdir(), reverse=True):
+                        cand = date_folder / session_id
+                        if cand.is_dir():
+                            session_dir = str(cand)
+                            break
+                if os.path.isdir(session_dir):
+                    break
         except Exception:
             pass
 
@@ -396,18 +395,20 @@ async def _ensure_session_exists(session_id: str):
     # 5. Check Desktop recordings for camera recordings
     if not video_file or not os.path.exists(video_file):
         try:
-            from app.core.app_paths import get_desktop_dir
-            desktop = get_desktop_dir()
-            rec_base = desktop / "recordings"
-            if rec_base.exists():
-                for date_folder in sorted(rec_base.iterdir(), reverse=True):
-                    if date_folder.is_dir():
-                        for rec_file in sorted(date_folder.iterdir(), reverse=True):
-                            if rec_file.is_file() and session_id in rec_file.name:
-                                video_file = str(rec_file)
-                                break
-                    if video_file:
-                        break
+            from app.core.app_paths import get_configured_storage_dir
+            for base in [get_configured_storage_dir(), get_desktop_dir()]:
+                rec_base = base / "recordings"
+                if rec_base.exists():
+                    for date_folder in sorted(rec_base.iterdir(), reverse=True):
+                        if date_folder.is_dir():
+                            for rec_file in sorted(date_folder.iterdir(), reverse=True):
+                                if rec_file.is_file() and session_id in rec_file.name:
+                                    video_file = str(rec_file)
+                                    break
+                        if video_file:
+                            break
+                if video_file and os.path.exists(video_file):
+                    break
         except Exception:
             pass
 
@@ -666,16 +667,16 @@ async def get_last_frame(session_id: str):
                         if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
                             potential_videos.append(os.path.join(session_dir, f))
                 try:
-                    from app.core.app_paths import get_desktop_dir
-                    desktop = get_desktop_dir()
-                    archive_base = os.path.join(str(desktop), "inference_results")
-                    if os.path.exists(archive_base):
-                        for today in os.listdir(archive_base):
-                            target = os.path.join(archive_base, today, session_id)
-                            if os.path.exists(target):
-                                for fn in os.listdir(target):
-                                    if fn.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
-                                        potential_videos.append(os.path.join(target, fn))
+                    from app.core.app_paths import get_configured_storage_dir, get_desktop_dir
+                    for base in [get_configured_storage_dir(), get_desktop_dir()]:
+                        archive_base = os.path.join(str(base), "inference_results")
+                        if os.path.exists(archive_base):
+                            for today in os.listdir(archive_base):
+                                target = os.path.join(archive_base, today, session_id)
+                                if os.path.exists(target):
+                                    for fn in os.listdir(target):
+                                        if fn.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
+                                            potential_videos.append(os.path.join(target, fn))
                 except Exception:
                     pass
 

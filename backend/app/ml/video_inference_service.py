@@ -23,8 +23,10 @@ How a run works
 """
 
 import asyncio
+import base64
 import json
 import os
+import queue
 import tempfile
 import threading
 import time
@@ -228,10 +230,14 @@ class VideoInferenceService:
         if not session:
             return None
         res = dict(session["stats"])
-        # Frame-accurate synchronization: include base64 frame matching current detections
-        if session.get("last_frame_bytes"):
-            import base64
-            res["frame"] = "data:image/jpeg;base64," + base64.b64encode(session["last_frame_bytes"]).decode()
+        # Frame-accurate synchronization: return pre-cached base64 frame (0ms event-loop cost)
+        b64 = session.get("last_frame_b64")
+        if b64:
+            res["frame"] = b64
+        elif session.get("last_frame_bytes"):
+            b64 = "data:image/jpeg;base64," + base64.b64encode(session["last_frame_bytes"]).decode("ascii")
+            session["last_frame_b64"] = b64
+            res["frame"] = b64
         return res
 
     # --------------------------------------------------------------- stream
@@ -268,6 +274,7 @@ class VideoInferenceService:
         session["status"] = "stopped"
         session["stats"]["status"] = "stopped"
         session["last_frame_bytes"] = None
+        session["last_frame_b64"] = None
         _put_latest(session["queue"], None)
         start_wait = time.time()
         while session.get("is_task_active", False) and time.time() - start_wait < timeout:
@@ -298,6 +305,7 @@ class VideoInferenceService:
         session["queue"] = asyncio.Queue(maxsize=2)
         session["stop_event"] = threading.Event()
         session["last_frame_bytes"] = None
+        session["last_frame_b64"] = None
         # Preserve user ROI across runs; only clear ROI when user explicitly resets it
         session["status"] = "processing"
         session["stats"].update({
@@ -411,6 +419,27 @@ class VideoInferenceService:
                 logger.warning(f"Session {session_id}: cannot write {output_path}; continuing without annotated video")
                 writer = None
 
+            # Asynchronous video writer worker thread: GPU never stalls for OpenCV CPU drawing or MP4 software encoding
+            writer_queue = queue.Queue(maxsize=32)
+            writer_thread = None
+            if writer is not None:
+                def _writer_worker():
+                    while True:
+                        item = writer_queue.get()
+                        if item is None:
+                            break
+                        try:
+                            f, ann = item
+                            ann_frame = analyzer.draw_annotations(f, ann)
+                            writer.write(ann_frame)
+                        except Exception as w_err:
+                            logger.warning(f"Session {session_id}: writer worker error: {w_err}")
+                        finally:
+                            writer_queue.task_done()
+
+                writer_thread = threading.Thread(target=_writer_worker, daemon=True, name=f"writer-{session_id[:8]}")
+                writer_thread.start()
+
             stride = 2 if video_fps > _HIGH_FPS_THRESHOLD else 1   # high-fps: model on every 2nd frame
             frame_number = 0
 
@@ -440,9 +469,14 @@ class VideoInferenceService:
                              frames_processed=frame_number,
                              progress=round(frame_number / stats["total_frames"] * 100, 1))
 
-                # Saved video: boxes drawn on THIS frame (also on stride-skipped frames).
-                if writer is not None:
-                    writer.write(analyzer.draw_annotations(frame))      # latest detections, also on skipped frames
+                # Saved video: offload drawing + encoding to background writer thread
+                if writer_thread is not None and writer_thread.is_alive():
+                    try:
+                        writer_queue.put_nowait((frame.copy(), analyzer._last_analysis))
+                    except queue.Full:
+                        pass
+                elif writer is not None:
+                    writer.write(analyzer.draw_annotations(frame))
 
                 # Live stream: clean frame; the frontend draws boxes from stats["detections"].
                 try:
@@ -458,11 +492,21 @@ class VideoInferenceService:
                     if encoded:
                         frame_bytes = buffer.tobytes()
                         session["last_frame_bytes"] = frame_bytes
+                        session["last_frame_b64"] = "data:image/jpeg;base64," + base64.b64encode(frame_bytes).decode("ascii")
                         if frame_number == 1 or frame_number % _SAVE_PREVIEW_EVERY_N_FRAMES == 0:
                             _write_bytes(os.path.join(session_dir, "last_frame.jpg"), frame_bytes)
                         publish(frame_bytes)
                 except Exception as enc_err:
                     logger.warning(f"Session {session_id}: could not encode frame {frame_number}: {enc_err}")
+
+            # Flush and release the background video writer
+            if writer_thread is not None:
+                try:
+                    writer_queue.put(None, timeout=2.0)
+                    writer_thread.join(timeout=10.0)
+                except Exception as flush_err:
+                    logger.warning(f"Session {session_id}: writer flush warning: {flush_err}")
+                writer_thread = None
 
             # Finalise the output file BEFORE reporting "completed", so a client that sees
             # "completed" can open a fully written mp4.
@@ -490,6 +534,11 @@ class VideoInferenceService:
         finally:
             if cap is not None:
                 cap.release()
+            if 'writer_thread' in locals() and writer_thread is not None and writer_thread.is_alive():
+                try:
+                    writer_queue.put_nowait(None)
+                except Exception:
+                    pass
             if writer is not None:
                 writer.release()
             session["analyzer"] = None

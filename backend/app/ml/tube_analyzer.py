@@ -285,17 +285,18 @@ _GLOBAL_YOLO_CACHE: Dict[str, Any] = {}
 _GLOBAL_YOLO_MTIMES: Dict[str, float] = {}
 _GLOBAL_WARMED_SHAPES: Set[Tuple[int, int]] = set()
 
-def _load_yolo_model(path: str):
+def _load_yolo_model(path: str, device: str = "cpu"):
     """Load the YOLO model (cached) for fast inference.
     Automatically detects if the model file was updated on disk and reloads it."""
     mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
-    if path in _GLOBAL_YOLO_CACHE:
-        cached_mtime = _GLOBAL_YOLO_MTIMES.get(path, 0.0)
+    cache_key = f"{path}:{device}"
+    if cache_key in _GLOBAL_YOLO_CACHE:
+        cached_mtime = _GLOBAL_YOLO_MTIMES.get(cache_key, 0.0)
         if cached_mtime == mtime:
-            return _GLOBAL_YOLO_CACHE[path]
+            return _GLOBAL_YOLO_CACHE[cache_key]
         logger.info(f"Model file {path} was modified on disk (cached mtime {cached_mtime} -> new {mtime}). Evicting old model.")
-        _GLOBAL_YOLO_CACHE.pop(path, None)
-        _GLOBAL_YOLO_MTIMES.pop(path, None)
+        _GLOBAL_YOLO_CACHE.pop(cache_key, None)
+        _GLOBAL_YOLO_MTIMES.pop(cache_key, None)
         release_gpu_memory(clear_cache=False)
 
     try:
@@ -303,14 +304,20 @@ def _load_yolo_model(path: str):
     except Exception as e:
         raise RuntimeError("Ultralytics / PyTorch failed to load. Check the PyTorch installation.") from e
     model = YOLO(path)
-    _GLOBAL_YOLO_CACHE[path] = model
-    _GLOBAL_YOLO_MTIMES[path] = mtime
+    if device != "cpu" and cuda_is_available():
+        try:
+            cuda_dev = f"cuda:{device}" if str(device).isdigit() else str(device)
+            model.to(cuda_dev)
+        except Exception as dev_err:
+            logger.warning(f"Failed to place model on {device}: {dev_err}")
+    _GLOBAL_YOLO_CACHE[cache_key] = model
+    _GLOBAL_YOLO_MTIMES[cache_key] = mtime
     return model
 
 #################### 3. Data Formatting ####################
 _WIDTH_DETECTION_KEYS = (
     "width_px", "width_mm", "width_now_px", "width_spread_px",
-    "width_source", "size"
+    "width_source", "size", "outline"
 )
 
 # ------------------------------------------------------ what the frontend gets
@@ -428,7 +435,9 @@ class TubeAnalyzer:
         tile_overlap: Optional[float] = None,
         gray: Optional[bool] = None,
         min_frames: Optional[int] = None,
+        min_frames_tail: Optional[int] = None,
         max_dist: Optional[float] = None,
+        max_dist_tail: Optional[float] = None,
         max_missed: Optional[int] = None,
         scale: Optional[float] = None,
         conf_head: Optional[float] = None,
@@ -437,6 +446,10 @@ class TubeAnalyzer:
         width_from: Optional[str] = None,       # tail | all  (which ends decide bigger_tube)
         min_ratio: Optional[float] = None,      # width ratio needed to call one BIGGER
         mm_per_px: Optional[float] = None,      # calibration -> width_mm
+        draw_scale: Optional[float] = None,
+        box_fill: Optional[float] = None,
+        draw_masks: Optional[bool] = None,
+        draw_unconfirmed: Optional[bool] = None,
         draw_overlay: bool = False,
         draw_roi: bool = False,
         **extra: Any,
@@ -465,10 +478,13 @@ class TubeAnalyzer:
             target_device = "cpu"
 
         chosen = dict(conf=conf, tile=tile, tile_overlap=tile_overlap, gray=gray,
-                      min_frames=min_frames, max_dist=max_dist, max_missed=max_missed,
+                      min_frames=min_frames, min_frames_tail=min_frames_tail,
+                      max_dist=max_dist, max_dist_tail=max_dist_tail, max_missed=max_missed,
                       scale=scale, conf_head=conf_head, conf_tail=conf_tail,
                       width_method=width_method, width_from=width_from,
-                      min_ratio=min_ratio, mm_per_px=mm_per_px)
+                      min_ratio=min_ratio, mm_per_px=mm_per_px,
+                      draw_scale=draw_scale, box_fill=box_fill,
+                      draw_masks=draw_masks, draw_unconfirmed=draw_unconfirmed)
         self.cfg = _build_settings(config_path or CONFIG_PATH, path, target_device, draw_roi, chosen, extra)
 
         self.draw_overlay = draw_overlay
@@ -477,7 +493,7 @@ class TubeAnalyzer:
         self.model_path = str(path)
         self.model_mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
 
-        self.model = _load_yolo_model(path)
+        self.model = _load_yolo_model(path, target_device)
         try:
             self.role_ids = rvf.role_ids_from_names(self.model.names)
         except SystemExit as e:        # the wheel exits instead of raising; SystemExit is not an Exception

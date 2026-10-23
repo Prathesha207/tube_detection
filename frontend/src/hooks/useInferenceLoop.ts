@@ -166,6 +166,7 @@ export function useInferenceLoop({
     let timeoutId: ReturnType<typeof setTimeout>;
     let consecutive404s = 0;
     let videoRenderSeq = 0;
+    let lastRenderedFrameSeq = -1;
 
     const pollBackend = async () => {
       try {
@@ -184,7 +185,7 @@ export function useInferenceLoop({
 
         consecutive404s = 0;
         if (!res.ok) {
-          if (isMounted) timeoutId = setTimeout(pollBackend, 500);
+          if (isMounted) timeoutId = setTimeout(pollBackend, 200);
           return;
         }
 
@@ -205,7 +206,8 @@ export function useInferenceLoop({
 
         if (data.status !== 'queued' && data.status !== 'idle') {
           setFps(data.fps || 0);
-          setFramesProcessed(data.frames_processed || 0);
+          const currentFrame = data.frames_processed ?? data.frame ?? 0;
+          setFramesProcessed(currentFrame);
 
           if (data.video_width && data.video_height) {
             setVideoDimensions({ width: data.video_width, height: data.video_height });
@@ -215,20 +217,30 @@ export function useInferenceLoop({
           const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
           const incomingTubes = mapDetectionsToTubes(data, vw, vh);
 
-          // 100% Lockstep Frame Synchronization for Video:
+          // Fast Lockstep Frame Synchronization: avoid re-decoding duplicate frames
           if (data.frame && setLastVideoFrame) {
-            const thisSeq = ++videoRenderSeq;
-            const img = new Image();
-            img.src = data.frame;
-            if (img.decode) {
-              try {
-                await img.decode();
-              } catch (_) {}
+            if (currentFrame !== lastRenderedFrameSeq) {
+              lastRenderedFrameSeq = currentFrame;
+              const thisSeq = ++videoRenderSeq;
+              const img = new Image();
+              img.src = data.frame;
+              if (img.decode) {
+                img.decode().then(() => {
+                  if (isMounted && thisSeq >= videoRenderSeq) {
+                    setLastVideoFrame(data.frame);
+                    setTubes(incomingTubes);
+                  }
+                }).catch(() => {
+                  if (isMounted && thisSeq >= videoRenderSeq) {
+                    setLastVideoFrame(data.frame);
+                    setTubes(incomingTubes);
+                  }
+                });
+              } else {
+                setLastVideoFrame(data.frame);
+                setTubes(incomingTubes);
+              }
             }
-            if (!isMounted || thisSeq < videoRenderSeq) return;
-
-            setLastVideoFrame(data.frame);
-            setTubes(incomingTubes);
           } else {
             setTubes(incomingTubes);
           }
@@ -241,7 +253,8 @@ export function useInferenceLoop({
           }
         }
 
-        const pollInterval = Math.max(120, Math.min(250, Math.floor(1000 / (data?.fps || 15))));
+        // Fast responsive polling (35ms): delivers newly completed frames instantly without artificial 120-250ms sleep
+        const pollInterval = 35;
         if (isMounted) {
           timeoutId = setTimeout(pollBackend, pollInterval);
         }
@@ -249,7 +262,7 @@ export function useInferenceLoop({
 
       } catch (err) {
         if (isMounted && isRunning) {
-          timeoutId = setTimeout(pollBackend, 200);
+          timeoutId = setTimeout(pollBackend, 100);
         }
       }
     };

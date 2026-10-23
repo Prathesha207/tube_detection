@@ -48,6 +48,15 @@ BIGGER / SMALLER (per frame, confirmed ends inside the ROI):
     (width_from: tail, default - a tail is bare tube) or every end
     (width_from: all - fair only with width_method tubing).
 
+OUTPUT VIDEO DRAWING:
+  * line width and text size scale with the frame size (draw_scale overrides)
+  * one colour per role, whatever the size: HEAD = cyan, TAIL = yellow
+  * thin box + a compact callout card joined by a leader line:
+        ID: 3  Head / Conf: 0.92 / Smaller  18.4 px
+    (the px value = measured tube width, the number that decides Bigger/Smaller/Same)
+  * the segmentation mask outline of each end is drawn too (draw_masks)
+  * top-left info panel: FRAME n / total, FPS (video frame rate), HEADS (cyan), TAILS (yellow)
+
 Per frame (terminal + JSON), all restricted to the ROI:
   heads_count / tails_count      confirmed ends visible in this frame
   heads_visible / tails_visible  same as *_count (kept for the frontend)
@@ -55,13 +64,21 @@ Per frame (terminal + JSON), all restricted to the ROI:
   detections                     id, role, confidence, bbox [x, y, w, h], center,
                                  width_px, width_mm, size, width_source
   bigger_tube                    status, id, role, width_px, width_mm, ratio
+  frame_total                    frames in the video (None for a webcam / stream)
+  fps                            processing speed, frames per second (smoothed)
+  video_fps                      the video's own frame rate
 """
 import argparse
+import gc
 import json
+import threading
 import time
 from collections import deque
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -96,7 +113,9 @@ DEFAULTS = {
     "gray": True,             # feed the model grayscale (it was trained on grayscale)
     "stride": 1,              # 1 = every frame
     "min_frames": 5,          # sightings before an end is confirmed and counted
+    "min_frames_tail": None,  # same, for tails only (None = min_frames). Weak tails: try 2-3
     "max_dist": 60,           # px an end may move between frames and stay the same end
+    "max_dist_tail": None,    # same, for tails only (None = max_dist)
     "max_missed": 15,         # frames a lost track can still be re-matched
     "roi_json": None,         # polygon file; None = whole frame
     "draw_roi": True,
@@ -105,6 +124,12 @@ DEFAULTS = {
     "history_jsonl": None,    # one line per frame; None = don't write
     "print_frames": True,
     "show_preview": False,
+    # ---- drawing (output video / preview) ----
+    "draw_scale": None,       # size of lines + text; None = auto from frame size (1.0 at 1280 px)
+    "box_fill": 0.2,          # translucent fill inside each confirmed box (0 = off, 0.4 = strong)
+    "draw_masks": True,       # outline the segmentation mask of each end
+    "draw_unconfirmed": True, # thin grey boxes for ends not yet confirmed
+    "draw_legend": False,     # no longer drawn (kept so old config files still load)
     # ---- width / bigger tube ----
     "width_method": "auto",   # auto | tubing | mask | off  (see docstring)
     "width_from": "tail",     # which ends decide bigger_tube: tail | all
@@ -116,8 +141,11 @@ DEFAULTS = {
 PATH_KEYS = ("model_path", "video", "roi_json", "output_video", "latest_json", "history_jsonl")
 
 ROLES = ("HEAD", "TAIL")
-COLORS = {"HEAD": (255, 40, 20), "TAIL": (230, 220, 0)}   # BGR: blue, cyan
-COL_BIG = (60, 220, 60)
+COLORS = {"HEAD": (255, 230, 0), "TAIL": (0, 220, 255)}   # BGR: cyan head, yellow tail (any size)
+COL_BIG = (60, 230, 60)                                   # green = bigger tube
+COL_PENDING = (170, 170, 170)
+COL_SAME = (220, 90, 200)                                 # purple = tubes same size
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 # --------------------------------------------------------------------- config
@@ -161,6 +189,8 @@ def load_config(path=None, **overrides):
         raise SystemExit("no video: set video in the config or pass --video")
     if not cfg["video"].isdigit() and not Path(cfg["video"]).exists():
         raise SystemExit(f"video not found: {cfg['video']}")
+    if cfg["width_method"] is False:          # YAML reads an unquoted `off` as False
+        cfg["width_method"] = "off"
     if cfg["width_method"] not in ("auto", "tubing", "mask", "off"):
         raise SystemExit(f"width_method must be auto/tubing/mask/off, got {cfg['width_method']}")
     if cfg["width_from"] not in ("tail", "all"):
@@ -169,6 +199,7 @@ def load_config(path=None, **overrides):
     cfg["device"] = str(cfg["device"])
     cfg["tile"] = int(cfg["tile"] or 0)
     cfg["stride"] = max(int(cfg["stride"]), 1)
+    cfg["box_fill"] = float(min(max(cfg["box_fill"] or 0, 0.0), 1.0))
     return SimpleNamespace(**cfg)
 
 
@@ -351,12 +382,26 @@ def measure_end(mask, tubings, gray, cfg):
     return (w, "end_mask") if w else (None, None)
 
 
-def detect(model, frame, role_ids, cfg, tubing_id=None):
+def mask_outline(mask, k):
+    """Largest outer contour of a mask, back in ORIGINAL pixel coordinates."""
+    if mask is None or not mask.any():
+        return None
+    cs, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cs:
+        return None
+    c = max(cs, key=cv2.contourArea).astype(np.float32)
+    return np.round(c / k).astype(np.int32)
+
+
+def detect(model, frame, role_ids, cfg, tubing_id=None, lock=None):
+    """lock: held only around model.predict (a YOLO model must not run two
+    predictions at once); the post-processing below runs without it."""
     if cfg.gray:
         frame = cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
     k = float(cfg.scale or 1.0)
     if k != 1.0:
-        frame = cv2.resize(frame, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(frame, None, fx=k, fy=k,
+                           interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
     h, w = frame.shape[:2]
     t = cfg.tile
     if t and (h > t or w > t):
@@ -368,14 +413,16 @@ def detect(model, frame, role_ids, cfg, tubing_id=None):
     else:
         crops, offsets = [frame], [(0, 0)]
 
-    want_masks = cfg.width_method != "off"
-    classes = list(role_ids) + ([tubing_id] if (want_masks and tubing_id is not None) else [])
+    want_width = cfg.width_method != "off"
+    want_masks = want_width or cfg.draw_masks
+    classes = list(role_ids) + ([tubing_id] if (want_width and tubing_id is not None) else [])
     role_conf = {"HEAD": cfg.conf if cfg.conf_head is None else cfg.conf_head,
                  "TAIL": cfg.conf if cfg.conf_tail is None else cfg.conf_tail}
-    results = model.predict(crops, conf=min(role_conf.values()), iou=cfg.iou,
-                            classes=classes, imgsz=int(cfg.imgsz or t or 640),
-                            device=cfg.device, retina_masks=want_masks,
-                            verbose=False)
+    with (lock or nullcontext()):
+        results = model.predict(crops, conf=min(role_conf.values()), iou=cfg.iou,
+                                classes=classes, imgsz=int(cfg.imgsz or t or 640),
+                                device=cfg.device, retina_masks=want_masks,
+                                verbose=False)
     dets, tub_masks = [], []
     for r, (ox, oy) in zip(results, offsets):
         if r.boxes is None or len(r.boxes) == 0:
@@ -402,7 +449,7 @@ def detect(model, frame, role_ids, cfg, tubing_id=None):
             dets.append(_det(role_ids[c], float(s), box, full))
     dets = merge_duplicates(dets, cfg)
 
-    if want_masks:
+    if want_width:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         tubings = tube_components(tub_masks)
         for d in dets:
@@ -410,7 +457,8 @@ def detect(model, frame, role_ids, cfg, tubing_id=None):
             d["width_px"] = wpx / k if wpx else None          # back to original pixels
             d["width_src"] = src
     for d in dets:
-        d.pop("mask", None)                                    # free memory
+        m = d.pop("mask", None)                                # free memory, keep only the outline
+        d["outline"] = mask_outline(m, k) if cfg.draw_masks else None
     return dets
 
 
@@ -462,7 +510,8 @@ def update_tracks(tracks, dets, idx, next_id, cfg):
             for di, d in enumerate(cand):
                 dist = float(np.hypot(t.center[0] - d["center"][0],
                                       t.center[1] - d["center"][1]))
-                if dist <= cfg.max_dist:
+                limit = cfg.max_dist_tail if (role == "TAIL" and cfg.max_dist_tail) else cfg.max_dist
+                if dist <= limit:
                     pairs.append((dist, ti, di))
         used_t, used_d = set(), set()
         for dist, ti, di in sorted(pairs):
@@ -474,7 +523,8 @@ def update_tracks(tracks, dets, idx, next_id, cfg):
             cand[di]["track"] = live[ti]
         for di, d in enumerate(cand):
             if di not in used_d:
-                t = Track(next_id, d, idx, cfg.min_frames)
+                mf = cfg.min_frames_tail if (role == "TAIL" and cfg.min_frames_tail) else cfg.min_frames
+                t = Track(next_id, d, idx, mf)
                 next_id += 1
                 tracks.append(t)
                 d["track"] = t
@@ -571,7 +621,7 @@ def draw_roi_interactive(video, out_path, frame_no=0):
             for q in p:
                 cv2.circle(vis, tuple(q), 5, (0, 0, 255), -1)
         cv2.putText(vis, f"{len(pts)} points  (need 3+)  Enter=save  Esc=cancel", (10, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+                    FONT, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow(win, vis)
         key = cv2.waitKey(30) & 0xFF
         if key == 27:
@@ -658,7 +708,9 @@ def bigger_text(b, mm_per_px):
 
 
 def frame_summary(result, cfg):
-    print(f"\nFrame {result['frame']}: HEADS={result['heads_count']}  "
+    tot = f"/{result['frame_total']}" if result.get("frame_total") else ""
+    fps = f"  {result['fps']:.1f} fps" if result.get("fps") else ""
+    print(f"\nFrame {result['frame']}{tot}{fps}: HEADS={result['heads_count']}  "
           f"TAILS={result['tails_count']}  "
           f"(peak at once: {result['heads_peak']} heads, {result['tails_peak']} tails)")
     for d in result["detections"]:
@@ -667,37 +719,235 @@ def frame_summary(result, cfg):
     print(f"  -> {bigger_text(result['bigger_tube'], cfg.mm_per_px)}")
 
 
+# ------------------------------------------------------------------- drawing
+def _text_color(bgr):
+    """Black text on light colours, white text on dark ones."""
+    b, g, r = bgr
+    return (0, 0, 0) if (0.114 * b + 0.587 * g + 0.299 * r) > 140 else (255, 255, 255)
+
+
+def _light(bgr, k=0.35):
+    """A lighter tint of a colour - readable as text on the dark panel."""
+    return tuple(int(c + (255 - c) * k) for c in bgr)
+
+
+def _overlaps(r, rects):
+    return any(r[0] < o[2] and o[0] < r[2] and r[1] < o[3] and o[1] < r[3] for o in rects)
+
+
+def _label_tag(img, lines, box, color, fs, ft, occupied, obstacles=()):
+    """Small grey tag for ends that are not confirmed yet."""
+    H, W = img.shape[:2]
+    sizes = [cv2.getTextSize(t, FONT, fs, ft) for t in lines]
+    tw = max(z[0][0] for z in sizes)
+    lh = max(z[0][1] for z in sizes)
+    base = max(z[1] for z in sizes)
+    m = max(2, int(round(lh * 0.3)))
+    tag_w, tag_h = tw + 2 * m, lh + base + 2 * m
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    spots = [(x1, y1 - tag_h), (x1, y2), (x2 + 2, y1), (x1 - tag_w - 2, y1)]
+
+    def clamp(x, y):
+        return min(max(x, 0), max(W - tag_w, 0)), min(max(y, 0), max(H - tag_h, 0))
+
+    tx, ty = clamp(*spots[0])
+    for sx, sy in spots:
+        cx, cy = clamp(sx, sy)
+        if not _overlaps((cx, cy, cx + tag_w, cy + tag_h), list(occupied) + list(obstacles)):
+            tx, ty = cx, cy
+            break
+    occupied.append((tx, ty, tx + tag_w, ty + tag_h))
+    cv2.rectangle(img, (tx, ty), (tx + tag_w, ty + tag_h), color, -1)
+    cv2.putText(img, lines[0], (tx + m, ty + m + lh), FONT, fs, _text_color(color), ft, cv2.LINE_AA)
+
+
+def _rounded_rect(img, x1, y1, x2, y2, r, color, thick):
+    """Rectangle with rounded corners; thick < 0 = filled."""
+    r = int(max(0, min(r, (x2 - x1) // 2, (y2 - y1) // 2)))
+    if thick < 0:
+        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
+        cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, -1)
+        for cx, cy in ((x1 + r, y1 + r), (x2 - r, y1 + r), (x1 + r, y2 - r), (x2 - r, y2 - r)):
+            cv2.circle(img, (cx, cy), r, color, -1, cv2.LINE_AA)
+        return
+    cv2.line(img, (x1 + r, y1), (x2 - r, y1), color, thick, cv2.LINE_AA)
+    cv2.line(img, (x1 + r, y2), (x2 - r, y2), color, thick, cv2.LINE_AA)
+    cv2.line(img, (x1, y1 + r), (x1, y2 - r), color, thick, cv2.LINE_AA)
+    cv2.line(img, (x2, y1 + r), (x2, y2 - r), color, thick, cv2.LINE_AA)
+    for (cx, cy), ang in (((x1 + r, y1 + r), 180), ((x2 - r, y1 + r), 270),
+                          ((x2 - r, y2 - r), 0), ((x1 + r, y2 - r), 90)):
+        cv2.ellipse(img, (cx, cy), (r, r), ang, 0, 90, color, thick, cv2.LINE_AA)
+
+
+def _closest(rect, px, py):
+    """Point on/inside rect closest to (px, py)."""
+    return (int(min(max(px, rect[0]), rect[2])), int(min(max(py, rect[1]), rect[3])))
+
+
+def _px(v, mm_per_px):
+    if not v:
+        return "-"
+    return f"{v * mm_per_px:.2f} mm" if mm_per_px else f"{v:.1f} px"
+
+
 def draw(frame, dets, result, roi, cfg):
     vis = frame.copy()
-    if roi is not None and cfg.draw_roi:
-        cv2.polylines(vis, [roi.reshape(-1, 1, 2)], True, (0, 220, 0), 4, cv2.LINE_AA)
-    big_id = result["bigger_tube"].get("id") if result["bigger_tube"]["status"] == "OK" else None
-    pad = 6                                     # small ends would otherwise be a speck
-    for d in dets:
-        t = d["track"]
+    H, W = vis.shape[:2]
+    s = float(cfg.draw_scale) if cfg.draw_scale else max(H, W) / 1280.0
+    s = max(s, 0.6)
+    th = max(2, int(round(1.4 * s)))           # box line (thin: 2 px at 1920x1080)
+    pad = int(round(3 * s))                    # grow boxes just a little
+
+    def color_of(d):
+        return COLORS[d["track"].role] if d["track"].confirmed else COL_PENDING
+
+    def rect(d):
         x1, y1, x2, y2 = (int(round(v)) for v in d["xyxy"])
-        x1, y1, x2, y2 = x1 - pad, y1 - pad, x2 + pad, y2 + pad
-        if t.confirmed:
-            color, thick = COLORS[t.role], 4
-            label = f"{t.role.lower()} #{t.id} {fmt_w(t.width, cfg.mm_per_px)} {d.get('size') or ''}".strip()
-            if t.id == big_id:
-                color, thick = COL_BIG, 6
-        else:                                   # not yet confirmed - thin grey
-            color, thick = (160, 160, 160), 2
-            label = f"{t.role.lower()}?"
-        cv2.rectangle(vis, (x1, y1), (x2, y2), color, thick)
-        cv2.putText(vis, label, (x1, max(y1 - 8, 24)), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9, (0, 0, 0), 6 if t.confirmed else 4, cv2.LINE_AA)
-        cv2.putText(vis, label, (x1, max(y1 - 8, 24)), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9, color, 3 if t.confirmed else 2, cv2.LINE_AA)
-    header = (f"frame {result['frame']}   HEADS {result['heads_count']}   "
-              f"TAILS {result['tails_count']}")
-    line2 = bigger_text(result["bigger_tube"], cfg.mm_per_px)
-    cv2.rectangle(vis, (0, 0), (760, 76), (0, 0, 0), -1)
-    cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(vis, line2, (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                COL_BIG if result["bigger_tube"]["status"] == "OK" else (200, 200, 200), 2, cv2.LINE_AA)
+        return (max(x1 - pad, 0), max(y1 - pad, 0), min(x2 + pad, W - 1), min(y2 + pad, H - 1))
+
+    shown = [d for d in dets if d["track"].confirmed or cfg.draw_unconfirmed]
+    shown.sort(key=lambda d: d["track"].confirmed)          # unconfirmed first, confirmed on top
+    boxes = [rect(d) for d in shown]
+
+    # 1. translucent fill (box + mask) for confirmed ends  (box_fill: 0 = off)
+    if cfg.box_fill > 0:
+        overlay = vis.copy()
+        for d in shown:
+            if d["track"].confirmed:
+                x1, y1, x2, y2 = rect(d)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), color_of(d), -1)
+                if d.get("outline") is not None:
+                    cv2.fillPoly(overlay, [d["outline"]], color_of(d))
+        vis = cv2.addWeighted(overlay, cfg.box_fill, vis, 1 - cfg.box_fill, 0)
+
+    # 2. ROI
+    if roi is not None and cfg.draw_roi:
+        cv2.polylines(vis, [roi.reshape(-1, 1, 2)], True, (0, 0, 0), th + 2, cv2.LINE_AA)
+        cv2.polylines(vis, [roi.reshape(-1, 1, 2)], True, (0, 220, 0), th, cv2.LINE_AA)
+
+    # 3. boxes (one colour per role) + thin mask outline
+    for d in shown:
+        x1, y1, x2, y2 = rect(d)
+        thick = th if d["track"].confirmed else 1
+        if d.get("outline") is not None and d["track"].confirmed:
+            cv2.polylines(vis, [d["outline"]], True, color_of(d), 1, cv2.LINE_AA)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 0), thick + 2, cv2.LINE_AA)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), color_of(d), thick, cv2.LINE_AA)
+
+    occupied = []
+    # 4. info panel (top-left)
+    total = result.get("frame_total")
+    ftxt = f"FRAME {result['frame']}" + (f" / {total}" if total else "")
+    fps = result.get("video_fps") or result.get("fps")     # video frame rate (else processing speed)
+    rows = [[(ftxt, (215, 215, 215)), (f"{fps:.0f} FPS" if fps else "- FPS", (215, 215, 215))],
+            [(f"HEADS {result['heads_count']}", COLORS["HEAD"]),
+             (f"TAILS {result['tails_count']}", COLORS["TAIL"])]]
+    pfs = max(0.42, 0.45 * s)
+    pft = 1 if s < 1.3 else 2
+    lh = cv2.getTextSize("Ag", FONT, pfs, pft)[0][1]
+    m = max(5, int(round(7 * s)))
+    dot = max(5, int(round(lh * 0.75)))
+    gap = int(round(lh * 1.3))
+    row_h = lh + max(5, int(round(lh * 0.8)))
+
+    def item_w(text):
+        return dot + int(round(dot * 0.6)) + cv2.getTextSize(text, FONT, pfs, pft)[0][0]
+
+    widths = [sum(item_w(t) for t, _ in r) + gap * (len(r) - 1) for r in rows]
+    pw, ph = max(widths) + 2 * m, len(rows) * row_h - (row_h - lh) + 2 * m
+    px, py = m, m
+    x2p, y2p = min(px + pw, W - 1), min(py + ph, H - 1)
+    panel = vis.copy()
+    _rounded_rect(panel, px, py, x2p, y2p, int(6 * s), (20, 20, 20), -1)
+    vis = cv2.addWeighted(panel, 0.85, vis, 0.15, 0)
+    _rounded_rect(vis, px, py, x2p, y2p, int(6 * s), (90, 90, 90), 1)
+    y = py + m + lh
+    for r in rows:
+        x = px + m
+        for text, col in r:
+            cv2.rectangle(vis, (x, y - dot), (x + dot, y), col, -1)
+            tx = x + dot + int(round(dot * 0.6))
+            cv2.putText(vis, text, (tx, y), FONT, pfs, col, pft, cv2.LINE_AA)
+            x = tx + cv2.getTextSize(text, FONT, pfs, pft)[0][0] + gap
+        y += row_h
+    occupied.append((px, py, x2p, y2p))
+
+    # 5. callout cards for confirmed ends (like: ID / Conf / Size / W H)
+    tfs, tft = max(0.42, 0.42 * s), 2 if s >= 1.2 else 1   # title
+    bfs, bft = max(0.36, 0.36 * s), 1                       # body
+    cpad = max(4, int(round(5 * s)))
+    off = int(round(16 * s))                                # gap between box and card
+    cards = []
+    for d in sorted((d for d in shown if d["track"].confirmed),
+                    key=lambda d: d["conf"], reverse=True):
+        t = d["track"]
+        x1b, y1b, x2b, y2b = d["xyxy"]
+        title = f"ID: {t.id}  {t.role.title()}"
+        body = [f"Conf: {d['conf']:.2f}",
+                f"{(d.get('size') or '-').title()}  {_px(t.width, cfg.mm_per_px)}"]
+        (tw, tlh), tb = cv2.getTextSize(title, FONT, tfs, tft)
+        bsz = [cv2.getTextSize(b, FONT, bfs, bft) for b in body]
+        blh = max(z[0][1] for z in bsz)
+        bgap = int(round(blh * 0.6))
+        cw = max([tw] + [z[0][0] for z in bsz]) + 2 * cpad
+        ch = tlh + tb + int(round(blh * 0.4)) + len(body) * (blh + bgap) - bgap + 2 * cpad
+        bx = rect(d)
+        cand = [(bx[0] - int(cw * 0.7), bx[1] - ch - off), (bx[2] - int(cw * 0.3), bx[1] - ch - off),
+                (bx[2] + off, bx[1] - ch // 2), (bx[0] - off - cw, bx[1] - ch // 2),
+                (bx[2] + off, bx[3] - ch // 2), (bx[0] - off - cw, bx[3] - ch // 2),
+                (bx[0] - int(cw * 0.7), bx[3] + off), (bx[2] - int(cw * 0.3), bx[3] + off)]
+        cand += [(cx, cy - k * (ch // 2)) for k in (1, 2) for cx, cy in cand[:2]]
+        cand += [(cx, cy + k * (ch // 2)) for k in (1, 2) for cx, cy in cand[6:8]]
+
+        def clamp(x, y):
+            return min(max(x, 0), max(W - 1 - cw, 0)), min(max(y, 0), max(H - 1 - ch, 0))
+
+        cx, cy = clamp(*cand[0])
+        for sx, sy in cand:
+            qx, qy = clamp(sx, sy)
+            r_ = (qx, qy, qx + cw, qy + ch)
+            if not _overlaps(r_, occupied) and not _overlaps(r_, boxes):
+                cx, cy = qx, qy
+                break
+        occupied.append((cx, cy, cx + cw, cy + ch))
+        cards.append((d, (cx, cy, cx + cw, cy + ch), title, body, tlh, tb, blh, bgap))
+
+    # leader lines first (cards are drawn on top of them)
+    for d, c, *_ in cards:
+        col, bx = color_of(d), rect(d)
+        bcx, bcy = (bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2
+        p_card = _closest(c, bcx, bcy)
+        p_box = _closest(bx, (c[0] + c[2]) / 2, (c[1] + c[3]) / 2)
+        cv2.line(vis, p_card, p_box, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.line(vis, p_card, p_box, col, 2, cv2.LINE_AA)
+        r_dot = max(3, int(round(3 * s)))
+        cv2.circle(vis, p_box, r_dot + 1, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(vis, p_box, r_dot, col, -1, cv2.LINE_AA)
+
+    # card backgrounds: dark tint of the role colour, slightly see-through
+    if cards:
+        layer = vis.copy()
+        rad = int(round(5 * s))
+        for d, c, *_ in cards:
+            fill = tuple(int(v * 0.42) for v in color_of(d))
+            _rounded_rect(layer, c[0], c[1], c[2], c[3], rad, fill, -1)
+        vis = cv2.addWeighted(layer, 0.88, vis, 0.12, 0)
+        for d, c, title, body, tlh, tb, blh, bgap in cards:
+            col = color_of(d)
+            _rounded_rect(vis, c[0], c[1], c[2], c[3], rad, col, 2)
+            x, y = c[0] + cpad, c[1] + cpad + tlh
+            cv2.putText(vis, title, (x, y), FONT, tfs, (255, 255, 255), tft, cv2.LINE_AA)
+            y += tb + int(round(blh * 0.4)) + blh
+            for b in body:
+                cv2.putText(vis, b, (x, y), FONT, bfs, (235, 235, 235), bft, cv2.LINE_AA)
+                y += blh + bgap
+
+    # 6. small grey tag for not-yet-confirmed ends
+    for d in shown:
+        if not d["track"].confirmed:
+            _label_tag(vis, [f"{d['track'].role.lower()}? {d['conf']:.2f}"], rect(d), COL_PENDING,
+                       max(0.35, 0.4 * s), 1, occupied, boxes)
+
     return vis
 
 
@@ -716,6 +966,331 @@ def print_diagnosis(tracks, min_frames, mm_per_px=None):
           "(raise max_dist or max_missed)")
 
 
+# ======================================================================
+# CORE used by main.py (HeadTailAnalyzer): model manager, per-frame pipeline,
+# video in/out. main.py only wraps these - it holds no pipeline logic itself.
+# ======================================================================
+
+# ------------------------------------------------------------------ errors
+class AnalyzerError(RuntimeError):
+    """Anything that stops the analyzer: bad config, missing model, unreadable video."""
+
+
+@contextmanager
+def as_error():
+    """The CLI code reports problems with SystemExit (fine for a terminal, bad inside a
+    backend - it would stop the whole process). Turn them into AnalyzerError."""
+    try:
+        yield
+    except SystemExit as e:
+        raise AnalyzerError(str(e.code) if e.code not in (None, 0) else "stopped") from None
+
+
+# ------------------------------------------------------------------ the model
+@dataclass
+class LoadedModel:
+    """A model in memory plus what the pipeline needs to know about its classes."""
+    path: str
+    model: Any
+    role_ids: dict                 # {class_id: "HEAD" / "TAIL"}
+    tubing_id: Optional[int]
+    task: str                      # "segment" or "detect"
+    names: dict
+    serial: int                    # increases with every load; changes after unload + reload
+    infer_lock: Any = field(default_factory=threading.Lock, repr=False)
+    # infer_lock: ONE prediction at a time on this model. Every analyzer / session
+    # that shares the model takes it around model.predict, so two simultaneous
+    # requests queue for the GPU instead of running predict on the same object at once.
+
+
+def _default_loader(path):
+    from ultralytics import YOLO   # imported here so config errors show up fast
+    return YOLO(path)
+
+
+class ModelManager:
+    """Keeps loaded models in a dict, one per model file.
+
+    get()    -> loads on the FIRST request, afterwards returns the same object
+    unload() -> waits for a running prediction, removes the model and frees GPU memory;
+                nothing else ever removes it
+    """
+
+    def __init__(self, loader=None, verbose=True):
+        self._loader = loader or _default_loader
+        self._models = {}
+        self._lock = threading.RLock()
+        self.verbose = verbose
+        self.load_count = 0        # how many times a model was really loaded
+
+    @staticmethod
+    def _key(path):
+        return str(Path(path).expanduser().resolve())
+
+    def is_loaded(self, path):
+        return self._key(path) in self._models
+
+    def loaded_paths(self):
+        return list(self._models)
+
+    def get(self, path, device=None, imgsz=640, warmup=True):
+        key = self._key(path)
+        entry = self._models.get(key)          # fast path: already loaded, no lock needed
+        if entry is not None:
+            return entry
+        with self._lock:                       # slow path: only the first call ever gets here
+            entry = self._models.get(key)      # another thread may have loaded it meanwhile
+            if entry is not None:
+                return entry
+            if not Path(key).exists():
+                raise AnalyzerError(f"model not found: {key}")
+            t0 = time.time()
+            model = self._loader(key)
+            names = dict(model.names)
+            with as_error():
+                role_ids = role_ids_from_names(names)
+            self.load_count += 1
+            entry = LoadedModel(path=key, model=model, role_ids=role_ids,
+                                tubing_id=tubing_id_from_names(names),
+                                task=getattr(model, "task", "segment"),
+                                names=names, serial=self.load_count)
+            if warmup:
+                self._warmup(entry, device, imgsz)
+            self._models[key] = entry          # published only when fully ready
+            if self.verbose:
+                print(f"[model] loaded {key} in {time.time() - t0:.1f}s "
+                      f"(task={entry.task}, classes={names})")
+            return entry
+
+    @staticmethod
+    def _warmup(entry, device, imgsz):
+        """One dummy prediction so the first real frame is not slow (CUDA start-up)."""
+        try:
+            with entry.infer_lock:
+                entry.model.predict(np.zeros((imgsz, imgsz, 3), np.uint8), imgsz=imgsz,
+                                    device=device, verbose=False)
+        except Exception as e:     # a failed warm-up must never stop the pipeline
+            print(f"[model] warm-up skipped: {e}")
+
+    def unload(self, path=None):
+        """Unload one model (path) or all of them. Returns how many were unloaded.
+        A prediction running on that model right now (from ANY session) finishes first."""
+        with self._lock:
+            keys = [self._key(path)] if path else list(self._models)
+            removed = [self._models.pop(k, None) for k in keys]
+        n = 0
+        for e in removed:
+            if e is not None:
+                with e.infer_lock:         # wait for an in-flight predict, then drop it
+                    e.model = None
+                n += 1
+        del removed
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        if self.verbose:
+            print(f"[model] unloaded {n} model(s)" if n else "[model] nothing to unload")
+        return n
+
+
+MODELS = ModelManager()            # shared by every analyzer unless you pass your own
+
+
+def load_model(model_path, device=None, imgsz=640, manager=None):
+    """Load a model file once (does nothing if it is already loaded)."""
+    return (manager or MODELS).get(model_path, device=device, imgsz=imgsz)
+
+
+def unload_model(model_path=None, manager=None):
+    """Unload one model file, or every loaded model if model_path is None."""
+    return (manager or MODELS).unload(model_path)
+
+
+def is_model_loaded(model_path, manager=None):
+    return (manager or MODELS).is_loaded(model_path)
+
+
+def configure_for_model(cfg, entry):
+    """The decisions run() makes right after loading a model, for a given cfg.
+    Returns False when the model has no masks (so mask outlines must stay off)."""
+    masks_ok = True
+    if entry.task != "segment":
+        if cfg.width_method != "off":
+            print("[width] model is not a segmentation model -> no masks, width turned OFF")
+            cfg.width_method = "off"
+        masks_ok = False
+    if cfg.width_method in ("auto", "tubing"):
+        if entry.tubing_id is None and cfg.width_method == "tubing":
+            raise AnalyzerError(f"width_method=tubing but the model has no tubing class: {entry.names}")
+        cfg.width_method = "tubing" if entry.tubing_id is not None else "mask"
+    return masks_ok
+
+
+# ------------------------------------------------------------- input / config
+def as_bgr(frame):
+    """Any numpy image -> 3-channel BGR (gray and BGRA are converted)."""
+    if not isinstance(frame, np.ndarray) or frame.size == 0:
+        raise ValueError("frame must be a non-empty numpy image (BGR, as read by cv2)")
+    if frame.ndim == 2:
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    if frame.ndim == 3 and frame.shape[2] == 4:
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    if frame.ndim == 3 and frame.shape[2] == 3:
+        return frame
+    raise ValueError(f"unsupported frame shape {frame.shape}")
+
+
+def config_video(config):
+    """The `video:` value written in config.yaml (made absolute), or None."""
+    if not config:
+        return None
+    path = Path(config).expanduser().resolve()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return _resolve(data.get("video"), path.parent)
+
+
+def load_stream_config(config=None, use_roi=True, **overrides):
+    """Config for frame-by-frame use (no video needed). Returns (cfg, roi).
+    config = path to config.yaml, or None to use only DEFAULTS + overrides
+    (then model_path=... must be passed)."""
+    user_video = overrides.pop("video", None)
+    with as_error():
+        # load_config insists on a video; a frame-by-frame backend has none, so give
+        # it a placeholder and put the real value (if any) back afterwards.
+        cfg = load_config(config, video="0", **overrides)
+        if not use_roi:
+            cfg.roi_json = None
+        roi = load_roi(cfg.roi_json)
+    cfg.video = _resolve(user_video, Path.cwd()) if user_video else config_video(config)
+    for p in (cfg.latest_json, cfg.history_jsonl):
+        if p:
+            Path(p).parent.mkdir(parents=True, exist_ok=True)
+    return cfg, roi
+
+
+# ---------------------------------------------------------- per-stream state
+class StreamState:
+    """Everything one video stream remembers between frames."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.tracks = []
+        self.next_id = 1
+        self.frame_index = 0
+        self.peak = {}
+        self.last_t = None
+        self.fps = None              # processing speed, smoothed
+        self.frame_total = None      # frames in the video (None = stream / webcam)
+        self.video_fps = None        # the video's own frame rate
+
+    def tick_fps(self):
+        now = time.time()
+        if self.last_t is not None and now > self.last_t:
+            inst = 1.0 / (now - self.last_t)
+            self.fps = inst if self.fps is None else 0.8 * self.fps + 0.2 * inst
+        self.last_t = now
+        return round(self.fps, 1) if self.fps else None
+
+    def totals(self):
+        """Distinct confirmed heads / tails that appeared in the ROI so far."""
+        return {f"{role.lower()}s_total": sum(t.role == role and t.confirmed and t.in_roi_ever
+                                              for t in self.tracks) for role in ROLES}
+
+
+# ------------------------------------------------------------ one frame, all steps
+def analyze_frame(entry, frame, state, roi, cfg, frame_index=None, annotate=False, masks=True):
+    """The full pipeline for ONE frame: detect -> track -> ROI -> sizes -> result
+    (-> drawing). Returns (result dict, annotated frame or None)."""
+    frame = as_bgr(frame)
+    cfg.draw_masks = bool(masks and annotate)                 # outlines only when drawing
+    state.frame_index = int(frame_index) if frame_index is not None else state.frame_index + 1
+    idx = state.frame_index
+
+    dets = detect(entry.model, frame, entry.role_ids, cfg, entry.tubing_id, lock=entry.infer_lock)
+    state.next_id = update_tracks(state.tracks, dets, idx, state.next_id, cfg)   # ALL detections
+    shown = [d for d in dets if in_roi(d, roi)]                                    # ROI = output only
+    shown = cap_per_role(shown, cfg)
+    for d in shown:
+        d["track"].in_roi_ever = True
+    bigger = assign_sizes(shown, cfg)
+    result = build_frame_result(idx, shown, state.tracks, bigger, cfg)
+    for role in ROLES:                                        # most ends seen at once so far
+        key = role.lower() + "s"
+        state.peak[key] = max(state.peak.get(key, 0), result[f"{key}_count"])
+        result[f"{key}_peak"] = state.peak[key]
+    result["frame_total"] = state.frame_total
+    result["fps"] = state.tick_fps()
+    result["video_fps"] = state.video_fps
+
+    if cfg.print_frames:
+        frame_summary(result, cfg)
+    if cfg.latest_json:
+        Path(cfg.latest_json).write_text(json.dumps(result, indent=2))
+    if cfg.history_jsonl:
+        with open(cfg.history_jsonl, "a") as f:
+            f.write(json.dumps(result) + "\n")
+    vis = draw(frame, shown, result, roi, cfg) if annotate else None
+    return result, vis
+
+
+# ------------------------------------------------------------- video in / out
+def open_video(video):
+    """-> (cv2.VideoCapture, fps, total_frames or None). webcam = "0"."""
+    cap = cv2.VideoCapture(int(video) if str(video).isdigit() else str(video))
+    if not cap.isOpened():
+        raise AnalyzerError(f"cannot open {video}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    return cap, fps, (total if total > 0 else None)
+
+
+class VideoOutput:
+    """Annotated .mp4 writer and/or live preview window.
+    write() returns False when the user pressed q in the preview."""
+
+    def __init__(self, path=None, fps=30.0, preview=False):
+        self.path, self.fps, self.preview = path, fps, preview
+        self.writer = None
+        if path:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+    def write(self, vis):
+        if self.path and self.writer is None:
+            h, w = vis.shape[:2]
+            self.writer = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"mp4v"),
+                                          self.fps, (w, h))
+            if not self.writer.isOpened():
+                raise AnalyzerError(f"cannot write {self.path} - must be a .mp4 file path, not a folder")
+        if self.writer is not None:
+            self.writer.write(vis)
+        if self.preview:
+            try:
+                s = 900 / vis.shape[0]
+                cv2.imshow("tube frames", cv2.resize(vis, None, fx=s, fy=s))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    return False
+            except cv2.error:
+                self.preview = False
+                print("[info] no GUI support in this OpenCV build - preview disabled")
+        return True
+
+    def close(self):
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
+        if self.preview:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
+
+
 # ------------------------------------------------------------------------ run
 def run(cfg):
     """Process the video described by `cfg` (from load_config). Yields one result
@@ -728,9 +1303,14 @@ def run(cfg):
     print(f"[classes] {model.names} -> heads/tails {role_ids}")
 
     tubing_id = None
-    if cfg.width_method != "off" and model.task != "segment":
-        print("[width] model is not a segmentation model -> no masks, width turned OFF")
-        cfg.width_method = "off"
+    if model.task != "segment":
+        if cfg.width_method != "off":
+            print("[width] model is not a segmentation model -> no masks, width turned OFF")
+            cfg.width_method = "off"
+        cfg.draw_masks = False
+    # mask outlines are only needed when something is drawn
+    if not (cfg.output_video or cfg.show_preview):
+        cfg.draw_masks = False
     if cfg.width_method in ("auto", "tubing"):
         tubing_id = tubing_id_from_names(model.names)
         if tubing_id is None and cfg.width_method == "tubing":
@@ -764,6 +1344,7 @@ def run(cfg):
 
     tracks, next_id = [], 1
     peak = {}
+    last_t, fps_now = None, None
     writer = None
     preview = cfg.show_preview
     idx, t0 = 0, time.time()
@@ -789,6 +1370,14 @@ def run(cfg):
                 key = role.lower() + "s"
                 peak[key] = max(peak.get(key, 0), result[f"{key}_count"])
                 result[f"{key}_peak"] = peak[key]
+            now = time.time()                        # processing speed, smoothed
+            if last_t is not None and now > last_t:
+                inst = 1.0 / (now - last_t)
+                fps_now = inst if fps_now is None else 0.8 * fps_now + 0.2 * inst
+            last_t = now
+            result["frame_total"] = total if total > 0 else None
+            result["fps"] = round(fps_now, 1) if fps_now else None
+            result["video_fps"] = round(fps, 2)
             if cfg.print_frames:
                 frame_summary(result, cfg)
 
@@ -865,6 +1454,12 @@ def main(argv=None):
                     help="which ends decide the bigger tube (default tail)")
     ap.add_argument("--min-ratio", type=float, help="width ratio to call one BIGGER (default 1.15)")
     ap.add_argument("--mm-per-px", type=float, help="millimetres per pixel, for widths in mm")
+    ap.add_argument("--draw-scale", type=float,
+                    help="size of boxes/labels in the output video (default auto, e.g. 2 = twice as big)")
+    ap.add_argument("--box-fill", type=float, help="translucent fill inside boxes, 0-1 (default 0.2)")
+    ap.add_argument("--no-masks", action="store_true", help="don't draw mask outlines")
+    ap.add_argument("--hide-unconfirmed", action="store_true", help="don't draw grey not-yet-confirmed boxes")
+    ap.add_argument("--no-legend", action="store_true", help="don't draw the colour key")
     ap.add_argument("--preview", action="store_true", help="show a live window (q to stop)")
     ap.add_argument("--quiet", action="store_true", help="don't print every frame")
     a = ap.parse_args(argv)
@@ -883,6 +1478,10 @@ def main(argv=None):
         print_frames=False if a.quiet else None,
         width_method=a.width_method, width_from=a.width_from,
         min_ratio=a.min_ratio, mm_per_px=a.mm_per_px,
+        draw_scale=a.draw_scale, box_fill=a.box_fill,
+        draw_masks=False if a.no_masks else None,
+        draw_unconfirmed=False if a.hide_unconfirmed else None,
+        draw_legend=False if a.no_legend else None,
     )
     if a.draw_roi:
         base = Path(a.config).expanduser().resolve().parent if a.config else Path.cwd()   # never inside the package

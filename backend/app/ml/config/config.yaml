@@ -8,13 +8,13 @@ device: "0"                    # "0" = first GPU, "cpu" = CPU
 
 # detection
 conf: 0.15
-conf_head: 0.5
-conf_tail: 0.2
+conf_head: 0.4
+conf_tail: 0.3
 max_heads: 0                   # e.g. 2 if the scene always has 2 heads (0 = no limit)
 max_tails: 0
 iou: 0.5
 scale: 1.0                     # shrink frames first; try 0.33-0.5 if the ends look much bigger than in training
-tile: 1280                    # the model was trained at imgsz 1280
+tile: 1280                     # the model was trained at imgsz 1280
 tile_overlap: 0.3
 merge_iou: 0.5
 merge_contain: 0.75
@@ -25,8 +25,17 @@ stride: 1
 
 # tracking
 min_frames: 5
+min_frames_tail: null          # 0.1.6: separate threshold for tails (null = min_frames, weak tails: try 2-3)
 max_dist: 80
+max_dist_tail: null            # 0.1.6: separate max distance for tails (null = max_dist)
 max_missed: 30
+
+# drawing (0.1.6 HUD / video)
+draw_scale: null               # size of lines + text; null = auto from frame size (1.0 at 1280 px)
+box_fill: 0.2                  # translucent fill inside each confirmed box (0 = off, 0.4 = strong)
+draw_masks: true               # outline the segmentation mask of each end
+draw_unconfirmed: true         # thin grey boxes for ends not yet confirmed
+draw_legend: false             # colour key off
 
 # width / bigger tube
 width_method: auto             # auto = tube walls if the model has a tubing class, else head/tail mask thickness
@@ -44,5 +53,5 @@ draw_roi: false
 output_video: null
 latest_json: null
 history_jsonl: null
-print_frames: true
+print_frames: false
 show_preview: false

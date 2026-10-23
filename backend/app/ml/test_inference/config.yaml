@@ -26,9 +26,17 @@ stride: 1            # 1 = every frame
 
 # tracking
 min_frames: 5        # sightings before an end is confirmed and counted
+min_frames_tail: null # same, for tails only (null = min_frames). Weak tails: try 2-3
 max_dist: 80        # px an end may move between frames and stay the same end
+max_dist_tail: null  # same, for tails only (null = max_dist)
 max_missed: 30      # frames a lost track can still be re-matched
 
+# drawing (output video / preview)
+draw_scale: null     # size of lines + text; null = auto from frame size
+box_fill: 0.2        # translucent fill inside each confirmed box (0 = off)
+draw_masks: true     # outline the segmentation mask of each end
+draw_unconfirmed: true # thin grey boxes for ends not yet confirmed
+draw_legend: false
 
 # width / bigger tube
 width_method: auto             # auto = tube walls if the model has a tubing class, else head/tail mask thickness

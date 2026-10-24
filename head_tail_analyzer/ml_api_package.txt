@@ -1,0 +1,324 @@
+================================================================================
+HEAD_TAIL_ANALYZER - STANDALONE ML MICROSERVICE PACKAGE
+================================================================================
+
+This package contains everything needed to deploy the tube detection ML API as
+an independent microservice. It works on any machine (Windows/Linux/Cloud) with
+zero hardcoded paths.
+
+--------------------------------------------------------------------------------
+1. FOLDER STRUCTURE FOR YOUR ZIP
+--------------------------------------------------------------------------------
+
+head_tail_analyzer/
+├── main.py            <- FastAPI server (calls wheel directly)
+├── config.yaml        <- ML configuration (relative path to models/best.pt)
+├── requirements.txt   <- Dependencies
+├── wheels/
+│   └── head_tail_analyzer-0.1.6-py3-none-any.whl
+└── models/
+    └── best.pt
+
+
+--------------------------------------------------------------------------------
+2. FILE: main.py
+--------------------------------------------------------------------------------
+"""
+main.py - Head/Tail ML Microservice
+====================================
+Pure ML microservice wrapping the installed wheel.
+All paths are 100% relative to this directory.
+"""
+
+from contextlib import asynccontextmanager
+import logging
+from pathlib import Path
+import threading
+import time
+from typing import Optional
+
+import cv2
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import numpy as np
+
+# Load directly from the installed wheel
+try:
+    from head_tail_analyzer.main import HeadTailAnalyzer
+except ImportError as err:
+    raise ImportError(
+        "Could not import HeadTailAnalyzer. Please install the wheel from the wheels/ directory:\n"
+        "pip install wheels/head_tail_analyzer-*.whl"
+    ) from err
+
+# ----------------------------------------------------------------------
+# 1. Base Paths (100% Relative to THIS file's folder)
+# ----------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.yaml"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("tube-ml-api")
+
+# ----------------------------------------------------------------------
+# 2. Global State & Lock
+# ----------------------------------------------------------------------
+analyzer: Optional[HeadTailAnalyzer] = None
+analyzer_lock = threading.Lock()
+last_frame_time = 0.0
+IDLE_RESET_SECONDS = 10.0
+
+
+# ----------------------------------------------------------------------
+# 3. Model Lifespan: Loads ONCE at Startup
+# ----------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initializes the ML model once on startup and keeps it in VRAM."""
+    global analyzer
+    logger.info("Initializing HeadTailAnalyzer from config: %s", CONFIG_PATH)
+    
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"config.yaml not found at {CONFIG_PATH}")
+
+    # HeadTailAnalyzer resolves relative model paths from config.yaml's folder
+    analyzer = HeadTailAnalyzer(config=str(CONFIG_PATH))
+    t0 = time.perf_counter()
+    analyzer.load_model()
+    logger.info("Model loaded in %.2fs", time.perf_counter() - t0)
+
+    # Warm up GPU once with a dummy frame
+    dummy = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    analyzer.process_frame(dummy)
+    analyzer.reset()
+    logger.info("GPU warm-up completed. Service is ready!")
+
+    yield
+
+    logger.info("Shutting down ML service...")
+    if analyzer is not None:
+        try:
+            analyzer.unload_model()
+        except Exception:
+            pass
+        analyzer = None
+
+
+# ----------------------------------------------------------------------
+# 4. FastAPI App Definition
+# ----------------------------------------------------------------------
+app = FastAPI(
+    title="Tube Detection ML Microservice",
+    description="Receives camera or video frames and returns pure detection JSON.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ----------------------------------------------------------------------
+# 5. Endpoints
+# ----------------------------------------------------------------------
+@app.get("/health", tags=["System"])
+def health():
+    """Health check for uptime monitors."""
+    ready = analyzer is not None and getattr(analyzer, "is_loaded", True)
+    return {
+        "status": "ready" if ready else "not_ready",
+        "model_loaded": ready,
+        "config": str(CONFIG_PATH.name),
+    }
+
+
+@app.post("/infer", tags=["Inference"])
+async def infer(
+    request: Request,
+    file: Optional[UploadFile] = File(None, description="Image frame file (multipart upload)"),
+    frame_index: Optional[int] = Query(None, description="Optional frame sequence number"),
+    new_video: bool = Query(False, description="Set to true on the first frame of a new video"),
+):
+    """
+    Primary Inference Endpoint:
+    - Accepts frames from cameras or video files.
+    - Converts input bytes into a NumPy BGR array.
+    - Calls analyzer.process_frame(frame) from the wheel.
+    - Returns all detections, counts, and measurements as JSON.
+    """
+    global last_frame_time
+    if analyzer is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ML Analyzer is not initialized.",
+        )
+
+    # 1. Read binary image bytes (supports multipart upload OR raw binary stream)
+    if file is not None:
+        data = await file.read()
+    else:
+        data = await request.body()
+
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty frame received (0 bytes).")
+
+    # 2. Decode bytes to NumPy BGR array
+    np_buffer = np.frombuffer(data, dtype=np.uint8)
+    frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+
+    if frame is None or getattr(frame, "size", 0) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not decode image into a NumPy array. Unsupported or corrupted image format.",
+        )
+
+    # 3. Handle video/tracking state
+    now = time.time()
+    with analyzer_lock:
+        if new_video or (now - last_frame_time > IDLE_RESET_SECONDS):
+            analyzer.reset()
+        last_frame_time = now
+
+        # 4. Call the wheel directly
+        t0 = time.perf_counter()
+        result = analyzer.process_frame(frame, frame_index=frame_index)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+
+    return JSONResponse(content=result, headers={"X-Latency-Ms": str(latency_ms)})
+
+
+@app.post("/reset", tags=["Inference"])
+def reset():
+    """Manual reset of tracker history."""
+    if analyzer is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ML Analyzer is not initialized.",
+        )
+    with analyzer_lock:
+        analyzer.reset()
+    logger.info("Tracker state reset.")
+    return {"status": "ok", "message": "Tracker history cleared."}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
+
+--------------------------------------------------------------------------------
+3. FILE: config.yaml
+--------------------------------------------------------------------------------
+# config.yaml - ML Settings for the microservice
+# Relative paths are resolved relative to THIS file's directory.
+
+model_path: models/best.pt      # Points directly to the models/ folder
+video: null
+device: "0"                     # "0" = first GPU, "cpu" = CPU
+
+# Detection thresholds
+conf: 0.25
+conf_head: 0.40
+conf_tail: 0.30
+max_heads: 0                    # 0 = unlimited
+max_tails: 0
+iou: 0.50
+scale: 1.0                      # 1.0 = native size; 0.5 = downscale
+tile: 1280                      # 1280 px tiles
+tile_overlap: 0.30
+merge_iou: 0.50
+merge_contain: 0.75
+merge_gap: 0
+cross_role_contain: 0.50
+gray: false                     # false = full color RGB; true = grayscale
+stride: 1
+
+# Tracking parameters
+min_frames: 3                   # Confirm ends after 3 consecutive frames
+min_frames_tail: null           # null = same as min_frames
+max_dist: 80                    # Maximum pixel shift between frames
+max_dist_tail: null
+max_missed: 30                  # Keep track alive for 30 missing frames
+
+# Width & Sizing logic
+width_method: auto              # auto | tubing | mask | off
+width_from: tail                # tail | all
+min_ratio: 1.15                 # 15% difference needed to declare BIGGER
+mm_per_px: null                 # Millimeters per pixel (null = pixels)
+
+
+--------------------------------------------------------------------------------
+4. FILE: requirements.txt
+--------------------------------------------------------------------------------
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+python-multipart>=0.0.9
+opencv-python-headless>=4.8.0
+ultralytics>=8.1.0
+pyyaml>=6.0.1
+numpy>=1.24.0
+torch>=2.0.0
+
+
+--------------------------------------------------------------------------------
+5. HOW ANYONE RUNS THE UNZIPPED FOLDER (STEP-BY-STEP)
+--------------------------------------------------------------------------------
+
+Step 1: Open Terminal in the unzipped folder
+  cd head_tail_analyzer
+
+Step 2: Create a virtual environment
+  python -m venv .venv
+
+Step 3: Activate the virtual environment
+  # Windows PowerShell / CMD:
+  .venv\Scripts\activate
+
+  # Linux / macOS:
+  source .venv/bin/activate
+
+Step 4: Install dependencies and the wheel
+  pip install --upgrade pip
+  pip install -r requirements.txt
+  pip install wheels/head_tail_analyzer-*.whl
+
+Step 5: Start the server
+  uvicorn main:app --host 0.0.0.0 --port 8000
+
+Step 6: Open docs in browser
+  http://localhost:8000/docs
+
+
+--------------------------------------------------------------------------------
+6. EXAMPLE CLIENT SCRIPT FOR OTHER DEVELOPERS (client_test.py)
+--------------------------------------------------------------------------------
+import requests
+import cv2
+
+# 1. Read a frame from camera or video
+cap = cv2.VideoCapture(0)  # or "video.mp4"
+ok, frame = cap.read()
+cap.release()
+
+if ok:
+    # 2. Encode to JPEG in memory (no disk write)
+    _, buffer = cv2.imencode(".jpg", frame)
+
+    # 3. Send frame to the API
+    url = "http://localhost:8000/infer"
+    response = requests.post(url, files={"file": buffer.tobytes()})
+
+    # 4. Print detections JSON
+    print("Response Status:", response.status_code)
+    print("Detections JSON:", response.json())
+================================================================================

@@ -594,6 +594,8 @@ class TubeAnalyzer:
         self.roi = None
         self._pending_roi = None
         self.peak = {}
+        self._last_frame_t = None
+        self._fps = None
 
     reset = reset_tracking   # old name, still works
 
@@ -636,6 +638,8 @@ class TubeAnalyzer:
         if frame is None or getattr(frame, "size", 0) == 0:
             return FrameAnalysis(result={}, frame=frame, detections=[])
 
+        t_frame_start = time.perf_counter()
+
         # Apply queued ROI swap at the start of frame processing
         if self._pending_roi is not None:
             new_roi, size_hint = self._pending_roi
@@ -674,6 +678,15 @@ class TubeAnalyzer:
         # 5. rvf.build_frame_result(): Tallies up final counts, widths and builds the result dictionary
         result = rvf.build_frame_result(frame_number, inside_roi, self.tracks, bigger, self.cfg)
 
+        # Track and smooth FPS for drawing on annotated video frames
+        elapsed = max(time.perf_counter() - t_frame_start, 0.001)
+        inst_fps = 1.0 / elapsed
+        if not hasattr(self, "_fps") or self._fps is None:
+            self._fps = inst_fps
+        else:
+            self._fps = 0.8 * self._fps + 0.2 * inst_fps
+        result["fps"] = round(self._fps, 1)
+
         if not hasattr(self, "peak"):
             self.peak = {}
         for role in ["HEAD", "TAIL"]:
@@ -709,11 +722,16 @@ class TubeAnalyzer:
             if cuda_is_available():
                 torch.cuda.synchronize()
             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
+
+        fps_val = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
+        if analysis.result.get("fps") is None and fps_val > 0:
+            analysis.result["fps"] = fps_val
+
         return {
             **build_frontend_stats(analysis.result),
             "status": "processing",
             "frame": frame_number,
-            "fps": round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0,
+            "fps": fps_val,
             "frame_time_ms": round(frame_time_ms, 2),
             "latency_ms": round(frame_time_ms, 2),     # legacy key, same value
             "video_width": frame.shape[1],

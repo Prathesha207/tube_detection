@@ -42,9 +42,20 @@ def ml_module_info():
         wheel_version = None
         
         try:
-            wheel_version = md.version("head_tail_analyzer")
-        except md.PackageNotFoundError:
-            wheel_version = "Not installed"
+            import head_tail_analyzer as _hta
+            wheel_version = getattr(_hta, "__version__", None)
+        except Exception:
+            wheel_version = None
+
+        if not wheel_version:
+            for pkg in ("head-tail-analyzer-v", "head_tail_analyzer_v", "head-tail-analyzer", "head_tail_analyzer"):
+                try:
+                    wheel_version = md.version(pkg)
+                    break
+                except md.PackageNotFoundError:
+                    pass
+            if not wheel_version:
+                wheel_version = "Not installed"
 
         if wheel_error:
             msg = f"ML code imported, but the core engine failed to load: {wheel_error}"

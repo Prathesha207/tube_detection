@@ -473,6 +473,10 @@ class VideoInferenceService:
                     except Exception as frame_err:
                         raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
 
+                # Pass frame_total so rvf.draw renders "FRAME X / TOTAL" (matches CLI output)
+                if getattr(analyzer, "_last_analysis", None) and getattr(analyzer._last_analysis, "result", None):
+                    analyzer._last_analysis.result["frame_total"] = stats["total_frames"]
+
                 # Stats for the frontend (one update() so readers never see a half-written frame).
                 # "status" is left out: set_status() owns it, a late frame must not undo "stopped".
                 stats.update({k: v for k, v in last_stats.items() if k != "status"},

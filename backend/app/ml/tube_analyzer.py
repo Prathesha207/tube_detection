@@ -3,36 +3,37 @@ tube_analyzer.py
 ================
 Thin adapter between the backend services and the ``head_tail_analyzer`` wheel.
 
-The wheel (``head_tail_analyzer.run_video_frames``) already contains all the ML
-functions. Its own ``run()`` only works on a video FILE that it opens itself, so
-a backend that receives frames from a camera / upload loop calls the same
-per-frame functions one by one instead. That is all this file does:
+THE WHEEL DOES THE ML. This file only adds what a backend needs around it:
 
-    analyze_frame(frame, frame_number)
-        1. rvf.detect()              YOLO on 640px tiles, duplicates merged
-        2. rvf.update_tracks()       give every end a stable id across frames
-        3. _drop_stale_tracks()      memory cleanup only (does not change results)
-        4. rvf.in_roi()              ROI limits what is REPORTED, not what is tracked
-        5. rvf.build_frame_result()  counts + detections dict
-       -> FrameAnalysis(result, frame, detections)
+    * model cache + hot-reload (weights file changed on disk)
+    * CUDA probe / CPU fallback
+    * per-session ROI (drawn by the user) applied between frames
+    * the dict shape the frontend expects (``build_frontend_stats``)
 
-    draw_annotations(frame, analysis)   boxes / ids / header  (only when you need it)
-    get_clean_frame(frame)              the frame for streaming (ROI outline if enabled)
+Per frame it makes ONE call into the wheel, exactly the call the wheel's own CLI /
+``HeadTailAnalyzer`` makes::
 
-Typical use::
+    result, annotated = rvf.analyze_frame(entry, frame, state, roi, cfg, frame_number,
+                                          annotate=..., masks=...)
 
-    analyzer = TubeAnalyzer(model_path=..., config_path=..., roi_path=...)
-    analyzer.warm_up(frame.shape)                       # once, NOT part of the timing
-    t0 = time.perf_counter()
-    analysis = analyzer.analyze_frame(frame, n)         # <- this is what you time
-    frame_time_ms = (time.perf_counter() - t0) * 1000
-    stats = build_frontend_stats(analysis.result)       # the dict the frontend receives
+so detection, tiling, merging, tracking, widths, Bigger/Smaller/Same, ``bigger_tube``,
+counts, ``fps``, ``frame_total``, ``video_fps`` and the drawn picture all come from the
+wheel. Nothing in this file computes or invents a detection, a width, a size verdict or a
+frame rate. Settings come from config.yaml through the wheel's own loader
+(``rvf.load_stream_config``), so the same config.yaml gives the same settings here and in
+the CLI. ``TubeAnalyzer.describe_settings()`` prints what is actually in use.
+
+The wheel is REQUIRED. If it is missing (or too old) startup fails instead of silently
+running a different local copy. Set ``TUBE_ALLOW_LOCAL_RVF=1`` to allow the old fallback to
+``app.ml.test_inference.run_video_frames`` (development only; it is logged as an ERROR).
 
 ``analysis.result`` is exactly what the wheel produces::
 
     {"frame", "heads_count", "tails_count", "heads_visible", "tails_visible",
-     "heads_total", "tails_total",
-     "detections": [{"id", "role", "conf", "bbox": [x, y, w, h], "center": [x, y]}]}
+     "heads_total", "tails_total", "heads_peak", "tails_peak", "frame_total", "fps",
+     "video_fps", "bigger_tube",
+     "detections": [{"id", "role", "conf", "bbox", "center", "width_px", "width_mm",
+                     "width_now_px", "width_spread_px", "width_source", "size"}]}
 
 One TubeAnalyzer = one video / stream of tracker state. It is NOT thread-safe:
 call it from one thread at a time (the services do this with a lock / a single
@@ -40,7 +41,6 @@ worker thread).
 """
 
 from __future__ import annotations
-from anyio import to_thread
 
 import gc
 import json
@@ -49,10 +49,9 @@ import os
 import time
 import warnings
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -66,33 +65,49 @@ _CUDA_KERNELS_USABLE: Optional[bool] = None
 
 _REQUIRED_WHEEL_FUNCS = (
     "detect", "update_tracks", "assign_sizes", "build_frame_result",
-    "tubing_id_from_names", "role_ids_from_names", "in_roi",
-    "cap_per_role", "draw"
+    "tubing_id_from_names", "role_ids_from_names", "in_roi", "cap_per_role", "draw",
+    # the per-frame pipeline + state + loader the adapter now delegates to:
+    "analyze_frame", "StreamState", "LoadedModel", "configure_for_model",
+    "load_stream_config", "open_video", "as_bgr", "DEFAULTS",
 )
+
+logger = logging.getLogger("tube-analyzer")
 
 rvf = None
 _WHEEL_ERROR = None
+WHEEL_INFO: Dict[str, Any] = {}
 
-# 1. Try importing from installed wheel package first
+# 1. The installed wheel (required).
 try:
+    import head_tail_analyzer as _hta
     from head_tail_analyzer import run_video_frames as _wheel_rvf
-    if all(hasattr(_wheel_rvf, n) for n in _REQUIRED_WHEEL_FUNCS):
-        rvf = _wheel_rvf
-        logging.getLogger("tube-analyzer").info("Using installed head_tail_analyzer wheel")
+    _missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(_wheel_rvf, n)]
+    if _missing:
+        raise ImportError(f"installed head_tail_analyzer is too old, missing: {_missing}")
+    rvf = _wheel_rvf
+    WHEEL_INFO = {"source": "wheel", "version": getattr(_hta, "__version__", "?"), "file": rvf.__file__}
 except Exception as e:
     _WHEEL_ERROR = e
 
-# 2. If wheel is missing or an older build without assign_sizes, load from local test_inference
-if rvf is None:
+# 2. Development-only escape hatch. Off by default: a silent fallback to a different copy of the
+#    pipeline is exactly how "the session run differs from the CLI run" happens.
+if rvf is None and os.environ.get("TUBE_ALLOW_LOCAL_RVF") == "1":
     try:
         from app.ml.test_inference import run_video_frames as _local_rvf
+        _missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(_local_rvf, n)]
+        if _missing:
+            raise ImportError(f"local run_video_frames is missing: {_missing}")
         rvf = _local_rvf
         _WHEEL_ERROR = None
-        logging.getLogger("tube-analyzer").info("Using local app.ml.test_inference.run_video_frames (full width & size measurement enabled)")
+        WHEEL_INFO = {"source": "LOCAL COPY (not the wheel)", "version": "?", "file": rvf.__file__}
+        logger.error("TUBE_ALLOW_LOCAL_RVF=1: using a LOCAL run_video_frames, NOT the installed wheel: %s", rvf.__file__)
     except Exception as e:
-        logging.getLogger("tube-analyzer").error("Could not import local run_video_frames: %s", e)
+        logger.error("Could not import local run_video_frames: %s", e)
 
-logger = logging.getLogger("tube-analyzer")
+if rvf is not None:
+    logger.info("head_tail_analyzer pipeline: %s v%s  (%s)", WHEEL_INFO.get("source"),
+                WHEEL_INFO.get("version"), WHEEL_INFO.get("file"))
+
 
 _ML_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
@@ -128,7 +143,14 @@ def cuda_is_available() -> bool:
         _ = probe + 1
         torch.cuda.synchronize(0)
         del probe
-        torch.backends.cudnn.benchmark = True
+        # NOTE: cudnn.benchmark is deliberately NOT switched on. With benchmark=True cuDNN
+        # picks the fastest convolution algorithm per input shape, and the choice can differ
+        # between runs/processes. Different algorithms give slightly different float results,
+        # which moves confidences and mask widths by a hair, and that is enough to flip a
+        # detection sitting at the conf cutoff or a width ratio sitting at min_ratio. The
+        # wheel's CLI does not enable it, so neither do we (opt in: TUBE_CUDNN_BENCHMARK=1).
+        if os.environ.get("TUBE_CUDNN_BENCHMARK") == "1":
+            torch.backends.cudnn.benchmark = True
         _CUDA_KERNELS_USABLE = True
     except Exception as e:
         logger.warning("CUDA is visible but this PyTorch build cannot run GPU kernels; using CPU: %s", e)
@@ -152,6 +174,7 @@ def release_gpu_memory(clear_cache: bool = False) -> None:
     if clear_cache:
         _GLOBAL_YOLO_CACHE.clear()
         _GLOBAL_YOLO_MTIMES.clear()
+        _GLOBAL_ENTRIES.clear()
         _GLOBAL_WARMED_SHAPES.clear()
     gc.collect()
     if cuda_is_available():
@@ -283,7 +306,9 @@ def load_roi(path: Optional[str] = None, target_shape: Optional[Tuple[int, int]]
 #################### 4. Model Loading & Warming ####################
 _GLOBAL_YOLO_CACHE: Dict[str, Any] = {}
 _GLOBAL_YOLO_MTIMES: Dict[str, float] = {}
+_GLOBAL_ENTRIES: Dict[str, Any] = {}          # cache_key -> rvf.LoadedModel (model + role ids + infer lock)
 _GLOBAL_WARMED_SHAPES: Set[Tuple[int, int]] = set()
+_ENTRY_SERIAL = 0
 
 def _load_yolo_model(path: str, device: str = "cpu"):
     """Load the YOLO model (cached) for fast inference.
@@ -314,6 +339,29 @@ def _load_yolo_model(path: str, device: str = "cpu"):
     _GLOBAL_YOLO_MTIMES[cache_key] = mtime
     return model
 
+def _load_entry(path: str, device: str = "cpu"):
+    """The wheel's ``LoadedModel`` for this weights file: model + HEAD/TAIL class ids + tubing id +
+    the per-model inference lock that ``rvf.analyze_frame`` takes around ``model.predict``.
+    Cached with the model, so every analyzer sharing a model shares one lock."""
+    global _ENTRY_SERIAL
+    model = _load_yolo_model(path, device)
+    key = f"{path}:{device}"
+    entry = _GLOBAL_ENTRIES.get(key)
+    if entry is not None and entry.model is model:
+        return entry
+    names = dict(model.names)
+    try:
+        role_ids = rvf.role_ids_from_names(names)
+    except SystemExit as e:        # the wheel exits instead of raising; SystemExit is not an Exception
+        raise RuntimeError(f"Model {path} is not usable for head/tail counting: {e}") from None
+    _ENTRY_SERIAL += 1
+    entry = rvf.LoadedModel(path=str(path), model=model, role_ids=role_ids,
+                            tubing_id=rvf.tubing_id_from_names(names),
+                            task=getattr(model, "task", "segment"), names=names, serial=_ENTRY_SERIAL)
+    _GLOBAL_ENTRIES[key] = entry
+    return entry
+
+
 #################### 3. Data Formatting ####################
 _WIDTH_DETECTION_KEYS = (
     "width_px", "width_mm", "width_now_px", "width_spread_px",
@@ -337,8 +385,9 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     detections = []
     for d in result.get("detections", []):
         det = dict(d)
-        det["confidence"] = det.get("conf", 1.0)
-        det["class"] = det.get("role", "HEAD")
+        det["confidence"] = det.get("conf")        # alias only; never a made-up default
+        det["class"] = det.get("role")             # alias only
+        # the wheel only emits CONFIRMED ends in ``detections``, so "OK" is true for every entry
         det["status"] = d.get("status", "OK")
         for key in _WIDTH_DETECTION_KEYS:          # stable schema even if nothing was measured
             det.setdefault(key, None)
@@ -353,7 +402,7 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         "tails_visible": result.get("tails_visible", tails),
         "total_count": heads + tails,
         "bigger_tube": result.get("bigger_tube"),   # from rvf.assign_sizes(); None for an empty frame
-        "smaller_tube": None,
+        "smaller_tube": result.get("smaller_tube"),   # the wheel has no such field -> None, kept for the frontend schema
         "detections": detections,
     }
 
@@ -387,47 +436,52 @@ def new_stats(**fields: Any) -> Dict[str, Any]:
 class FrameAnalysis:
     """Everything one analyze_frame() call produced.
 
-    result      the wheel's result dict ({} for an empty frame)
-    frame       the frame that was analysed (the same object, NOT a copy)
-    detections  the wheel's internal detections inside the ROI, kept so the frame can
-                be drawn later without running the model again
+    result     the wheel's result dict ({} for an empty frame), untouched
+    frame      the frame that was analysed (the same object, NOT a copy)
+    annotated  the picture the wheel drew for THIS frame (only when annotate=True), else None.
+               It is drawn inside the same call that produced ``result``, so its labels always
+               agree with ``result`` (no later re-read of live tracker state).
     """
     result: Dict[str, Any]
     frame: Optional[np.ndarray]
-    detections: List[dict] = field(default_factory=list)
+    annotated: Optional[np.ndarray] = None
+
+
+# Settings worth printing / diffing against the CLI when two runs disagree.
+_SETTINGS_TO_REPORT = (
+    "model_path", "device", "conf", "conf_head", "conf_tail", "iou", "scale", "imgsz", "tile",
+    "tile_overlap", "merge_iou", "merge_contain", "merge_gap", "cross_role_contain", "gray",
+    "stride", "min_frames", "min_frames_tail", "max_dist", "max_dist_tail", "max_missed",
+    "max_heads", "max_tails", "width_method", "width_from", "min_ratio", "mm_per_px",
+    "attach_gap", "max_disagree", "draw_masks", "draw_roi", "box_fill", "draw_scale",
+)
 
 
 # ---------------------------------------------------------------- the analyzer
 def _build_settings(config_path: Optional[str], model_path: str, device: str,
-                    draw_roi: bool, chosen: Dict[str, Any], extra: Dict[str, Any]) -> SimpleNamespace:
-    """wheel DEFAULTS <- config.yaml <- explicit arguments (later wins)."""
-    cfg = dict(rvf.DEFAULTS)
+                    draw_roi: bool, chosen: Dict[str, Any], extra: Dict[str, Any]):
+    """wheel DEFAULTS <- config.yaml <- explicit arguments (later wins).
 
-    if config_path and os.path.exists(config_path):
-        try:
-            import yaml
-            data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-            for k, v in data.items():
-                if k in cfg and v is not None:
-                    cfg[k] = v
-        except Exception as e:
-            logger.warning(f"Could not read config file {config_path}: {e}")
+    This is the wheel's OWN loader (``rvf.load_stream_config``), not a copy of it, so a given
+    config.yaml yields the same settings here as in the CLI / HeadTailAnalyzer."""
+    if not config_path or not os.path.exists(config_path):
+        # Falling back to the wheel's built-in defaults would silently drop the ML team's tuned
+        # thresholds (conf_tail, min_frames, scale ...) and change the results.
+        raise FileNotFoundError(f"config.yaml not found: {config_path!r} (it holds the ML team's settings)")
 
-    cfg.update({k: v for k, v in chosen.items() if v is not None})
-
-    unknown = sorted(k for k in extra if k not in cfg)
+    overrides = {k: v for k, v in chosen.items() if v is not None}
+    unknown = sorted(k for k in extra if k not in rvf.DEFAULTS)
     if unknown:
         logger.warning(f"TubeAnalyzer ignoring settings the wheel does not have: {unknown}")
-    cfg.update({k: v for k, v in extra.items() if k in cfg and v is not None})
+    overrides.update({k: v for k, v in extra.items() if k in rvf.DEFAULTS and v is not None})
+    overrides.update(model_path=model_path, device=device, draw_roi=draw_roi, print_frames=False)
 
-    if cfg.get("width_method") not in ("auto", "tubing", "mask", "off"):
-        raise ValueError(f"width_method must be auto/tubing/mask/off, got {cfg.get('width_method')!r}")
-    if cfg.get("width_from") not in ("tail", "all"):
-        raise ValueError(f"width_from must be tail/all, got {cfg.get('width_from')!r}")
-
-    cfg.update(model_path=model_path, device=device, tile=int(cfg.get("tile") or 0),
-               draw_roi=draw_roi, roi_json=None)   # ROI is loaded by the analyzer, not the wheel
-    return SimpleNamespace(**cfg)
+    cfg, _roi = rvf.load_stream_config(config_path, use_roi=False, **overrides)   # roi: see __init__
+    # The CLI overwrites a "latest frame" JSON file on every frame when config.yaml names one. The
+    # backend delivers results through the API instead, so never let a CLI-oriented config.yaml make
+    # the server write that file 30 times a second. (history_jsonl is left as configured.)
+    cfg.latest_json = None
+    return cfg
 
 
 class TubeAnalyzer:
@@ -467,13 +521,7 @@ class TubeAnalyzer:
         if rvf is None:
             raise RuntimeError(
                 f"The head-tail-analyzer wheel could not be imported: {_WHEEL_ERROR}. "
-                "Install the wheel or ensure backend/app/ml/test_inference/run_video_frames.py is present."
-            )
-        missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(rvf, n)]
-        if missing:
-            raise RuntimeError(
-                f"The analyzer module is missing required functions: {missing}. "
-                "Rebuild the wheel or update run_video_frames.py."
+                "Install the wheel (pip install head_tail_analyzer_v-*.whl)."
             )
 
         path = model_path or MODEL_PATH
@@ -493,7 +541,9 @@ class TubeAnalyzer:
                       min_ratio=min_ratio, mm_per_px=mm_per_px,
                       draw_scale=draw_scale, box_fill=box_fill,
                       draw_masks=draw_masks, draw_unconfirmed=draw_unconfirmed)
-        self.cfg = _build_settings(config_path or CONFIG_PATH, path, target_device, draw_roi, chosen, extra)
+        cfg_path = config_path or CONFIG_PATH
+        self.cfg = _build_settings(cfg_path, path, target_device, draw_roi, chosen, extra)
+        self._warn_if_config_has_roi(cfg_path)
 
         self.draw_overlay = draw_overlay
         self.draw_roi = draw_roi
@@ -501,37 +551,73 @@ class TubeAnalyzer:
         self.model_path = str(path)
         self.model_mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
 
-        self.model = _load_yolo_model(path, target_device)
+        self.entry = _load_entry(path, target_device)       # the wheel's LoadedModel
+        self.model = self.entry.model
+        self.role_ids = self.entry.role_ids
+        self.tubing_id: Optional[int] = self.entry.tubing_id
+        # The wheel's own decision (width_method auto -> tubing/mask, non-seg model -> off).
         try:
-            self.role_ids = rvf.role_ids_from_names(self.model.names)
-        except SystemExit as e:        # the wheel exits instead of raising; SystemExit is not an Exception
-            raise RuntimeError(f"Model {path} is not usable for head/tail counting: {e}") from None
-        self.tubing_id: Optional[int] = None
-        self._setup_width_measurement()
-        logger.info(f"TubeAnalyzer ready: model={path} classes={self.model.names} "
-                    f"using={self.role_ids} device={self.cfg.device} tile={self.cfg.tile or 'off'}")
+            self._masks_ok = bool(rvf.configure_for_model(self.cfg, self.entry))
+        except rvf.AnalyzerError as e:
+            raise RuntimeError(str(e)) from None
+        self._masks_ok = self._masks_ok and bool(self.cfg.draw_masks)   # same as HeadTailAnalyzer
 
         # Per-session ROI: start with full frame (no ROI). ROI is only
         # applied when the user explicitly draws one via set_roi().
         self.roi: Optional[np.ndarray] = None
         self._pending_roi: Optional[Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]] = None
-        self.tracks: list = []
-        self.next_id = 1
-        self.peak: Dict[str, int] = {}
+        self.state = rvf.StreamState()      # tracks, ids, peak counts, fps, frame_total, video_fps: ALL the wheel's
         self._last_analysis: Optional[FrameAnalysis] = None
         self._warmed_shapes: Set[Tuple[int, int]] = _GLOBAL_WARMED_SHAPES
+        if self.cfg.width_method == "mask" and self.cfg.width_from == "all":
+            logger.warning("width_from=all compares connector width with tube width; "
+                           "use width_from=tail for a fair 'bigger tube'")
+        logger.info(f"TubeAnalyzer ready: model={path} classes={self.model.names} "
+                    f"using={self.role_ids} device={self.cfg.device} tile={self.cfg.tile or 'off'}")
+        logger.info("TubeAnalyzer settings: %s", json.dumps(self.describe_settings(), default=str, sort_keys=True))
 
-        # Pre-warm directly on standard 1080p camera/video frame shape so the first live frame has zero delay
+        # Pre-warm directly on standard 1080p camera/video frame shape so the first live frame has zero delay.
+        # (Only CUDA start-up; it has no effect on results.)
         self.warm_up((1080, 1920))
+
+    # ---------------------------------------------------------- introspection
+    def describe_settings(self) -> Dict[str, Any]:
+        """What this analyzer is really running with + which pipeline it uses. Compare with
+        ``vars(HeadTailAnalyzer(config).cfg)`` from the CLI side when two runs disagree."""
+        d = {k: getattr(self.cfg, k, None) for k in _SETTINGS_TO_REPORT}
+        d["pipeline"] = dict(WHEEL_INFO)
+        d["roi_active"] = self.roi is not None
+        return d
+
+    def _warn_if_config_has_roi(self, cfg_path: str) -> None:
+        """The CLI applies ``roi_json`` from config.yaml; this backend applies only the ROI the
+        user draws in the UI. Say so, because it changes which ends are counted."""
+        try:
+            import yaml
+            data = yaml.safe_load(Path(cfg_path).read_text(encoding="utf-8")) or {}
+            if data.get("roi_json"):
+                logger.warning("config.yaml sets roi_json=%r but the backend IGNORES it (ROI comes from the UI). "
+                               "CLI runs WILL count only inside that polygon; counts can differ.", data["roi_json"])
+        except Exception:
+            pass
+
+    # ---------------------------------------------- state (the wheel's StreamState)
+    @property
+    def tracks(self) -> list:
+        return self.state.tracks
+
+    @property
+    def next_id(self) -> int:
+        return self.state.next_id
+
+    @property
+    def peak(self) -> Dict[str, int]:
+        return self.state.peak
 
     # ------------------------------------------------------------- lifecycle
     def warm_up(self, frame_shape: Optional[Tuple[int, ...]] = None) -> None:
-        """Run the model once on a black frame so CUDA / cuDNN initialisation and the
-        autotuner do not land in the first real frame's timing.
-
-        Pass ``frame.shape`` of the real frames: a 1920x1080 frame is split into several
-        tiles that are sent to the model as ONE batch, and cuDNN autotunes per batch
-        shape. Runs once per frame size and caches in _warmed_shapes."""
+        """Run the model once on a black frame so CUDA initialisation does not land in the first
+        real frame's timing. Runs once per frame size and caches in _warmed_shapes."""
         if self.cfg.device == "cpu":
             return
         if frame_shape is not None and len(frame_shape) >= 2:
@@ -542,7 +628,7 @@ class TubeAnalyzer:
             return
         try:
             dummy = np.zeros((height, width, 3), dtype=np.uint8)
-            rvf.detect(self.model, dummy, self.role_ids, self.cfg, self.tubing_id)
+            rvf.detect(self.model, dummy, self.role_ids, self.cfg, self.tubing_id, lock=self.entry.infer_lock)
             if cuda_is_available():
                 torch.cuda.synchronize()
             self._warmed_shapes.add((height, width))
@@ -559,31 +645,6 @@ class TubeAnalyzer:
         except Exception:
             return False
 
-    def _setup_width_measurement(self) -> None:
-        """Same decision run() in the wheel makes: pick the width method and find the tubing class.
-
-        width_method  auto    -> "tubing" when the model has a tubing class, else "mask"
-                      tubing  -> tube diameter behind each end (needs a tubing class)
-                      mask    -> thickness of the head/tail mask itself
-                      off     -> no width, no masks (faster)
-        A non-segmentation model has no masks, so width is switched off."""
-        cfg = self.cfg
-        self.tubing_id = None
-        if cfg.width_method != "off" and getattr(self.model, "task", "segment") != "segment":
-            logger.warning("Model is not a segmentation model -> no masks, width turned OFF")
-            cfg.width_method = "off"
-        if cfg.width_method in ("auto", "tubing"):
-            self.tubing_id = rvf.tubing_id_from_names(self.model.names)
-            if self.tubing_id is None and cfg.width_method == "tubing":
-                raise RuntimeError(f"width_method=tubing but the model has no tubing class: {self.model.names}")
-            cfg.width_method = "tubing" if self.tubing_id is not None else "mask"
-        if cfg.width_method == "mask" and cfg.width_from == "all":
-            logger.warning("width_from=all compares connector width with tube width; "
-                           "use width_from=tail for a fair 'bigger tube'")
-        logger.info(f"Width: method={cfg.width_method} tubing_id={self.tubing_id} "
-                    f"bigger_tube_from={cfg.width_from} min_ratio={cfg.min_ratio} "
-                    f"units={'mm' if cfg.mm_per_px else 'px'}")
-
     def set_calibration(self, mm_per_px: Optional[float]) -> None:
         """Set (or clear with None) millimetres-per-pixel. Takes effect on the next frame."""
         if mm_per_px is not None:
@@ -592,18 +653,20 @@ class TubeAnalyzer:
                 raise ValueError("mm_per_px must be a positive number")
         self.cfg.mm_per_px = mm_per_px
 
+    def set_video_info(self, frame_total: Optional[int], video_fps: Optional[float]) -> None:
+        """Tell the wheel about the video (same two values HeadTailAnalyzer.process_video sets), so it
+        fills ``frame_total`` / ``video_fps`` in every result and draws ``FRAME n / total``."""
+        self.state.frame_total = frame_total
+        self.state.video_fps = video_fps
+
     def reset_tracking(self) -> None:
         """Forget all tracks (call before a new video / stream).
         ROI is cleared back to None (full frame). The user must draw a new
         ROI for it to take effect again."""
-        self.tracks = []
-        self.next_id = 1
+        self.state.reset()
         self._last_analysis = None
         self.roi = None
         self._pending_roi = None
-        self.peak = {}
-        self._last_frame_t = None
-        self._fps = None
 
     reset = reset_tracking   # old name, still works
 
@@ -621,7 +684,8 @@ class TubeAnalyzer:
         logger.warning("CUDA inference failed (%s); reloading the detector on CPU and retrying this frame", error)
         _CUDA_KERNELS_USABLE = False
         self.cfg.device = "cpu"
-        self.model = _load_yolo_model(self.cfg.model_path)
+        self.entry = _load_entry(self.cfg.model_path, "cpu")
+        self.model = self.entry.model
         self._warmed_shapes.clear()
         if torch is not None:
             try:
@@ -631,125 +695,76 @@ class TubeAnalyzer:
         return True
 
     # ------------------------------------------------------------ per frame
-    """ analyze_frame() This is the core ML loop that runs 30 times a second. It executes exactly in this order:
-        rvf.detect(): Scans the image to find Tubes (Heads/Tails) and measures widths via masks.
-        rvf.update_tracks(): Compares the Tubes found in this frame to the Tubes found in the last frame, giving them a persistent ID so they aren't double-counted.
-        _drop_stale_tracks(): Clears out memory for tubes that walked off-screen.
-        rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone.
-        rvf.assign_sizes(): Labels each tube BIGGER / SMALLER / SAME and picks the bigger_tube.
-        rvf.build_frame_result(): Tallies up the final counts, widths and builds the result dictionary."""
-    def analyze_frame(self, frame: np.ndarray, frame_number: int = 0) -> FrameAnalysis:
-        """Detect -> track -> ROI filter -> result for ONE BGR frame.
+    def analyze_frame(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False) -> FrameAnalysis:
+        """ONE BGR frame -> the wheel's result (and, with annotate=True, the wheel's drawn picture).
 
-        This is the part worth timing. It does no drawing and no frame copy.
-        ``frame_number`` is the real frame index (tracker ``max_missed`` is measured in it)."""
+        The whole pipeline (detect -> track -> ROI -> sizes -> counts -> fps -> draw) runs inside
+        ``rvf.analyze_frame``; this method only applies a queued ROI swap first and trims dead
+        flicker tracks afterwards. ``frame_number`` is the real frame index (tracker ``max_missed``
+        is measured in it)."""
         if frame is None or getattr(frame, "size", 0) == 0:
-            return FrameAnalysis(result={}, frame=frame, detections=[])
-
-        t_frame_start = time.perf_counter()
+            return FrameAnalysis(result={}, frame=frame)
 
         # Apply queued ROI swap at the start of frame processing
         if self._pending_roi is not None:
             new_roi, size_hint = self._pending_roi
             self._pending_roi = None
-            if new_roi is not None and frame is not None and getattr(frame, "shape", None) is not None:
+            if new_roi is not None and getattr(frame, "shape", None) is not None:
                 h, w = frame.shape[:2]
                 if size_hint and size_hint != (w, h) and size_hint[0] > 0 and size_hint[1] > 0:
                     sx = w / float(size_hint[0])
                     sy = h / float(size_hint[1])
                     new_roi = np.round(new_roi.astype(np.float64) * [sx, sy]).astype(np.int32)
             self.roi = new_roi
-            for t in self.tracks:
+            for t in self.state.tracks:
                 t.in_roi_ever = False
 
-        # 1. rvf.detect(): Scans the image to find Tubes (Heads/Tails) and measures width
+        def _run():
+            return rvf.analyze_frame(self.entry, frame, self.state, self.roi, self.cfg, frame_number,
+                                     annotate=annotate, masks=self._masks_ok)
         try:
-            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg, self.tubing_id)
+            result, vis = _run()
         except Exception as error:
             if not self._retry_on_cpu_after_cuda_error(error):
                 raise
-            detections = rvf.detect(self.model, frame, self.role_ids, self.cfg, self.tubing_id)
+            result, vis = _run()
 
-        # 2. rvf.update_tracks(): Track association
-        self.next_id = rvf.update_tracks(self.tracks, detections, frame_number, self.next_id, self.cfg)
         self._drop_stale_tracks(frame_number)
-
-        # 3. rvf.in_roi(): Throws away any Tube that isn't standing inside your drawn Polygon zone
-        inside_roi = [d for d in detections if rvf.in_roi(d, self.roi)]   # ROI limits output only
-        inside_roi = rvf.cap_per_role(inside_roi, self.cfg)
-        for d in inside_roi:
-            d["track"].in_roi_ever = True
-
-        # 4. rvf.assign_sizes(): BIGGER / SMALLER / SAME per end + bigger_tube summary
-        bigger = rvf.assign_sizes(inside_roi, self.cfg)
-
-        # 5. rvf.build_frame_result(): Tallies up final counts, widths and builds the result dictionary
-        result = rvf.build_frame_result(frame_number, inside_roi, self.tracks, bigger, self.cfg)
-
-        # Track and smooth FPS for drawing on annotated video frames
-        elapsed = max(time.perf_counter() - t_frame_start, 0.001)
-        inst_fps = 1.0 / elapsed
-        if not hasattr(self, "_fps") or self._fps is None:
-            self._fps = inst_fps
-        else:
-            self._fps = 0.8 * self._fps + 0.2 * inst_fps
-        result["fps"] = round(self._fps, 1)
-
-        if not hasattr(self, "peak"):
-            self.peak = {}
-        for role in ["HEAD", "TAIL"]:
-            key = role.lower() + "s"
-            self.peak[key] = max(self.peak.get(key, 0), result.get(f"{key}_count", 0))
-            result[f"{key}_peak"] = self.peak[key]
-
-        # Write history_jsonl if configured in self.cfg and not managed externally
-        hist_file = getattr(self.cfg, "history_jsonl", None)
-        if hist_file:
-            try:
-                Path(hist_file).parent.mkdir(parents=True, exist_ok=True)
-                with open(hist_file, "a", encoding="utf-8") as hf:
-                    hf.write(json.dumps(result, default=_json_default) + "\n")
-            except Exception as e:
-                logger.warning(f"Could not append to history_jsonl ({hist_file}): {e}")
-
-        analysis = FrameAnalysis(result=result, frame=frame, detections=inside_roi)
+        analysis = FrameAnalysis(result=result, frame=frame, annotated=vis)
         self._last_analysis = analysis
         return analysis
 
-    def infer(self, frame: np.ndarray, frame_number: int = 0) -> Dict[str, Any]:
+    def infer(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False) -> Dict[str, Any]:
         """ONE call: BGR frame in -> the complete dict for the frontend out.
 
         In order:  warm_up(frame.shape)      once per frame size, not timed
-                   analyze_frame()           detect -> track -> ROI -> result   (timed)
+                   analyze_frame()           the wheel's pipeline                (timed)
                    build_frontend_stats()    confidence/class/status/total_count ...
 
-        Whatever keys the wheel puts in its result pass straight through
-        (build_frontend_stats spreads ``**result``), so a new wheel field reaches the
-        frontend without touching any service code.
+        ``fps`` is the wheel's own ``result["fps"]`` (the same number the CLI shows). The model
+        speed measured around the wheel call is reported separately as ``frame_time_ms`` /
+        ``model_fps``. Whatever other keys the wheel puts in its result pass straight through.
 
-        Drawing is NOT done here (an image is not JSON). Afterwards call
-        ``draw_annotations(frame)`` -- it reuses the detections of THIS call -- or
-        ``get_clean_frame(frame)``."""
+        annotate=True also draws the picture inside the wheel call: read it from
+        ``analyzer._last_analysis.annotated`` (or ``draw_annotations``)."""
         if frame is None or getattr(frame, "size", 0) == 0:
             return new_stats(status="error", reasons=["Empty frame"], frame=frame_number)
 
         self.warm_up(frame.shape)
         with inference_context():
             t_start = time.perf_counter()
-            analysis = self.analyze_frame(frame, frame_number)
+            analysis = self.analyze_frame(frame, frame_number, annotate=annotate)
             if cuda_is_available():
                 torch.cuda.synchronize()
             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
 
-        fps_val = round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0
-        if analysis.result.get("fps") is None and fps_val > 0:
-            analysis.result["fps"] = fps_val
-
+        wheel_fps = analysis.result.get("fps")          # None on the very first frame (nothing to time yet)
         return {
             **build_frontend_stats(analysis.result),
             "status": "processing",
             "frame": frame_number,
-            "fps": fps_val,
+            "fps": wheel_fps if wheel_fps else 0.0,     # 0.0 = "not known yet", so the UI never gets null
+            "model_fps": round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0,
             "frame_time_ms": round(frame_time_ms, 2),
             "latency_ms": round(frame_time_ms, 2),     # legacy key, same value
             "video_width": frame.shape[1],
@@ -765,15 +780,13 @@ class TubeAnalyzer:
         self._pending_roi = (validated_roi, size_hint)
 
     def draw_annotations(self, frame: np.ndarray, analysis: Optional[FrameAnalysis] = None) -> np.ndarray:
-        """Frame with boxes, ids and the counts header drawn on (a new image).
-
-        Not part of analyze_frame() so it is not in the timing and costs nothing when unused.
-        Pass ``analysis=None`` to reuse the most recent detections on a NEW frame (for frames
-        that were skipped by a stride)."""
+        """The picture the wheel drew for an analysis (needs ``annotate=True`` when it was analysed).
+        Without one, the frame is returned untouched. Nothing is re-drawn later from live tracker
+        state, because that state keeps moving and the labels would stop matching ``result``."""
         analysis = analysis or self._last_analysis
-        if analysis is None or not analysis.result:
+        if analysis is None or analysis.annotated is None:
             return frame
-        return rvf.draw(frame, analysis.detections, analysis.result, self.roi, self.cfg)
+        return analysis.annotated
 
     def get_clean_frame(self, frame: np.ndarray) -> np.ndarray:
         """Frame for live streaming. No boxes (the frontend draws them from ``detections``).
@@ -789,10 +802,11 @@ class TubeAnalyzer:
 
         return_clean=True -> (result, annotated_frame, clean_frame)
         otherwise         -> (result, annotated_frame if draw_overlay else clean_frame)
-        New code should use analyze_frame() and draw only when needed."""
-        analysis = self.analyze_frame(frame, frame_idx)
+        New code should use infer() / analyze_frame()."""
+        want_drawn = return_clean or self.draw_overlay
+        analysis = self.analyze_frame(frame, frame_idx, annotate=want_drawn)
         clean_frame = self.get_clean_frame(frame)
-        annotated = self.draw_annotations(frame, analysis) if (return_clean or self.draw_overlay) else None
+        annotated = analysis.annotated if want_drawn else None
         if return_clean:
             return analysis.result, annotated, clean_frame
         return (analysis.result, annotated) if self.draw_overlay else (analysis.result, clean_frame)
@@ -803,4 +817,4 @@ class TubeAnalyzer:
         never counted (unconfirmed), so no result changes; it only stops the list growing forever
         on a long camera session. Confirmed tracks stay: they feed heads_total / tails_total."""
         oldest_live = frame_number - self.cfg.max_missed
-        self.tracks = [t for t in self.tracks if t.confirmed or t.last_seen >= oldest_live]
+        self.state.tracks = [t for t in self.state.tracks if t.confirmed or t.last_seen >= oldest_live]

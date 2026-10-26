@@ -279,12 +279,12 @@ def analyze_camera_frame(
 ) -> Tuple[Dict[str, Any], Any]:
     """Run the model on one camera frame. Returns (stats, clean_frame).
 
-    ``frame_time_ms`` covers ONLY TubeAnalyzer.analyze_frame(): detect + track + ROI +
-    result. It excludes frame reading, waiting for the session lock, warm-up, drawing
-    and encoding. ``fps`` is 1000 / frame_time_ms: how fast the model could run, not how
-    fast the camera delivers frames.
+    ``fps`` is the wheel's own processing speed (``result["fps"]``, the number the CLI shows).
+    ``frame_time_ms`` / ``model_fps`` are measured around TubeAnalyzer.analyze_frame() only
+    (detect + track + ROI + result), excluding frame reading, waiting for the session lock,
+    warm-up and encoding.
 
-    ``annotate=True`` also draws the boxes and stores the image in
+    ``annotate=True`` makes the wheel draw the boxes inside the same call and stores the image in
     session["last_annotated_frame"]; it is off by default because drawing is wasted work
     when the frontend draws boxes itself from stats["detections"]."""
     if app_state.get_mode() == "TRAINING":
@@ -323,7 +323,7 @@ def analyze_camera_frame(
 
         frame_number = frame_seq if frame_seq is not None else (session["frames_processed"] + 1)
         try:
-            stats = analyzer.infer(frame, frame_number)      # <- the ONE ML call
+            stats = analyzer.infer(frame, frame_number, annotate=annotate)      # <- the ONE ML call
             session["frames_processed"] += 1
         except Exception as e:
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
@@ -331,7 +331,7 @@ def analyze_camera_frame(
 
         clean_frame = analyzer.get_clean_frame(frame)
         if annotate:
-            session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # reuses this frame's detections
+            session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # the wheel's picture of THIS frame
 
     stats.update(session_id=session_id, frames_processed=session["frames_processed"])
     session["last_stats"] = stats

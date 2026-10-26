@@ -13,10 +13,15 @@ How a run works
     frames, running the model, writing the annotated mp4 and JPEG-encoding never block
     the FastAPI event loop. Per frame the worker does:
 
-        cap.read() -> analyzer.analyze_frame()   <- frame_time_ms is measured around this only
-                   -> analyzer.draw_annotations() -> VideoWriter (annotated mp4)
+        rvf.open_video() -> cap.read() -> analyzer.infer(annotate=True)  <- the wheel's analyze_frame:
+                                              detect, track, sizes, result, fps AND the drawn picture
+                   -> annotated picture (drawn by the wheel for THIS frame) -> VideoWriter (annotated mp4)
+                   -> result                      -> history.jsonl (the wheel's dict, one line per processed frame)
                    -> analyzer.get_clean_frame()  -> JPEG -> live stream queue
                    -> session["stats"]            (polled by get_status)
+
+    Nothing here decides what a frame contains: counts, widths, Bigger/Smaller, fps, frame_total and
+    video_fps are the wheel's. Frame skipping is the wheel's ``stride`` setting from config.yaml.
 
     One video job runs at a time (single worker thread). The model is loaded when a job
     starts and freed when it ends, so VRAM is empty whenever app_state says the GPU is free.
@@ -48,6 +53,7 @@ from .tube_analyzer import (
     default_device,
     new_stats,
     release_gpu_memory,
+    rvf,                      # the wheel's run_video_frames module (same one TubeAnalyzer uses)
 )
 
 logger = setup_logger("tube-video-inference")
@@ -59,7 +65,6 @@ _CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
 _FINISHED_STATES = ("completed", "stopped", "error")
 _JPEG_QUALITY = 85
 _SAVE_PREVIEW_EVERY_N_FRAMES = 15
-_HIGH_FPS_THRESHOLD = 45.0        # above this the model runs on every 2nd frame
 
 
 # ------------------------------------------------------------------- helpers
@@ -397,16 +402,16 @@ class VideoInferenceService:
                     logger.warning(f"Failed to re-apply ROI for session {session_id}: {e}")
             session["analyzer"] = analyzer
 
-            cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
-            if not cap.isOpened():
-                raise ValueError(f"Could not open video file: {video_path}")
-
+            # Open the video exactly like the wheel's own CLI does (rvf.open_video), so frames are decoded
+            # the same way and fps / frame count come from the file, not from an assumption here.
+            cap, video_fps, total = rvf.open_video(video_path)
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            raw_fps = cap.get(cv2.CAP_PROP_FPS)
-            video_fps = raw_fps if (raw_fps and 1.0 <= raw_fps <= 240.0) else 30.0
-            stats.update(total_frames=max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)),
-                         video_width=width, video_height=height)
+            stride = max(int(getattr(analyzer.cfg, "stride", 1) or 1), 1)   # config.yaml (ML team), not a guess from fps
+            stats.update(total_frames=max(1, int(total or 0)), video_width=width, video_height=height)
+            # Same two values HeadTailAnalyzer.process_video gives the wheel: it then reports
+            # frame_total / video_fps / fps itself and draws "FRAME n / total".
+            analyzer.set_video_info(total, round(video_fps, 2))
             analyzer.warm_up((height, width))                    # so frame 1 is not slow
 
             session_dir = os.path.join(_output_base_dir(), session_id)
@@ -419,7 +424,8 @@ class VideoInferenceService:
             stats["output_dir"] = session_dir
             stats["output_file"] = output_path
             stats["history_file"] = history_path
-            writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (width, height))
+            # fps / stride: with stride > 1 only every Nth frame is written, same as the wheel's CLI
+            writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), video_fps / stride, (width, height))
             if not writer.isOpened():
                 logger.warning(f"Session {session_id}: cannot write {output_path}; continuing without annotated video")
                 writer = None
@@ -430,7 +436,8 @@ class VideoInferenceService:
             except Exception as h_err:
                 logger.warning(f"Session {session_id}: cannot open history file {history_path}: {h_err}")
 
-            # Asynchronous video writer worker thread: GPU never stalls for OpenCV CPU drawing or MP4 software encoding
+            # Asynchronous video writer thread: only MP4 encoding happens there. The picture was already
+            # drawn by the wheel inside analyze_frame, so it always matches that frame's result.
             writer_queue = queue.Queue(maxsize=32)
             writer_thread = None
             if writer is not None:
@@ -440,9 +447,7 @@ class VideoInferenceService:
                         if item is None:
                             break
                         try:
-                            f, ann = item
-                            ann_frame = analyzer.draw_annotations(f, ann)
-                            writer.write(ann_frame)
+                            writer.write(item)
                         except Exception as w_err:
                             logger.warning(f"Session {session_id}: writer worker error: {w_err}")
                         finally:
@@ -451,8 +456,8 @@ class VideoInferenceService:
                 writer_thread = threading.Thread(target=_writer_worker, daemon=True, name=f"writer-{session_id[:8]}")
                 writer_thread.start()
 
-            stride = 2 if video_fps > _HIGH_FPS_THRESHOLD else 1   # high-fps: model on every 2nd frame
             frame_number = 0
+            processed = 0
 
             while not stop_event.is_set():
                 ok, frame = cap.read()
@@ -466,39 +471,44 @@ class VideoInferenceService:
                 session["last_active"] = time.time()
                 stats["total_frames"] = max(stats["total_frames"], frame_number)
 
-                # Run the model on this frame, or (stride) reuse the last result.
-                if last_stats is None or frame_number % stride == 0:
-                    try:
-                        last_stats = analyzer.infer(frame, frame_number)     # <- the ONE ML call
-                    except Exception as frame_err:
-                        raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
+                if frame_number % stride:
+                    # Skipped by the wheel's stride setting: not analysed, not written, no history line.
+                    stats["progress"] = round(frame_number / stats["total_frames"] * 100, 1)
+                    continue
 
-                # Pass frame_total so rvf.draw renders "FRAME X / TOTAL" (matches CLI output)
-                if getattr(analyzer, "_last_analysis", None) and getattr(analyzer._last_analysis, "result", None):
-                    analyzer._last_analysis.result["frame_total"] = stats["total_frames"]
+                try:
+                    last_stats = analyzer.infer(frame, frame_number, annotate=writer is not None)   # <- the ONE ML call
+                except Exception as frame_err:
+                    raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
+                analysis = analyzer._last_analysis
+                processed += 1
 
                 # Stats for the frontend (one update() so readers never see a half-written frame).
                 # "status" is left out: set_status() owns it, a late frame must not undo "stopped".
                 stats.update({k: v for k, v in last_stats.items() if k != "status"},
                              frame=frame_number,
-                             frames_processed=frame_number,
+                             frames_processed=processed,
                              progress=round(frame_number / stats["total_frames"] * 100, 1))
 
-                # Saved video: offload drawing + encoding to background writer thread
-                if writer_thread is not None and writer_thread.is_alive():
-                    try:
-                        writer_queue.put_nowait((frame.copy(), analyzer._last_analysis))
-                    except queue.Full:
-                        pass
-                elif writer is not None:
-                    writer.write(analyzer.draw_annotations(frame))
+                # Saved video: the wheel's own drawing of THIS frame; never dropped (the queue blocks
+                # when the encoder is behind, so the video has every processed frame).
+                annotated = analysis.annotated if analysis is not None else None
+                if writer is not None and annotated is not None:
+                    if writer_thread is not None and writer_thread.is_alive():
+                        while not stop_event.is_set():
+                            try:
+                                writer_queue.put(annotated, timeout=0.5)
+                                break
+                            except queue.Full:
+                                continue
+                    else:
+                        writer.write(annotated)
 
-                # Save per-frame history stream to history.jsonl
-                if history_f is not None and getattr(analyzer, "_last_analysis", None) is not None:
+                # history.jsonl = the wheel's result dict, untouched, one line per processed frame
+                # (same content the CLI's --history writes), so two runs can be diffed line by line.
+                if history_f is not None and analysis is not None and analysis.result:
                     try:
-                        frame_res = dict(analyzer._last_analysis.result)
-                        frame_res["frame"] = frame_number
-                        history_f.write(json.dumps(frame_res, default=_json_default) + "\n")
+                        history_f.write(json.dumps(analysis.result, default=_json_default) + "\n")
                     except Exception as h_write_err:
                         logger.warning(f"Session {session_id}: history write error on frame {frame_number}: {h_write_err}")
 
@@ -526,8 +536,15 @@ class VideoInferenceService:
             # Flush and release the background video writer
             if writer_thread is not None:
                 try:
-                    writer_queue.put(None, timeout=2.0)
-                    writer_thread.join(timeout=10.0)
+                    while writer_thread.is_alive():          # let the encoder drain every queued frame
+                        try:
+                            writer_queue.put(None, timeout=0.5)
+                            break
+                        except queue.Full:
+                            continue
+                    writer_thread.join(timeout=120.0)
+                    if writer_thread.is_alive():
+                        logger.warning(f"Session {session_id}: video encoder still busy after 120 s; output may be cut short")
                 except Exception as flush_err:
                     logger.warning(f"Session {session_id}: writer flush warning: {flush_err}")
                 writer_thread = None

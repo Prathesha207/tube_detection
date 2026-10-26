@@ -387,6 +387,8 @@ class VideoInferenceService:
         try:
             analyzer, owns_analyzer = self._acquire_analyzer()   # model load happens here, off the event loop
             analyzer.reset_tracking()
+            if hasattr(analyzer, "cfg"):
+                analyzer.cfg.history_jsonl = None
             if session.get("roi_points"):
                 try:
                     analyzer.set_roi(session["roi_points"], session.get("roi_frame_size"))
@@ -411,13 +413,22 @@ class VideoInferenceService:
             os.makedirs(session_dir, exist_ok=True)
             output_path = os.path.join(session_dir, _output_video_name(
                 original_filename or session.get("original_filename"), session_id))
+            history_path = os.path.join(session_dir, "history.jsonl")
             session["session_dir"] = session_dir
+            session["history_path"] = history_path
             stats["output_dir"] = session_dir
             stats["output_file"] = output_path
+            stats["history_file"] = history_path
             writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (width, height))
             if not writer.isOpened():
                 logger.warning(f"Session {session_id}: cannot write {output_path}; continuing without annotated video")
                 writer = None
+
+            history_f = None
+            try:
+                history_f = open(history_path, "w", encoding="utf-8")
+            except Exception as h_err:
+                logger.warning(f"Session {session_id}: cannot open history file {history_path}: {h_err}")
 
             # Asynchronous video writer worker thread: GPU never stalls for OpenCV CPU drawing or MP4 software encoding
             writer_queue = queue.Queue(maxsize=32)
@@ -478,6 +489,15 @@ class VideoInferenceService:
                 elif writer is not None:
                     writer.write(analyzer.draw_annotations(frame))
 
+                # Save per-frame history stream to history.jsonl
+                if history_f is not None and getattr(analyzer, "_last_analysis", None) is not None:
+                    try:
+                        frame_res = dict(analyzer._last_analysis.result)
+                        frame_res["frame"] = frame_number
+                        history_f.write(json.dumps(frame_res, default=_json_default) + "\n")
+                    except Exception as h_write_err:
+                        logger.warning(f"Session {session_id}: history write error on frame {frame_number}: {h_write_err}")
+
                 # Live stream: clean frame; the frontend draws boxes from stats["detections"].
                 try:
                     clean_f = analyzer.get_clean_frame(frame)
@@ -508,6 +528,14 @@ class VideoInferenceService:
                     logger.warning(f"Session {session_id}: writer flush warning: {flush_err}")
                 writer_thread = None
 
+            if history_f is not None:
+                try:
+                    history_f.flush()
+                    history_f.close()
+                except Exception as h_close_err:
+                    logger.warning(f"Session {session_id}: history file close warning: {h_close_err}")
+                history_f = None
+
             # Finalise the output file BEFORE reporting "completed", so a client that sees
             # "completed" can open a fully written mp4.
             cap.release(); cap = None
@@ -532,6 +560,11 @@ class VideoInferenceService:
             logger.error(f"Error in video inference task for session {session_id}: {e}", exc_info=True)
             set_status("error", [str(e)])
         finally:
+            if 'history_f' in locals() and history_f is not None:
+                try:
+                    history_f.close()
+                except Exception:
+                    pass
             if cap is not None:
                 cap.release()
             if 'writer_thread' in locals() and writer_thread is not None and writer_thread.is_alive():

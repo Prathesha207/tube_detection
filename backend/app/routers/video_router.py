@@ -796,3 +796,32 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
         logger.error(f"[API ERROR] POST /video/inference/path: {e}", exc_info=True)
         realtime_log_service.add_log("video", "CRASH", f"Start path inference failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to start path inference: {e}")
+
+
+@router.get("/history/{session_id}")
+async def get_video_history(session_id: str):
+    try:
+        session = await _ensure_session_exists(session_id)
+        session_dir = session.get("session_dir") if session else None
+        if not session_dir:
+            try:
+                from app.core.app_paths import get_ml_output_dir
+                session_dir = os.path.join(str(get_ml_output_dir()), session_id)
+            except Exception:
+                session_dir = None
+
+        if session_dir:
+            hist_file = os.path.join(session_dir, "history.jsonl")
+            if os.path.exists(hist_file):
+                from fastapi.responses import FileResponse
+                return FileResponse(
+                    hist_file,
+                    media_type="application/x-ndjson",
+                    filename=f"{session_id}_history.jsonl",
+                )
+        raise HTTPException(status_code=404, detail="history.jsonl not found for this session")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[API ERROR] GET /video/history/{session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get history: {e}")

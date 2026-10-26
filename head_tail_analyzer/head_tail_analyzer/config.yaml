@@ -43,6 +43,6 @@ draw_roi: false
 # outputs (null = don't write) - each key only ONCE
 output_video: null
 latest_json: null
-history_jsonl: null
+history_jsonl: history.jsonl
 print_frames: true
 show_preview: false

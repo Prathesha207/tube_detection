@@ -358,6 +358,14 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _json_default(obj: Any) -> Any:
+    if hasattr(obj, "item"):
+        return obj.item()
+    if hasattr(obj, "tolist"):
+        return obj.tolist()
+    return str(obj)
+
+
 def new_stats(**fields: Any) -> Dict[str, Any]:
     """Zeroed stats dict for a new session (same keys the frontend reads every frame)."""
     stats = {
@@ -693,6 +701,16 @@ class TubeAnalyzer:
             key = role.lower() + "s"
             self.peak[key] = max(self.peak.get(key, 0), result.get(f"{key}_count", 0))
             result[f"{key}_peak"] = self.peak[key]
+
+        # Write history_jsonl if configured in self.cfg and not managed externally
+        hist_file = getattr(self.cfg, "history_jsonl", None)
+        if hist_file:
+            try:
+                Path(hist_file).parent.mkdir(parents=True, exist_ok=True)
+                with open(hist_file, "a", encoding="utf-8") as hf:
+                    hf.write(json.dumps(result, default=_json_default) + "\n")
+            except Exception as e:
+                logger.warning(f"Could not append to history_jsonl ({hist_file}): {e}")
 
         analysis = FrameAnalysis(result=result, frame=frame, detections=inside_roi)
         self._last_analysis = analysis

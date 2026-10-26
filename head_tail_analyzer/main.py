@@ -10,17 +10,18 @@ import logging
 from pathlib import Path
 import threading
 import time
-from typing import Optional
+from typing import List, Optional
 
 import cv2
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
 
 # Load directly from the installed wheel
 try:
-    from head_tail_analyzer.main import HeadTailAnalyzer
+    from head_tail_analyzer.main import AnalyzerError, HeadTailAnalyzer
 except ImportError as err:
     raise ImportError(
         "Could not import HeadTailAnalyzer. Please install the wheel from the wheels/ directory:\n"
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
 
 
 # ----------------------------------------------------------------------
-# 4. FastAPI App Definition
+# 4. FastAPI App Definition & Exception Handling
 # ----------------------------------------------------------------------
 app = FastAPI(
     title="Tube Detection ML Microservice",
@@ -103,8 +104,51 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(AnalyzerError)
+async def ml_error(request: Request, exc: AnalyzerError):
+    """Custom exception handler for wheel-specific errors."""
+    return JSONResponse({"detail": f"ML error: {exc}"}, status_code=500)
+
+
 # ----------------------------------------------------------------------
-# 5. Endpoints
+# 5. Worker Functions (Threadpool-Safe)
+# ----------------------------------------------------------------------
+def run_ml(frame: np.ndarray, new_video: bool, frame_index: Optional[int]):
+    """Plain function running in a worker threadpool: new-video check + the wheel call."""
+    global last_frame_time
+    now = time.time()
+    with analyzer_lock:
+        if new_video or (now - last_frame_time > IDLE_RESET_SECONDS):
+            analyzer.reset()
+        last_frame_time = now
+        t0 = time.perf_counter()
+        result = analyzer.process_frame(frame, frame_index=frame_index)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    return result, latency_ms
+
+
+def run_ml_batch(frames_data: List[tuple], new_video: bool):
+    """Processes a batch of (filename, frame_bgr) sequentially in worker threadpool."""
+    global last_frame_time
+    now = time.time()
+    results = []
+    with analyzer_lock:
+        if new_video or (now - last_frame_time > IDLE_RESET_SECONDS):
+            analyzer.reset()
+        last_frame_time = now
+
+        for idx, (filename, frame) in enumerate(frames_data, start=1):
+            t0 = time.perf_counter()
+            res = analyzer.process_frame(frame, frame_index=idx)
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            res["filename"] = filename
+            res["latency_ms"] = latency_ms
+            results.append(res)
+    return results
+
+
+# ----------------------------------------------------------------------
+# 6. Endpoints
 # ----------------------------------------------------------------------
 @app.get("/health", tags=["System"])
 def health():
@@ -128,10 +172,9 @@ async def infer(
     Primary Inference Endpoint:
     - Accepts frames from cameras or video files.
     - Converts input bytes into a NumPy BGR array.
-    - Calls analyzer.process_frame(frame) from the wheel.
+    - Runs in worker threadpool (run_in_threadpool) so the event loop stays non-blocking.
     - Returns all detections, counts, and measurements as JSON.
     """
-    global last_frame_time
     if analyzer is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -157,19 +200,49 @@ async def infer(
             detail="Could not decode image into a NumPy array. Unsupported or corrupted image format.",
         )
 
-    # 3. Handle video/tracking state
-    now = time.time()
-    with analyzer_lock:
-        if new_video or (now - last_frame_time > IDLE_RESET_SECONDS):
-            analyzer.reset()
-        last_frame_time = now
-
-        # 4. Call the wheel directly
-        t0 = time.perf_counter()
-        result = analyzer.process_frame(frame, frame_index=frame_index)
-        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    # 3. New-video check and the ML call in a worker thread so the server stays responsive
+    result, latency_ms = await run_in_threadpool(run_ml, frame, new_video, frame_index)
 
     return JSONResponse(content=result, headers={"X-Latency-Ms": str(latency_ms)})
+
+
+@app.post("/infer_batch", tags=["Inference"])
+async def infer_batch(
+    files: List[UploadFile] = File(..., description="List of image frame files to process sequentially"),
+    new_video: bool = Query(False, description="Set to true to reset tracker before processing this batch"),
+):
+    """
+    Batch Inference Endpoint:
+    - Accepts multiple image frames in a single HTTP request.
+    - Processes each frame sequentially through the ML tracker.
+    - Runs in worker threadpool so the server stays responsive.
+    - Returns an array of detection results for all frames.
+    """
+    if analyzer is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ML Analyzer is not initialized.",
+        )
+
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided.")
+
+    frames_data = []
+    for f in files:
+        data = await f.read()
+        if not data:
+            continue
+        np_buffer = np.frombuffer(data, dtype=np.uint8)
+        frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+        if frame is not None and getattr(frame, "size", 0) > 0:
+            frames_data.append((f.filename, frame))
+
+    if not frames_data:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No valid decodable frames found.")
+
+    results = await run_in_threadpool(run_ml_batch, frames_data, new_video)
+
+    return JSONResponse(content={"total_frames": len(results), "frames": results})
 
 
 @app.post("/reset", tags=["Inference"])
@@ -187,5 +260,25 @@ def reset():
 
 
 if __name__ == "__main__":
+    import argparse
+    import socket
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
+    def is_port_in_use(p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", p)) == 0
+
+    default_port = 8001 if is_port_in_use(8000) else 8000
+
+    parser = argparse.ArgumentParser(description="Head/Tail Analyzer ML Microservice")
+    parser.add_argument("--host", default="127.0.0.1", help="Host IP address (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=default_port, help=f"Port to listen on (default: {default_port})")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+    args = parser.parse_args()
+
+    print(f"\n" + "=" * 60)
+    print(f"  👉 API Docs (Click to open): http://127.0.0.1:{args.port}/docs")
+    print(f"  👉 Health Check:             http://127.0.0.1:{args.port}/health")
+    print("=" * 60 + "\n")
+
+    uvicorn.run("main:app", host=args.host, port=args.port, reload=args.reload)

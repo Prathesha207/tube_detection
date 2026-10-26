@@ -15,6 +15,7 @@ output/
 !backend/app/ml/whl/head_tail_analyzer-0.1.6-py3-none-any.whl
 !backend/app/ml/whl/head_tail_analyzer_v-1.0.0-py3-none-any.whl
 !head_tail_analyzer/wheels/*.whl
+!head_tail_analyzer/**/wheels/*.whl
 manual_inference_output/
 release-backend/
 *.db

@@ -2,7 +2,7 @@
 # Relative paths are relative to THIS file's folder. Absolute paths are used as-is.
 # Any setting can be overridden on the command line, e.g. --video, --conf, --mm-per-px.
 
-model_path: .\models\epoch100.pt
+model_path: models/best.pt
 video: null
 device: "0"                    # "0" = first GPU, "cpu" = CPU
 
@@ -24,7 +24,7 @@ gray: false
 stride: 1
 
 # tracking
-min_frames: 3
+min_frames: 1
 max_dist: 80
 max_missed: 30
 

@@ -74,6 +74,7 @@ class OakCameraService:
         # OAK_DEPTH_ENABLED=0 turns depth off completely (RGB behaves exactly as before).
         # OAK_DEPTH_ALIGN_RGB=1 aligns depth to the RGB camera (step 2, after depth looks good).
         self._depth_enabled: bool = os.getenv("OAK_DEPTH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self._depth_align_rgb: bool = os.getenv("OAK_DEPTH_ALIGN_RGB", "1").strip().lower() not in {"0", "false", "no", "off"}
         # Depth resolution: If None, automatically adopts the active RGB stream resolution (e.g. 1920x1080)
         self._depth_width: int | None = int(os.getenv("OAK_DEPTH_WIDTH")) if os.getenv("OAK_DEPTH_WIDTH") else None
         self._depth_height: int | None = int(os.getenv("OAK_DEPTH_HEIGHT")) if os.getenv("OAK_DEPTH_HEIGHT") else None
@@ -356,7 +357,7 @@ class OakCameraService:
 
     # ==================== Pipeline ====================
 
-    def _build_pipeline(self, pipeline: dai.Pipeline, config) -> bool:
+    def _build_pipeline(self, pipeline: dai.Pipeline, config, enable_depth: bool = True) -> bool:
         try:
             logger.info("[PIPELINE] Building...")
 
@@ -492,12 +493,8 @@ class OakCameraService:
 
             # --- Node 3: Stereo depth (optional; a failure here must never break RGB) ---
             self._depth_dai_queue = None
-            if self._depth_enabled:
-                try:
-                    self._build_depth(pipeline, width, height)
-                except Exception as depth_err:
-                    self._depth_dai_queue = None
-                    logger.warning(f"[PIPELINE] Depth disabled - could not build stereo depth: {depth_err}")
+            if enable_depth and self._depth_enabled:
+                self._build_depth(pipeline, width, height)
 
             logger.info("[PIPELINE] Build success")
             return True
@@ -510,10 +507,24 @@ class OakCameraService:
 
     def _build_depth(self, pipeline: dai.Pipeline, rgb_width: int = 1920, rgb_height: int = 1080) -> None:
         """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB.
-        Automatically adopts the active stream resolution (e.g. 1920x1080).
+        Automatically aligns to the active RGB stream (e.g. 1920x1080).
+        Mono cameras (OV9282) run at native 720p (1280x720) or 800p (1280x800).
         """
-        w = self._depth_width or rgb_width
-        h = self._depth_height or rgb_height
+        # OV9282 monochrome sensors physically support:
+        #   - 1280x720 (16:9, native 720p mode)
+        #   - 1280x800 (16:10, full native 1MP sensor resolution)
+        #   - 640x400  (16:10, 2x2 binned mode)
+        # They CANNOT accept 1920x1080 directly.
+        # Match mono aspect ratio to RGB stream (1280x720 for 16:9 streams like 1080p):
+        aspect = rgb_width / max(rgb_height, 1)
+        if abs(aspect - 16 / 9) < 0.15:
+            mono_w, mono_h = 1280, 720
+        else:
+            mono_w, mono_h = 1280, 800
+
+        # If user explicitly requested lower depth resolution (e.g. 640x400)
+        if self._depth_width and self._depth_height and (self._depth_width <= 640 or self._depth_height <= 400):
+            mono_w, mono_h = 640, 400
 
         stereo = pipeline.create(dai.node.StereoDepth)
         if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):
@@ -525,48 +536,57 @@ class OakCameraService:
         stereo.setLeftRightCheck(True)      # removes occlusion errors
         stereo.setSubpixel(True)            # subpixel accuracy for close-range tubing
 
-        # 1. Try DepthAI unified Camera node for stereo left and right (OAK-4 / RVC4)
+        # 1. Try DepthAI unified Camera node for stereo left and right (OAK-4 / RVC4 / modern RVC2)
         stereo_wired = False
         try:
             left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
             right = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
-            left.requestOutput((w, h)).link(stereo.left)
-            right.requestOutput((w, h)).link(stereo.right)
+            left.requestOutput((mono_w, mono_h)).link(stereo.left)
+            right.requestOutput((mono_w, mono_h)).link(stereo.right)
             stereo_wired = True
-            logger.info("[PIPELINE] Stereo cameras created with unified dai.node.Camera")
+            logger.info(f"[PIPELINE] Stereo cameras created with unified dai.node.Camera ({mono_w}x{mono_h})")
         except Exception as cam_err:
             logger.info(f"[PIPELINE] dai.node.Camera stereo build unavailable ({cam_err}), attempting MonoCamera fallback...")
 
-        # 2. Fallback to dai.node.MonoCamera (RVC2 / classic OAK-D / OAK-D Lite / OAK-D Pro)
+        # 2. Fallback to dai.node.MonoCamera (classic OAK-D / OAK-D Lite / OAK-D Pro)
         if not stereo_wired:
             left = pipeline.create(dai.node.MonoCamera)
             left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
             if hasattr(dai.MonoCameraProperties, "SensorResolution"):
-                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if h >= 720 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
+                    dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                )
                 left.setResolution(res)
 
             right = pipeline.create(dai.node.MonoCamera)
             right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
             if hasattr(dai.MonoCameraProperties, "SensorResolution"):
-                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if h >= 720 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
+                    dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                )
                 right.setResolution(res)
 
             left.out.link(stereo.left)
             right.out.link(stereo.right)
             stereo_wired = True
-            logger.info("[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback")
+            logger.info(f"[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback ({mono_w}x{mono_h})")
 
         # Align depth pixel-for-pixel to RGB camera (CAM_A)
         if self._depth_align_rgb:
             try:
                 stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
                 logger.info("[PIPELINE] StereoDepth aligned to CAM_A (RGB)")
+                # If explicit depth resolution was requested, scale the aligned output:
+                if self._depth_width and self._depth_height:
+                    stereo.setOutputSize(self._depth_width, self._depth_height)
             except Exception as align_err:
                 logger.warning(f"[PIPELINE] Stereo setDepthAlign to CAM_A failed: {align_err}")
 
         # Created last so a half-built depth graph never leaves a dangling queue.
         self._depth_dai_queue = stereo.depth.createOutputQueue(maxSize=4, blocking=False)
-        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({w}x{h}, align_rgb={self._depth_align_rgb})")
+        out_w = self._depth_width or (rgb_width if self._depth_align_rgb else mono_w)
+        out_h = self._depth_height or (rgb_height if self._depth_align_rgb else mono_h)
+        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({out_w}x{out_h}, mono_input={mono_w}x{mono_h}, align_rgb={self._depth_align_rgb})")
 
     def depth_available(self) -> bool:
         return bool(self._depth_dai_queue is not None and self._is_running and self.is_connected)
@@ -2489,13 +2509,42 @@ class OakCameraService:
                 self.current_brightness = int(config.brightness or 0)
                 self.current_contrast = int(config.contrast if config.contrast is not None and config.contrast != 0 else 50)
 
-                with self._pipeline_lock:
-                    self._pipeline = dai.Pipeline(self.device)
+                depth_attempted = self._depth_enabled
+                build_ok = False
+                try:
+                    with self._pipeline_lock:
+                        self._pipeline = dai.Pipeline(self.device)
+                    build_ok = self._build_pipeline(self._pipeline, config, enable_depth=depth_attempted)
+                except Exception as build_err:
+                    logger.warning(f"[START] Combined pipeline build failed ({build_err})")
+                    build_ok = False
 
-                if not self._build_pipeline(self._pipeline, config):
+                if not build_ok and depth_attempted:
+                    logger.warning("[START] Rebuilding clean RGB-only pipeline fallback...")
+                    self._depth_dai_queue = None
+                    with self._pipeline_lock:
+                        self._pipeline = dai.Pipeline(self.device)
+                    build_ok = self._build_pipeline(self._pipeline, config, enable_depth=False)
+
+                if not build_ok:
                     return {"status": "error", "message": "Pipeline build failed"}
 
-                self._pipeline.start()
+                try:
+                    self._pipeline.start()
+                except Exception as start_err:
+                    if depth_attempted and self._depth_dai_queue is not None:
+                        logger.warning(f"[START] Depth pipeline start failed ({start_err}), retrying in RGB-only mode...")
+                        self._cleanup_pipeline()
+                        with self._pipeline_lock:
+                            self._pipeline = dai.Pipeline(self.device)
+                        self._depth_dai_queue = None
+                        if self._build_pipeline(self._pipeline, config, enable_depth=False):
+                            self._pipeline.start()
+                        else:
+                            raise start_err
+                    else:
+                        raise start_err
+
                 self._is_running = True
 
                 # Immediately launch capture threads so DepthAI hardware queues are continuously drained

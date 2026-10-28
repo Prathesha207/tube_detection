@@ -573,6 +573,13 @@ class TubeAnalyzer:
             raise RuntimeError(str(e)) from None
         self._masks_ok = self._masks_ok and bool(self.cfg.draw_masks)   # same as HeadTailAnalyzer
 
+        # Check if underlying rvf.analyze_frame supports depth parameter
+        import inspect
+        try:
+            self._depth_supported = "depth" in inspect.signature(rvf.analyze_frame).parameters
+        except Exception:
+            self._depth_supported = False
+
         # Per-session ROI: start with full frame (no ROI). ROI is only
         # applied when the user explicitly draws one via set_roi().
         self.roi: Optional[np.ndarray] = None
@@ -732,8 +739,11 @@ class TubeAnalyzer:
                 t.in_roi_ever = False
 
         def _run():
+            if self._depth_supported:
+                return rvf.analyze_frame(self.entry, frame, self.state, self.roi, self.cfg, frame_number,
+                                         annotate=annotate, masks=self._masks_ok, depth=depth)
             return rvf.analyze_frame(self.entry, frame, self.state, self.roi, self.cfg, frame_number,
-                                     annotate=annotate, masks=self._masks_ok, depth=depth)
+                                     annotate=annotate, masks=self._masks_ok)
         try:
             result, vis = _run()
         except Exception as error:

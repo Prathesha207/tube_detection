@@ -2677,8 +2677,8 @@ class OakCameraService:
                 # Self-healing: if pipeline is not active, attempt auto-starting with active database config
                 logger.info("[STREAMING] Device not connected when start_streaming requested — attempting auto-connect")
                 try:
-                    from app.database import SessionLocal
-                    from app.services.camera_db_service import camera_service as cam_db
+                    from app.core.database import SessionLocal
+                    from app.services import camera_service as cam_db
                     with SessionLocal() as db:
                         cfg = cam_db.get_camera_config(db)
                     if cfg:

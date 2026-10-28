@@ -507,24 +507,23 @@ class OakCameraService:
 
     def _build_depth(self, pipeline: dai.Pipeline, rgb_width: int = 1920, rgb_height: int = 1080) -> None:
         """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB.
-        Automatically aligns to the active RGB stream (e.g. 1920x1080).
-        Mono cameras (OV9282) run at native 720p (1280x720) or 800p (1280x800).
+        Automatically aligns to and outputs at the active RGB stream resolution (e.g. 1920x1080).
+        Mono cameras (OV9282 hardware) are captured at their supported sensor mode (720p/800p),
+        and DepthAI hardware projects and scales the output depth map to match RGB exactly.
         """
-        # OV9282 monochrome sensors physically support:
-        #   - 1280x720 (16:9, native 720p mode)
-        #   - 1280x800 (16:10, full native 1MP sensor resolution)
-        #   - 640x400  (16:10, 2x2 binned mode)
-        # They CANNOT accept 1920x1080 directly.
-        # Match mono aspect ratio to RGB stream (1280x720 for 16:9 streams like 1080p):
-        aspect = rgb_width / max(rgb_height, 1)
-        if abs(aspect - 16 / 9) < 0.15:
-            mono_w, mono_h = 1280, 720
-        else:
-            mono_w, mono_h = 1280, 800
+        # 1. Output resolution: Automatically matches the active RGB stream (e.g. 1920x1080)
+        out_w = self._depth_width or rgb_width
+        out_h = self._depth_height or rgb_height
 
-        # If user explicitly requested lower depth resolution (e.g. 640x400)
-        if self._depth_width and self._depth_height and (self._depth_width <= 640 or self._depth_height <= 400):
-            mono_w, mono_h = 640, 400
+        # 2. Input sensor mode: OV9282 physical sensors on OAK-D only have 1280x800 pixels.
+        # Select the hardware sensor mode that matches the target aspect ratio:
+        aspect = out_w / max(out_h, 1)
+        if abs(aspect - 16 / 9) < 0.15:
+            mono_w, mono_h = 1280, 720   # 16:9 native mode matching 1080p
+        elif out_w <= 640 or out_h <= 400:
+            mono_w, mono_h = 640, 400    # 2x2 binned mode
+        else:
+            mono_w, mono_h = 1280, 800   # 16:10 full sensor mode
 
         stereo = pipeline.create(dai.node.StereoDepth)
         if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):
@@ -536,7 +535,7 @@ class OakCameraService:
         stereo.setLeftRightCheck(True)      # removes occlusion errors
         stereo.setSubpixel(True)            # subpixel accuracy for close-range tubing
 
-        # 1. Try DepthAI unified Camera node for stereo left and right (OAK-4 / RVC4 / modern RVC2)
+        # 3. Capture mono stereo pair from physical sensors
         stereo_wired = False
         try:
             left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
@@ -548,7 +547,7 @@ class OakCameraService:
         except Exception as cam_err:
             logger.info(f"[PIPELINE] dai.node.Camera stereo build unavailable ({cam_err}), attempting MonoCamera fallback...")
 
-        # 2. Fallback to dai.node.MonoCamera (classic OAK-D / OAK-D Lite / OAK-D Pro)
+        # Fallback to dai.node.MonoCamera (classic OAK-D / OAK-D Lite / OAK-D Pro)
         if not stereo_wired:
             left = pipeline.create(dai.node.MonoCamera)
             left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
@@ -571,22 +570,19 @@ class OakCameraService:
             stereo_wired = True
             logger.info(f"[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback ({mono_w}x{mono_h})")
 
-        # Align depth pixel-for-pixel to RGB camera (CAM_A)
+        # 4. Align depth pixel-for-pixel to RGB camera (CAM_A) and enforce exact RGB output dimensions
         if self._depth_align_rgb:
             try:
                 stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-                logger.info("[PIPELINE] StereoDepth aligned to CAM_A (RGB)")
-                # If explicit depth resolution was requested, scale the aligned output:
-                if self._depth_width and self._depth_height:
-                    stereo.setOutputSize(self._depth_width, self._depth_height)
+                stereo.setOutputSize(out_w, out_h)
+                stereo.setOutputKeepAspectRatio(False)
+                logger.info(f"[PIPELINE] StereoDepth aligned to CAM_A (RGB) with output size {out_w}x{out_h}")
             except Exception as align_err:
                 logger.warning(f"[PIPELINE] Stereo setDepthAlign to CAM_A failed: {align_err}")
 
         # Created last so a half-built depth graph never leaves a dangling queue.
         self._depth_dai_queue = stereo.depth.createOutputQueue(maxSize=4, blocking=False)
-        out_w = self._depth_width or (rgb_width if self._depth_align_rgb else mono_w)
-        out_h = self._depth_height or (rgb_height if self._depth_align_rgb else mono_h)
-        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({out_w}x{out_h}, mono_input={mono_w}x{mono_h}, align_rgb={self._depth_align_rgb})")
+        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({out_w}x{out_h}, mono_sensor={mono_w}x{mono_h}, align_rgb={self._depth_align_rgb})")
 
     def depth_available(self) -> bool:
         return bool(self._depth_dai_queue is not None and self._is_running and self.is_connected)

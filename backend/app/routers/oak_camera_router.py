@@ -7,7 +7,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import depthai as dai
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException, Body
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException, Body, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -281,6 +281,79 @@ async def snapshot():
     blank = np.zeros((720, 1280, 3), dtype=np.uint8)
     _, buf = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 50])
     return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+# ==================== Depth (stereo) ====================
+
+@router.get("/depth/stream")
+async def depth_stream(request: Request):
+    """MJPEG stream of the colorized depth map (invalid pixels are black).
+    Overlay shows the centre distance (mm) and the % of valid pixels."""
+    if not oak_camera_service.depth_available():
+        return Response(
+            content=b"Depth not available (camera not started, depth disabled, or stereo failed to build)",
+            status_code=503,
+            media_type="text/plain",
+        )
+
+    async def generate():
+        last = None
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                if not oak_camera_service.depth_available():
+                    break
+                jpeg = oak_camera_service.get_depth_jpeg()   # also marks the view as active
+                if jpeg is None or jpeg is last:
+                    await asyncio.sleep(0.03)
+                    continue
+                last = jpeg
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+                await asyncio.sleep(0.03)
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception as e:
+            logger.error(f"[DEPTH STREAM] Generator error: {e}")
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Connection": "close"},
+    )
+
+
+@router.get("/depth/snapshot")
+async def depth_snapshot():
+    """Single colorized depth JPEG."""
+    if not oak_camera_service.depth_available():
+        raise HTTPException(status_code=503, detail="Depth not available")
+    jpeg = oak_camera_service.get_depth_jpeg()
+    if jpeg is None:
+        # first call only marks the view active; wait for the next frame to be rendered
+        await asyncio.sleep(0.3)
+        jpeg = oak_camera_service.get_depth_jpeg()
+    if jpeg is None:
+        raise HTTPException(status_code=503, detail="No depth frame yet")
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+@router.get("/depth/point")
+def depth_point(
+    x: float = Query(..., ge=0.0, le=1.0, description="0..1 across the depth image (left to right)"),
+    y: float = Query(..., ge=0.0, le=1.0, description="0..1 down the depth image (top to bottom)"),
+    window: int = Query(7, ge=1, le=31),
+):
+    """Z distance in millimetres at a point (median of a small window, invalid pixels ignored)."""
+    if not oak_camera_service.depth_available():
+        raise HTTPException(status_code=503, detail="Depth not available")
+    res = oak_camera_service.get_depth_at(x, y, window)
+    if res is None:
+        raise HTTPException(status_code=503, detail="No depth frame yet")
+    return res
 
 
 # ==================== Health & Devices ====================

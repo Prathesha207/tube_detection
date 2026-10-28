@@ -70,6 +70,22 @@ class OakCameraService:
         self._raw_dai_queue = None
         self._control_queue = None
 
+        # ---- Depth (optional stereo depth; isolated from the RGB path) ----
+        # OAK_DEPTH_ENABLED=0 turns depth off completely (RGB behaves exactly as before).
+        # OAK_DEPTH_ALIGN_RGB=1 aligns depth to the RGB camera (step 2, after depth looks good).
+        self._depth_enabled: bool = os.getenv("OAK_DEPTH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self._depth_align_rgb: bool = os.getenv("OAK_DEPTH_ALIGN_RGB", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self._depth_width: int = 640
+        self._depth_height: int = 400
+        self._depth_min_mm: int = 300      # colormap range only, does not limit measurement
+        self._depth_max_mm: int = 1500
+        self._depth_dai_queue = None
+        self._depth_thread: threading.Thread | None = None
+        self._depth_stop = threading.Event()
+        self._depth_last_view: float = 0.0   # last time a client asked for the colorized view
+        self._latest_depth: np.ndarray | None = None   # uint16, millimetres, 0 = invalid
+        self._latest_depth_jpeg: bytes | None = None
+
         # ---- Inter-thread queue (hires capture -> converter) ----
         self._hires_packet_queue: Queue = Queue(maxsize=16)
 
@@ -474,12 +490,174 @@ class OakCameraService:
             # --- Camera control input ---
             self._control_queue = cam.inputControl.createInputQueue(maxSize=4, blocking=False)
 
+            # --- Node 3: Stereo depth (optional; a failure here must never break RGB) ---
+            self._depth_dai_queue = None
+            if self._depth_enabled:
+                try:
+                    self._build_depth(pipeline)
+                except Exception as depth_err:
+                    self._depth_dai_queue = None
+                    logger.warning(f"[PIPELINE] Depth disabled - could not build stereo depth: {depth_err}")
+
             logger.info("[PIPELINE] Build success")
             return True
 
         except Exception as e:
             logger.error(f"[PIPELINE] Build failed: {e}", exc_info=True)
             return False
+
+    # ==================== Depth ====================
+
+    def _build_depth(self, pipeline: dai.Pipeline) -> None:
+        """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB."""
+        w, h = self._depth_width, self._depth_height
+
+        stereo = pipeline.create(dai.node.StereoDepth)
+        if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):
+            stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
+        elif hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "DEFAULT"):
+            stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
+
+        stereo.setRectification(True)
+        stereo.setLeftRightCheck(True)      # removes occlusion errors
+        stereo.setSubpixel(True)            # subpixel accuracy for close-range tubing
+
+        # 1. Try DepthAI unified Camera node for stereo left and right (OAK-4 / RVC4)
+        stereo_wired = False
+        try:
+            left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
+            right = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
+            left.requestOutput((w, h)).link(stereo.left)
+            right.requestOutput((w, h)).link(stereo.right)
+            stereo_wired = True
+            logger.info("[PIPELINE] Stereo cameras created with unified dai.node.Camera")
+        except Exception as cam_err:
+            logger.info(f"[PIPELINE] dai.node.Camera stereo build unavailable ({cam_err}), attempting MonoCamera fallback...")
+
+        # 2. Fallback to dai.node.MonoCamera (RVC2 / classic OAK-D / OAK-D Lite / OAK-D Pro)
+        if not stereo_wired:
+            left = pipeline.create(dai.node.MonoCamera)
+            left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+            if hasattr(dai.MonoCameraProperties, "SensorResolution"):
+                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if h >= 720 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                left.setResolution(res)
+
+            right = pipeline.create(dai.node.MonoCamera)
+            right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+            if hasattr(dai.MonoCameraProperties, "SensorResolution"):
+                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if h >= 720 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                right.setResolution(res)
+
+            left.out.link(stereo.left)
+            right.out.link(stereo.right)
+            stereo_wired = True
+            logger.info("[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback")
+
+        # Align depth pixel-for-pixel to RGB camera (CAM_A)
+        if self._depth_align_rgb:
+            try:
+                stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+                logger.info("[PIPELINE] StereoDepth aligned to CAM_A (RGB)")
+            except Exception as align_err:
+                logger.warning(f"[PIPELINE] Stereo setDepthAlign to CAM_A failed: {align_err}")
+
+        # Created last so a half-built depth graph never leaves a dangling queue.
+        self._depth_dai_queue = stereo.depth.createOutputQueue(maxSize=4, blocking=False)
+        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({w}x{h}, align_rgb={self._depth_align_rgb})")
+
+    def depth_available(self) -> bool:
+        return bool(self._depth_dai_queue is not None and self._is_running and self.is_connected)
+
+    def get_latest_depth_frame(self) -> np.ndarray | None:
+        """Raw uint16 depth frame in millimeters (0 = invalid)."""
+        return self._latest_depth
+
+    def get_depth_jpeg(self) -> bytes | None:
+        """Latest colorized depth JPEG. Calling this marks the depth view as 'being watched',
+        so colorizing/encoding only costs CPU while someone is actually looking."""
+        self._depth_last_view = time.time()
+        return self._latest_depth_jpeg
+
+    def get_depth_at(self, nx: float, ny: float, window: int = 7) -> dict | None:
+        """Median depth (mm) around a normalized position (0..1, 0..1) of the depth frame."""
+        depth = self._latest_depth
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        u = int(max(0, min(w - 1, round(nx * (w - 1)))))
+        v = int(max(0, min(h - 1, round(ny * (h - 1)))))
+        r = max(1, window) // 2
+        patch = depth[max(0, v - r):v + r + 1, max(0, u - r):u + r + 1]
+        valid = patch[patch > 0]
+        return {
+            "x_px": u,
+            "y_px": v,
+            "depth_width": int(w),
+            "depth_height": int(h),
+            "z_mm": float(np.median(valid)) if valid.size else None,
+            "valid_ratio": round(valid.size / max(patch.size, 1), 3),
+            "window": int(window),
+            "aligned_to_rgb": self._depth_align_rgb,
+        }
+
+    def _render_depth_jpeg(self, depth: np.ndarray) -> bytes | None:
+        """Colorize uint16 mm depth (invalid = black) and overlay quick sanity readouts."""
+        h, w = depth.shape[:2]
+        valid = depth > 0
+        valid_pct = 100.0 * float(valid.mean())
+
+        lo, hi = self._depth_min_mm, self._depth_max_mm
+        norm = (np.clip(depth, lo, hi).astype(np.float32) - lo) * (255.0 / max(hi - lo, 1))
+        color = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_TURBO)
+        color[~valid] = 0
+
+        cy, cx = h // 2, w // 2
+        patch = depth[max(0, cy - 10):cy + 11, max(0, cx - 10):cx + 11]
+        patch = patch[patch > 0]
+        center = f"{int(np.median(patch))} mm" if patch.size else "no depth"
+        cv2.drawMarker(color, (cx, cy), (255, 255, 255), cv2.MARKER_CROSS, 16, 1)
+        label = f"center {center} | valid {valid_pct:.0f}% | colormap {lo}-{hi} mm"
+        cv2.putText(color, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        ok, buf = cv2.imencode(".jpg", color, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return buf.tobytes() if ok else None
+
+    def _depth_loop(self) -> None:
+        """Drains the depth queue. Errors here are logged only - they never tear down RGB."""
+        logger.info("[DEPTH] Thread running")
+        frames = 0
+        last_log = time.time()
+        try:
+            while not self._depth_stop.is_set():
+                q = self._depth_dai_queue
+                if q is None:
+                    time.sleep(0.01)
+                    continue
+                pkt = q.tryGet()
+                if pkt is None:
+                    time.sleep(0.005)
+                    continue
+
+                depth = pkt.getFrame()           # uint16, millimetres
+                self._latest_depth = depth       # GIL-safe single reference assignment
+                frames += 1
+
+                if time.time() - self._depth_last_view < 3.0:
+                    jpeg = self._render_depth_jpeg(depth)
+                    if jpeg is not None:
+                        self._latest_depth_jpeg = jpeg
+
+                now = time.time()
+                if now - last_log >= 5.0:
+                    valid_pct = 100.0 * float((depth > 0).mean())
+                    logger.info(f"[DEPTH] FPS: {frames / (now - last_log):.1f} | shape={depth.shape} | valid={valid_pct:.0f}%")
+                    frames = 0
+                    last_log = now
+        except Exception as e:
+            if not self._depth_stop.is_set():
+                logger.warning(f"[DEPTH] Thread stopped: {e}")
+        finally:
+            logger.info("[DEPTH] Thread ended")
 
     def _cleanup_pipeline(self) -> None:
         with self._pipeline_lock:
@@ -499,6 +677,9 @@ class OakCameraService:
                 self._control_queue = None
                 self._latest_jpeg = None
                 self._latest_bgr = None
+                self._depth_dai_queue = None
+                self._latest_depth = None
+                self._latest_depth_jpeg = None
             logger.info("[PIPELINE] Cleaned up")
 
     def _on_device_lost(self, reason: str = "Device disconnected") -> None:
@@ -515,12 +696,14 @@ class OakCameraService:
             self._mjpeg_stop.set()
             self._hires_stop.set()
             self._convert_stop.set()
+            self._depth_stop.set()
             self._inference_stop.set()
 
             # Invalidate queues so callers know device is unavailable
             self._mjpeg_dai_queue = None
             self._raw_dai_queue = None
             self._control_queue = None
+            self._depth_dai_queue = None
             self._pipeline = None
             self._latest_jpeg = None
             self._latest_bgr = None
@@ -670,6 +853,15 @@ class OakCameraService:
                 self._convert_thread.start()
                 logger.info("[CAPTURE] Converter thread started")
 
+            depth_alive = self._depth_thread and self._depth_thread.is_alive()
+            if self._depth_dai_queue is not None and not depth_alive:
+                self._depth_stop.clear()
+                self._depth_thread = threading.Thread(
+                    target=self._depth_loop, name="oak-depth", daemon=True
+                )
+                self._depth_thread.start()
+                logger.info("[CAPTURE] Depth thread started")
+
             return True
 
     def _stop_capture_threads(self) -> None:
@@ -694,6 +886,13 @@ class OakCameraService:
             if self._hires_thread and self._hires_thread.is_alive():
                 self._hires_thread.join(timeout=2.0)
             self._hires_thread = None
+
+            self._depth_stop.set()
+            if self._depth_thread and self._depth_thread.is_alive():
+                self._depth_thread.join(timeout=2.0)
+            self._depth_thread = None
+            self._latest_depth = None
+            self._latest_depth_jpeg = None
 
             self._latest_bgr = None
             self._latest_bgr_seq = -1
@@ -2493,6 +2692,8 @@ class OakCameraService:
             "convert_thread": bool(self._convert_thread and self._convert_thread.is_alive() and is_hardware_connected),
             "inference_thread": bool(self._inference_thread and self._inference_thread.is_alive() and is_hardware_connected),
             "inference_watchdog_thread": bool(self._inference_watchdog_thread and self._inference_watchdog_thread.is_alive() and is_hardware_connected),
+            "depth_available": bool(self._depth_dai_queue is not None and is_hardware_connected),
+            "depth_thread": bool(self._depth_thread and self._depth_thread.is_alive() and is_hardware_connected),
             "streaming": bool(self._is_streaming and is_hardware_connected),
             "fps": round(self.current_fps, 1) if is_hardware_connected else 0.0,
             "camera_settings": self._camera_settings() if (self._is_running and is_hardware_connected) else None,

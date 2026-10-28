@@ -344,7 +344,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [depthTelemetry, setDepthTelemetry] = useState<DepthTelemetry | null>(null);
   const [depthHoverPoint, setDepthHoverPoint] = useState<DepthHoverPoint | null>(null);
   const [isDepthHovering, setIsDepthHovering] = useState<boolean>(false);
-  const [depthHoverScreen, setDepthHoverScreen] = useState<{ x: number; y: number } | null>(null);
   const lastProbeTimeRef = useRef<number>(0);
   const pendingProbeAbortRef = useRef<AbortController | null>(null);
 
@@ -353,7 +352,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     if (feedMode !== 'depth' || !isCameraSource || !isCameraConnected) {
       setDepthHoverPoint(null);
       setIsDepthHovering(false);
-      setDepthHoverScreen(null);
       return;
     }
 
@@ -422,7 +420,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     setIsDepthHovering(true);
-    setDepthHoverScreen({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     probeDepthAt(nx, ny);
   };
 
@@ -430,7 +427,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     if (feedMode === 'depth') {
       setIsDepthHovering(false);
       setDepthHoverPoint(null);
-      setDepthHoverScreen(null);
       if (pendingProbeAbortRef.current) {
         pendingProbeAbortRef.current.abort();
         pendingProbeAbortRef.current = null;
@@ -472,7 +468,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
         setIsDepthHovering(true);
-        setDepthHoverScreen({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         probeDepthAt(nx, ny);
       }
     }
@@ -778,17 +773,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
               </div>
             )}
 
-            {/* Interactive Depth Tip Reticle: Follows pointer when hovering in depth mode */}
-            {feedMode === 'depth' && isDepthHovering && depthHoverScreen && (
-              <div
-                className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-1/2"
-                style={{ left: `${depthHoverScreen.x}px`, top: `${depthHoverScreen.y}px` }}
-              >
-                <div className="w-5 h-5 rounded-full border border-cyan-400/90 flex items-center justify-center shadow-[0_0_8px_rgba(6,182,212,0.6)]">
-                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-300" />
-                </div>
-              </div>
-            )}
+
 
             {/* Passive Saved ROI Reference Outline — only shown after the user draws & saves an ROI */}
             {!isRoiActive && savedRoiPoints.length >= 3 && (

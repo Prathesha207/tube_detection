@@ -19,6 +19,7 @@ export interface InferenceStats {
   fps: number;
   latency_ms?: number;
   frame_time_ms?: number;
+  depth?: boolean;
 
   // Tube ML fields from TubeAnalyzer / run_video_frames:
   heads_count: number;
@@ -58,6 +59,7 @@ const initialStats: InferenceStats = {
   fps: 0,
   latency_ms: 0,
   frame_time_ms: 0,
+  depth: false,
   heads_count: 0,
   tails_count: 0,
   detections: [],

@@ -63,6 +63,38 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           </div>
         </div>
 
+        <div className="h-6 w-[1px] bg-[var(--border-color)]" />
+
+        {/* 3D Depth Engine Indicator */}
+        <div
+          className="flex flex-col items-center"
+          title={
+            stats?.depth
+              ? 'Inference running with aligned depth frames (3D enabled)'
+              : 'Inference running in 2D mode (no depth frames)'
+          }
+        >
+          <span className="text-[9.5px] text-[var(--text-secondary)] uppercase tracking-wider font-semibold">
+            Depth Engine
+          </span>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span
+              className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                stats?.depth
+                  ? 'bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse'
+                  : 'bg-zinc-600'
+              }`}
+            />
+            <span
+              className={`text-xs font-bold font-mono tracking-tight ${
+                stats?.depth ? 'text-emerald-300' : 'text-zinc-500'
+              }`}
+            >
+              {stats?.depth ? '3D ACTIVE' : '2D ONLY'}
+            </span>
+          </div>
+        </div>
+
         {/* COMMENTED OUT: Pair Match / Unpaired as requested
         <div className="flex flex-col items-center">
           <span className="text-[9.5px] text-[var(--text-secondary)] uppercase tracking-wider font-semibold">

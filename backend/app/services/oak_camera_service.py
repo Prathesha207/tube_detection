@@ -2674,6 +2674,21 @@ class OakCameraService:
         """User clicks Start Streaming — subscribe streaming clients and ensure capture threads are active."""
         async with self._streaming_lock:
             if not self._is_running or not self.is_connected or self.device is None:
+                # Self-healing: if pipeline is not active, attempt auto-starting with active database config
+                logger.info("[STREAMING] Device not connected when start_streaming requested — attempting auto-connect")
+                try:
+                    from app.database import SessionLocal
+                    from app.services.camera_db_service import camera_service as cam_db
+                    with SessionLocal() as db:
+                        cfg = cam_db.get_camera_config(db)
+                    if cfg:
+                        start_res = await self.start(cfg)
+                        if start_res.get("status") == "error":
+                            return start_res
+                except Exception as auto_err:
+                    logger.warning(f"[STREAMING] Auto-connect attempt failed: {auto_err}")
+
+            if not self._is_running or not self.is_connected or self.device is None:
                 return {"status": "error", "message": "Cannot stream: OAK camera is not connected — call /oak/start first"}
 
             if not self._start_capture_threads():

@@ -201,7 +201,15 @@ export function useCameraStatus(
         setIsCameraDeviceActive(true);
         setCameraConnected(true);
       }
-      const streamRes = await cameraService.startStream();
+      let streamRes = await cameraService.startStream();
+      // Auto-heal if backend pipeline was reset or not started yet
+      if (streamRes?.status === 'error' && streamRes?.message?.includes('call /oak/start first')) {
+        const startRes = await cameraService.start();
+        if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
+        setIsCameraDeviceActive(true);
+        setCameraConnected(true);
+        streamRes = await cameraService.startStream();
+      }
       if (streamRes?.status === 'error') throw new Error(streamRes.message || 'Stream start failed');
       setIsStreaming(true);
       setCameraStartingState('ready');

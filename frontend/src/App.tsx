@@ -187,7 +187,13 @@ export default function App() {
       }
 
       if (!camera.isStreaming) {
-        const streamRes = await cameraService.startStream();
+        let streamRes = await cameraService.startStream();
+        if (streamRes?.status === 'error' && streamRes?.message?.includes('call /oak/start first')) {
+          const startRes = await cameraService.start();
+          if (startRes?.status === 'error') throw new Error(startRes.message || 'Camera start failed');
+          camera.setIsCameraDeviceActive(true);
+          streamRes = await cameraService.startStream();
+        }
         if (streamRes?.status === 'error') throw new Error(streamRes.message || 'Stream start failed');
         camera.setIsStreaming(true);
       }

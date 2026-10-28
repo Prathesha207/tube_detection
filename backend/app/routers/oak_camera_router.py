@@ -97,9 +97,33 @@ async def stop_camera():
 # ==================== Stream Lifecycle ====================
 
 @router.post("/stream/start")
-async def start_stream():
-    """User clicks Start Streaming — starts the 3 capture threads."""
+async def start_stream(db: Session = Depends(get_db)):
+    """User clicks Start Streaming — ensures camera pipeline is active, then starts capture threads."""
     try:
+        # Self-healing: if the camera pipeline is not running, automatically start it first
+        if not oak_camera_service._is_running or not oak_camera_service.is_connected or oak_camera_service.device is None:
+            logger.info("[STREAM START] Camera pipeline not active — automatically calling start() first")
+            camera = camera_service.get_camera_config(db)
+            if not camera or not camera.ip_address:
+                try:
+                    loop = asyncio.get_running_loop()
+                    device_info = await loop.run_in_executor(None, oak_camera_service._resolve_device_info, "usb")
+                    mxid = str(getattr(device_info, "mxid", "") or "") or "usb"
+                    if not camera:
+                        from app.schemas.camera_schema import CameraCreate
+                        new_cam = CameraCreate(name="Auto USB Camera", ip_address=mxid, control_mode="auto")
+                        camera = camera_service.create_camera(db, new_cam)
+                    else:
+                        from app.schemas.camera_schema import CameraUpdate
+                        camera = camera_service.update_camera_partial(db, camera.id, CameraUpdate(ip_address=mxid))
+                except Exception as _e:
+                    logger.warning(f"[STREAM START] Device enumeration fallback failed: {_e}")
+
+            if camera:
+                start_res = await oak_camera_service.start(camera)
+                if start_res.get("status") == "error":
+                    return start_res
+
         result = await oak_camera_service.start_streaming()
         return result
     except Exception as e:

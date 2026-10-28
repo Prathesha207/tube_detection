@@ -28,6 +28,9 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
   const tailsCount = tubes.filter((t) => t.role === 'TAIL').length;
 
   const formatWidth = (d: TubeEntity): string => {
+    if (typeof d.width_mm_depth === 'number' && d.width_mm_depth > 0) {
+      return `${d.width_mm_depth.toFixed(1)}mm`;
+    }
     if (typeof d.width_mm === 'number' && d.width_mm > 0) {
       return `${d.width_mm.toFixed(1)}mm`;
     }
@@ -151,6 +154,11 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                     >
                       {widthStr}
                     </strong>
+                    {typeof d.z_mm === 'number' && (
+                      <span className="text-cyan-400 font-mono text-[8.5px] opacity-80" title={`Distance: ${d.z_mm} mm`}>
+                        z:{d.z_mm.toFixed(0)}
+                      </span>
+                    )}
                   </div>
                 </div>
               );

@@ -365,7 +365,8 @@ def _load_entry(path: str, device: str = "cpu"):
 #################### 3. Data Formatting ####################
 _WIDTH_DETECTION_KEYS = (
     "width_px", "width_mm", "width_now_px", "width_spread_px",
-    "width_source", "size", "outline"
+    "width_source", "size", "outline",
+    "xyz_m", "xyz_now_m", "z_m", "z_mm", "depth_source", "width_mm_depth"
 )
 
 # ------------------------------------------------------ what the frontend gets
@@ -377,9 +378,10 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     total), and passes through ``bigger_tube`` from rvf.assign_sizes().
 
     Width fields (``width_px``, ``width_mm``, ``width_now_px``, ``width_spread_px``,
-    ``width_source``, ``size``) are guaranteed to exist on every detection (None when not
-    measured), and ``bigger_tube`` is passed through from the wheel (None only for an empty
-    frame). An empty result ({} for an empty frame) gives all-zero counts."""
+    ``width_source``, ``size``) and 3D depth fields (``xyz_m``, ``z_m``, ``z_mm``,
+    ``width_mm_depth``, ``depth_source``) are guaranteed to exist on every detection
+    (None when not measured), and ``bigger_tube`` is passed through from the wheel (None
+    only for an empty frame). An empty result ({} for an empty frame) gives all-zero counts."""
     heads = result.get("heads_count", 0)
     tails = result.get("tails_count", 0)
     detections = []
@@ -389,6 +391,19 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         det["class"] = det.get("role")             # alias only
         # the wheel only emits CONFIRMED ends in ``detections``, so "OK" is true for every entry
         det["status"] = d.get("status", "OK")
+
+        # Compute z_mm convenience distance for the frontend
+        if det.get("z_m") is not None:
+            det["z_mm"] = round(float(det["z_m"]) * 1000.0, 1)
+        elif det.get("xyz_m") is not None and isinstance(det["xyz_m"], (list, tuple)) and len(det["xyz_m"]) >= 3 and det["xyz_m"][2] is not None:
+            det["z_mm"] = round(float(det["xyz_m"][2]) * 1000.0, 1)
+        else:
+            det["z_mm"] = None
+
+        # Prioritize true 3D width if width_mm is not yet set from mm_per_px
+        if det.get("width_mm") is None and det.get("width_mm_depth") is not None:
+            det["width_mm"] = det["width_mm_depth"]
+
         for key in _WIDTH_DETECTION_KEYS:          # stable schema even if nothing was measured
             det.setdefault(key, None)
         detections.append(det)
@@ -447,6 +462,8 @@ _SETTINGS_TO_REPORT = (
     "stride", "min_frames", "min_frames_tail", "max_dist", "max_dist_tail", "max_missed",
     "max_heads", "max_tails", "width_method", "width_from", "min_ratio", "mm_per_px",
     "attach_gap", "max_disagree", "draw_masks", "draw_roi", "box_fill", "draw_scale",
+    "camera_matrix", "calib_width", "calib_height", "dist_coeffs", "depth_scale",
+    "depth_min_mm", "depth_max_mm", "depth_smooth", "depth_video",
 )
 
 
@@ -689,12 +706,13 @@ class TubeAnalyzer:
         return True
 
     # ------------------------------------------------------------ per frame
-    def analyze_frame(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False) -> FrameAnalysis:
-        """ONE BGR frame -> the wheel's result (and, with annotate=True, the wheel's drawn picture).
+    def analyze_frame(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False, depth: Optional[np.ndarray] = None) -> FrameAnalysis:
+        """ONE BGR frame (and optional aligned uint16 mm depth frame) -> the wheel's result
+        (and, with annotate=True, the wheel's drawn picture).
 
-        The whole pipeline (detect -> track -> ROI -> sizes -> counts -> fps -> draw) runs inside
-        ``rvf.analyze_frame``; this method only applies a queued ROI swap first and trims dead
-        flicker tracks afterwards. ``frame_number`` is the real frame index (tracker ``max_missed``
+        The whole pipeline (detect -> track -> ROI -> sizes -> counts -> fps -> depth/3D -> draw)
+        runs inside ``rvf.analyze_frame``; this method only applies a queued ROI swap first and trims
+        dead flicker tracks afterwards. ``frame_number`` is the real frame index (tracker ``max_missed``
         is measured in it)."""
         if frame is None or getattr(frame, "size", 0) == 0:
             return FrameAnalysis(result={}, frame=frame)
@@ -715,7 +733,7 @@ class TubeAnalyzer:
 
         def _run():
             return rvf.analyze_frame(self.entry, frame, self.state, self.roi, self.cfg, frame_number,
-                                     annotate=annotate, masks=self._masks_ok)
+                                     annotate=annotate, masks=self._masks_ok, depth=depth)
         try:
             result, vis = _run()
         except Exception as error:
@@ -728,12 +746,12 @@ class TubeAnalyzer:
         self._last_analysis = analysis
         return analysis
 
-    def infer(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False) -> Dict[str, Any]:
-        """ONE call: BGR frame in -> the complete dict for the frontend out.
+    def infer(self, frame: np.ndarray, frame_number: int = 0, annotate: bool = False, depth: Optional[np.ndarray] = None) -> Dict[str, Any]:
+        """ONE call: BGR frame (+ optional depth) in -> the complete dict for the frontend out.
 
         In order:  warm_up(frame.shape)      once per frame size, not timed
                    analyze_frame()           the wheel's pipeline                (timed)
-                   build_frontend_stats()    confidence/class/status/total_count ...
+                   build_frontend_stats()    confidence/class/status/total_count/3D depth ...
 
         ``fps`` is the wheel's own ``result["fps"]`` (the same number the CLI shows). The model
         speed measured around the wheel call is reported separately as ``frame_time_ms`` /
@@ -747,7 +765,7 @@ class TubeAnalyzer:
         self.warm_up(frame.shape)
         with inference_context():
             t_start = time.perf_counter()
-            analysis = self.analyze_frame(frame, frame_number, annotate=annotate)
+            analysis = self.analyze_frame(frame, frame_number, annotate=annotate, depth=depth)
             if cuda_is_available():
                 torch.cuda.synchronize()
             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
@@ -791,14 +809,14 @@ class TubeAnalyzer:
         return frame
 
     # ------------------------------------------------- old API, same behaviour
-    def process_frame(self, frame: np.ndarray, frame_idx: int = 0, return_clean: bool = False):
+    def process_frame(self, frame: np.ndarray, frame_idx: int = 0, return_clean: bool = False, depth: Optional[np.ndarray] = None):
         """Old combined call, kept so existing callers keep working.
 
         return_clean=True -> (result, annotated_frame, clean_frame)
         otherwise         -> (result, annotated_frame if draw_overlay else clean_frame)
         New code should use infer() / analyze_frame()."""
         want_drawn = return_clean or self.draw_overlay
-        analysis = self.analyze_frame(frame, frame_idx, annotate=want_drawn)
+        analysis = self.analyze_frame(frame, frame_idx, annotate=want_drawn, depth=depth)
         clean_frame = self.get_clean_frame(frame)
         annotated = analysis.annotated if want_drawn else None
         if return_clean:

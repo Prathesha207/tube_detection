@@ -332,9 +332,18 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                   <span className={isHead ? 'text-cyan-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
                     {tube.role}
                   </span>
-                  {tube.width_px != null && (
-                    <span className="text-white font-mono opacity-90">
-                      {tube.width_px.toFixed(0)}px
+                  {(tube.width_mm_depth != null || tube.width_mm != null || tube.width_px != null) && (
+                    <span className="text-white font-mono opacity-90 font-bold">
+                      {tube.width_mm_depth != null
+                        ? `Ø${tube.width_mm_depth.toFixed(1)}mm`
+                        : tube.width_mm != null
+                          ? `Ø${tube.width_mm.toFixed(1)}mm`
+                          : `${tube.width_px?.toFixed(0)}px`}
+                    </span>
+                  )}
+                  {tube.z_mm != null && (
+                    <span className="text-cyan-300 font-mono text-[9px] opacity-90 bg-cyan-950/60 px-1 py-0.2 rounded border border-cyan-500/30">
+                      Z:{tube.z_mm.toFixed(0)}mm
                     </span>
                   )}
                   {tube.pair_id != null && (
@@ -349,7 +358,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {/* 5. HOVER TOOLTIP: Rich popover when hovering or clicking a tube */}
             {(isHovered || isSelected) && (
               <div
-                className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 p-2 rounded-xl bg-slate-950/95 backdrop-blur-lg border border-white/20 text-white shadow-xl z-50 pointer-events-none min-w-[130px] flex flex-col gap-1 text-[10px] font-mono animate-in fade-in zoom-in-95 duration-100"
+                className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 p-2 rounded-xl bg-slate-950/95 backdrop-blur-lg border border-white/20 text-white shadow-xl z-50 pointer-events-none min-w-[140px] flex flex-col gap-1 text-[10px] font-mono animate-in fade-in zoom-in-95 duration-100"
               >
                 <div className="flex items-center justify-between pb-1 border-b border-white/10 font-bold">
                   <span className="flex items-center gap-1">
@@ -364,13 +373,24 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                 <div className="flex items-center justify-between text-slate-300">
                   <span>Width:</span>
                   <span className="font-bold text-white font-mono">
-                    {typeof tube.width_px === 'number'
-                      ? `${tube.width_px.toFixed(1)}px`
+                    {typeof tube.width_mm_depth === 'number'
+                      ? `${tube.width_mm_depth.toFixed(2)}mm (3D)`
                       : typeof tube.width_mm === 'number'
                         ? `${tube.width_mm.toFixed(2)}mm`
-                        : 'null'}
+                        : typeof tube.width_px === 'number'
+                          ? `${tube.width_px.toFixed(1)}px`
+                          : 'null'}
                   </span>
                 </div>
+
+                {tube.z_mm != null && (
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>Depth (Z):</span>
+                    <span className="font-bold text-cyan-300 font-mono">
+                      {tube.z_mm.toFixed(0)}mm {tube.depth_source ? `(${tube.depth_source})` : ''}
+                    </span>
+                  </div>
+                )}
 
                 {/* <div className="flex items-center justify-between text-slate-300">
                   <span>Pair:</span>

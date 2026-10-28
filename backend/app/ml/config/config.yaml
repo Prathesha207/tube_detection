@@ -1,19 +1,19 @@
-# config.yaml - settings for run_video_frames.py
+# config.yaml - settings for run_video_frames.py / head_tail_analyzer
 # Relative paths are relative to THIS file's folder. Absolute paths are used as-is.
-# Any setting can be overridden on the command line, e.g. --video, --conf, --mm-per-px.
+# Any setting can be overridden on the command line or from TubeAnalyzer.
 
 model_path: ../model/best.pt
 video: null
 device: "0"                    # "0" = first GPU, "cpu" = CPU
 
-# detection
+# ---------------------------------------------------------------- detection
 conf: 0.15
 conf_head: 0.4
 conf_tail: 0.3
-max_heads: 0                   # e.g. 2 if the scene always has 2 heads (0 = no limit)
+max_heads: 0                   # 0 = no limit
 max_tails: 0
 iou: 0.5
-scale: 1.0                     # shrink frames first; try 0.33-0.5 if the ends look much bigger than in training
+scale: 1.0                     # shrink frames first; 1.0 = native
 tile: 1280                     # the model was trained at imgsz 1280
 tile_overlap: 0.3
 merge_iou: 0.3
@@ -23,27 +23,42 @@ cross_role_contain: 0.5
 gray: false
 stride: 1
 
-# tracking
+# ----------------------------------------------------------------- tracking
 min_frames: 3
 max_dist: 80
 max_missed: 30
 
-# width / bigger tube
-width_method: auto             # auto = tube walls if the model has a tubing class, else head/tail mask thickness
-width_from: tail               # tail = bigger tube decided by tails (fair); all = heads too (only with a tubing class)
+# ------------------------------------------------------ width / bigger tube
+width_method: auto             # auto = tube walls if model has tubing class, else mask thickness
+width_from: tail               # tail = bigger tube decided by tails (fair)
 min_ratio: 1.15                # 15 % wider needed to call one BIGGER
-mm_per_px: null                # e.g. 0.08 for widths in mm (calibrate with a ruler); null = pixels
+mm_per_px: null                # not needed with depth: see width_mm_depth in the result
 attach_gap: 3
 max_disagree: 0.2
 
-# ROI - null = whole frame. Use --roi roi.json or --draw-roi
-roi_json: null
+# ------------------------------------------------------------ depth / 3D
+# camera_matrix is REQUIRED for 3D. Belonging to OAK RGB camera (CAM_A) intrinsics
+camera_matrix:
+  - [1070.789795, 0.0, 962.309387]
+  - [0.0, 1070.526978, 550.0]
+  - [0.0, 0.0, 1.0]
+calib_width: 1920              # image size the camera_matrix belongs to
+calib_height: 1080             # (frames of another size are rescaled automatically)
+dist_coeffs: null              # lens distortion, if known
+depth_scale: 0.001             # OAK depth = millimetres -> metres
+depth_min_mm: 100              # depth outside this range = "no depth"
+depth_max_mm: 3000
+depth_smooth: 15               # frames in each track's median X/Y/Z
+depth_video: null              # null for live stream / pairs auto-detected
+
+# ---------------------------------------------------------------- ROI
+roi_json: null                 # null = whole frame
 draw_roi: false
 
-# outputs (null = don't write) - each key only ONCE
+# ------------------------------------------------------------ outputs
 output_video: null
 latest_json: null
 history_jsonl: null
-print_frames: true
+print_frames: false            # true = print every frame to the console
 show_preview: false
 

@@ -270,6 +270,7 @@ def _error_stats(session_id: str, reason: str, frames_processed: int = 0, status
 def analyze_camera_frame(
     frame,
     session_id: str,
+    depth_frame: Optional[Any] = None,
     model_path: Optional[str] = None,
     video_name: Optional[str] = None,      # accepted for old callers, not used
     annotate: bool = False,
@@ -277,12 +278,15 @@ def analyze_camera_frame(
     frame_seq: Optional[int] = None,
     **kwargs,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Run the model on one camera frame. Returns (stats, clean_frame).
+    """Run the model on one camera frame (with optional aligned depth frame). Returns (stats, clean_frame).
 
     ``fps`` is the wheel's own processing speed (``result["fps"]``, the number the CLI shows).
     ``frame_time_ms`` / ``model_fps`` are measured around TubeAnalyzer.analyze_frame() only
     (detect + track + ROI + result), excluding frame reading, waiting for the session lock,
     warm-up and encoding.
+
+    ``depth_frame`` provides uint16 depth in mm aligned to CAM_A (RGB), enabling 3D positions
+    (xyz_m, z_m, z_mm) and true physical diameter (width_mm_depth) without needing a calibration ruler.
 
     ``annotate=True`` makes the wheel draw the boxes inside the same call and stores the image in
     session["last_annotated_frame"]; it is off by default because drawing is wasted work
@@ -323,7 +327,7 @@ def analyze_camera_frame(
 
         frame_number = frame_seq if frame_seq is not None else (session["frames_processed"] + 1)
         try:
-            stats = analyzer.infer(frame, frame_number, annotate=annotate)      # <- the ONE ML call
+            stats = analyzer.infer(frame, frame_number, annotate=annotate, depth=depth_frame)      # <- the ONE ML call
             session["frames_processed"] += 1
         except Exception as e:
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)

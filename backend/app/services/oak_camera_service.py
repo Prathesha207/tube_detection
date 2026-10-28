@@ -86,8 +86,8 @@ class OakCameraService:
         self._depth_last_view: float = 0.0   # last time a client asked for the colorized view
         self._latest_depth: np.ndarray | None = None   # uint16, millimetres, 0 = invalid
         self._latest_depth_jpeg: bytes | None = None
-
-        # ---- Inter-thread queue (hires capture -> converter) ----
+        self._depth_buffer: deque = deque(maxlen=30)
+        self._depth_buffer_lock = threading.Lock()
         self._hires_packet_queue: Queue = Queue(maxsize=16)
 
         # ---- Offline frame queue (synchronized, every frame processed once) ----
@@ -596,6 +596,26 @@ class OakCameraService:
         """Raw uint16 depth frame in millimeters (0 = invalid)."""
         return self._latest_depth
 
+    def get_synchronized_depth(self, target_hw_ts: float, max_delta_s: float = 0.08) -> np.ndarray | None:
+        """Retrieve the exact depth frame matching the hardware capture timestamp of an RGB frame.
+        Both CAM_A and stereo cameras share the on-device hardware timestamp clock.
+        """
+        if not self._depth_enabled:
+            return None
+        with self._depth_buffer_lock:
+            if not self._depth_buffer:
+                return self._latest_depth
+            best_diff = float("inf")
+            best_depth = None
+            for d_ts, d_seq, d_frame in self._depth_buffer:
+                diff = abs(d_ts - target_hw_ts)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_depth = d_frame
+            if best_depth is not None and best_diff <= max_delta_s:
+                return best_depth
+            return best_depth if best_depth is not None else self._latest_depth
+
     def get_depth_jpeg(self) -> bytes | None:
         """Latest colorized depth JPEG. Calling this marks the depth view as 'being watched',
         so colorizing/encoding only costs CPU while someone is actually looking."""
@@ -694,6 +714,18 @@ class OakCameraService:
 
                 depth = pkt.getFrame()           # uint16, millimetres
                 self._latest_depth = depth       # GIL-safe single reference assignment
+                try:
+                    d_ts = pkt.getTimestamp().total_seconds()
+                except Exception:
+                    d_ts = time.time()
+                try:
+                    d_seq = pkt.getSequenceNum()
+                except Exception:
+                    d_seq = 0
+
+                with self._depth_buffer_lock:
+                    self._depth_buffer.append((d_ts, d_seq, depth))
+
                 frames += 1
 
                 if time.time() - self._depth_last_view < 3.0:
@@ -734,6 +766,8 @@ class OakCameraService:
                 self._depth_dai_queue = None
                 self._latest_depth = None
                 self._latest_depth_jpeg = None
+                with self._depth_buffer_lock:
+                    self._depth_buffer.clear()
             logger.info("[PIPELINE] Cleaned up")
 
     def _on_device_lost(self, reason: str = "Device disconnected") -> None:
@@ -947,6 +981,8 @@ class OakCameraService:
             self._depth_thread = None
             self._latest_depth = None
             self._latest_depth_jpeg = None
+            with self._depth_buffer_lock:
+                self._depth_buffer.clear()
 
             self._latest_bgr = None
             self._latest_bgr_seq = -1
@@ -1149,6 +1185,10 @@ class OakCameraService:
                     seq_num = pkt.getSequenceNum()
                 except Exception:
                     pass
+                try:
+                    hw_ts = pkt.getTimestamp().total_seconds()
+                except Exception:
+                    hw_ts = ts_sec
 
                 if not _first_frame_logged:
                     logger.info(f"[CONVERT] First frame received — shape={raw_bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
@@ -1164,7 +1204,7 @@ class OakCameraService:
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
                 self._latest_bgr_seq = seq_num
-                self._latest_frame_data = (display_bgr, seq_num, ts_sec)  # Overwrites with newest camera frame
+                self._latest_frame_data = (display_bgr, seq_num, ts_sec, hw_ts)  # Overwrites with newest camera frame
 
                 if self._active_recording is not None:
                     # Save the same adjusted image shown in the live stream.
@@ -1718,6 +1758,7 @@ class OakCameraService:
             while not self._inference_stop.is_set():
 
                 # ── Frame acquisition ──────────────────────────────────────────
+                depth_frame = None
                 if self._inference_offline:
                     frame = None
                     _got_boundary = False
@@ -1741,7 +1782,10 @@ class OakCameraService:
                             _got_boundary = True
                             break
                         else:
-                            frame = item
+                            if isinstance(item, tuple):
+                                frame, depth_frame = item
+                            else:
+                                frame, depth_frame = item, None
                             break
 
                     if _got_boundary:
@@ -1771,9 +1815,15 @@ class OakCameraService:
                     if frame_data is None or frame_data[1] == last_seen_seq:
                         time.sleep(0.002)
                         continue
-                    frame, frame_seq, frame_ts = frame_data
+                    frame = frame_data[0]
+                    frame_seq = frame_data[1]
+                    frame_ts = frame_data[2]
+                    hw_ts = frame_data[3] if len(frame_data) > 3 else frame_ts
                     last_seen_seq = frame_seq
                     _live_frame_count += 1
+
+                    # Retrieve the exact synchronized depth frame for this RGB frame
+                    depth_frame = self.get_synchronized_depth(hw_ts)
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:
@@ -1791,6 +1841,7 @@ class OakCameraService:
                 infer_res = analyze_camera_frame(
                     frame if not self._inference_offline else frame.copy(),
                     session_id,
+                    depth_frame=depth_frame,
                     video_name=self._current_video_name,
                     wait_for_model=self._inference_offline,
                     frame_seq=self._offline_frame_index if self._inference_offline else _live_frame_count,
@@ -1961,6 +2012,17 @@ class OakCameraService:
 
                 logger.info(f"[OFFLINE] {width}x{height} | fps={fps:.1f} | total_frames={total_frames}")
 
+                # Optional aligned depth video pair (<video>_depth.mkv)
+                depth_reader = None
+                try:
+                    from head_tail_analyzer.depth3d import find_depth_pair, DepthReader
+                    depth_pair = find_depth_pair(video_path)
+                    if depth_pair and os.path.exists(depth_pair):
+                        depth_reader = DepthReader(depth_pair)
+                        logger.info(f"[OFFLINE] Found paired depth video: {depth_pair}")
+                except Exception as d_err:
+                    logger.debug(f"[OFFLINE] Paired depth video check: {d_err}")
+
                 frames_read = 0
                 try:
                     while not self._offline_stop.is_set():
@@ -1969,13 +2031,16 @@ class OakCameraService:
                             logger.info(f"[OFFLINE] EOF — frames_read={frames_read}")
                             break
 
+                        depth = depth_reader.read() if depth_reader else None
+
                         frames_read += 1
                         self._offline_frame_index = frames_read
 
                         # Block here if inference is behind — no frames are skipped
+                        queue_item = (frame, depth) if depth is not None else frame
                         while not self._offline_stop.is_set():
                             try:
-                                self._offline_frame_queue.put(frame, timeout=0.1)
+                                self._offline_frame_queue.put(queue_item, timeout=0.1)
                                 break
                             except Exception:
                                 continue
@@ -1987,6 +2052,8 @@ class OakCameraService:
                             )
                 finally:
                     cap.release()
+                    if depth_reader:
+                        depth_reader.close()
 
                 # Between videos: boundary sentinel so inference worker resets state
                 if idx < total - 1 and not self._offline_stop.is_set():

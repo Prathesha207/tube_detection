@@ -16,6 +16,11 @@ export interface TubeDetection {
   bbox?: [number, number, number, number]; // [x, y, width, height] px, top-left origin
   width_px?: number | null;
   width_mm?: number | null;
+  width_mm_depth?: number | null;
+  z_m?: number | null;
+  z_mm?: number | null;
+  xyz_m?: [number, number, number] | null;
+  depth_source?: string | null;
   width_now_px?: number | null;
   width_spread_px?: number | null;
   width_source?: string | null;
@@ -77,6 +82,11 @@ export interface TubeEntity {
   height: number;
   width_px?: number | null;
   width_mm?: number | null;
+  width_mm_depth?: number | null;
+  z_m?: number | null;
+  z_mm?: number | null;
+  xyz_m?: [number, number, number] | null;
+  depth_source?: string | null;
   width_now_px?: number | null;
   width_spread_px?: number | null;
   width_source?: string | null;

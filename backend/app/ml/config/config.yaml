@@ -39,12 +39,12 @@ max_disagree: 0.2
 # ------------------------------------------------------------ depth / 3D
 # camera_matrix is REQUIRED for 3D. Belonging to OAK RGB camera (CAM_A) intrinsics
 camera_matrix:
-  - [1070.789795, 0.0, 962.309387]
-  - [0.0, 1070.526978, 550.0]
-  - [0.0, 0.0, 1.0]
+  - [1425.300049, 0.000000, 941.881592]
+  - [0.000000, 1424.556274, 554.257324]
+  - [0.000000, 0.000000, 1.000000]
 calib_width: 1920              # image size the camera_matrix belongs to
 calib_height: 1080             # (frames of another size are rescaled automatically)
-dist_coeffs: null              # lens distortion, if known
+dist_coeffs: [-6.940605, 13.714851, 0.000245, -0.000148, 14.200346, -6.970135, 13.919160, 13.643177, 0.000000, 0.000000, 0.000000, 0.000000, 0.007326, 0.012413]
 depth_scale: 0.001             # OAK depth = millimetres -> metres
 depth_min_mm: 100              # depth outside this range = "no depth"
 depth_max_mm: 3000

@@ -19,8 +19,8 @@ class CameraBase(BaseModel):
     gain: Optional[float] = Field(default=None, ge=0)
     focus: Optional[int] = Field(default=None, ge=0)
 
-    brightness: Optional[int] = Field(default=None, ge=0, le=100)
-    contrast: Optional[int] = Field(default=None, ge=0, le=100)
+    brightness: Optional[int] = Field(default=None, ge=-100, le=100)
+    contrast: Optional[int] = Field(default=None, ge=-100, le=100)
 
     # Legacy status fields; camera autofocus and auto exposure are always off.
     auto_exposure: bool = False
@@ -52,8 +52,8 @@ class CameraUpdate(BaseModel):
     gain: Optional[float] = Field(default=None, ge=0)
     focus: Optional[int] = Field(default=None, ge=0)
 
-    brightness: Optional[int] = Field(default=None, ge=0, le=100)
-    contrast: Optional[int] = Field(default=None, ge=0, le=100)
+    brightness: Optional[int] = Field(default=None, ge=-100, le=100)
+    contrast: Optional[int] = Field(default=None, ge=-100, le=100)
 
     auto_exposure: Optional[bool] = None
     auto_focus: Optional[bool] = None

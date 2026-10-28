@@ -16,6 +16,7 @@ import { TopToolbar } from './canvas/TopToolbar';
 // import { StatusBar } from './canvas/StatusBar';
 import { ZoomControls } from './canvas/ZoomControls';
 import { DetectionMiniCard } from './canvas/DetectionMiniCard';
+import { DepthHud, type DepthTelemetry, type DepthHoverPoint } from './canvas/DepthHud';
 
 // Extracted Canvas Hooks
 import { useFullscreen } from '../hooks/useFullscreen';
@@ -339,14 +340,103 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef);
   const { fittedRect } = useContainerFit(containerRef, canvasRef, videoAspect, videoDimensions, isCameraSource);
   const { uploadProgress, isSelectingVideo, handleFileInputChange, handleSelectVideoAndStart, handleDragOver, handleDragLeave, handleDrop, isDragOver } = useVideoUpload(fileInputRef, onCustomVideoUploaded, recordedFile, clearRecording, initialUploadFile);
-  // Interactive depth probe (distance measurement on click in depth mode)
-  const [depthPoint, setDepthPoint] = useState<{ x_px: number; y_px: number; z_mm: number | null; screenX: number; screenY: number } | null>(null);
+  // Depth Telemetry & Interactive Hover Probe
+  const [depthTelemetry, setDepthTelemetry] = useState<DepthTelemetry | null>(null);
+  const [depthHoverPoint, setDepthHoverPoint] = useState<DepthHoverPoint | null>(null);
+  const [isDepthHovering, setIsDepthHovering] = useState<boolean>(false);
+  const [depthHoverScreen, setDepthHoverScreen] = useState<{ x: number; y: number } | null>(null);
+  const lastProbeTimeRef = useRef<number>(0);
+  const pendingProbeAbortRef = useRef<AbortController | null>(null);
 
+  // Periodic Depth Telemetry Polling (keeps center mm and valid % up to date)
   useEffect(() => {
-    if (feedMode !== 'depth') {
-      setDepthPoint(null);
+    if (feedMode !== 'depth' || !isCameraSource || !isCameraConnected) {
+      setDepthHoverPoint(null);
+      setIsDepthHovering(false);
+      setDepthHoverScreen(null);
+      return;
     }
-  }, [feedMode]);
+
+    const fetchTelemetry = () => {
+      fetch(`${getApiBaseUrl()}/oak/depth/telemetry`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) setDepthTelemetry(data);
+        })
+        .catch(() => {});
+    };
+
+    fetchTelemetry();
+    const intervalId = setInterval(fetchTelemetry, 1200);
+    return () => clearInterval(intervalId);
+  }, [feedMode, isCameraSource, isCameraConnected]);
+
+  // Throttled probe function (runs on mouse hover over depth stream, ~60ms intervals)
+  const probeDepthAt = useCallback((nx: number, ny: number) => {
+    const now = performance.now();
+    if (now - lastProbeTimeRef.current < 60) return;
+    lastProbeTimeRef.current = now;
+
+    if (pendingProbeAbortRef.current) {
+      pendingProbeAbortRef.current.abort();
+    }
+    const ctrl = new AbortController();
+    pendingProbeAbortRef.current = ctrl;
+
+    fetch(`${getApiBaseUrl()}/oak/depth/point?x=${nx.toFixed(4)}&y=${ny.toFixed(4)}&window=7`, {
+      signal: ctrl.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setDepthHoverPoint({
+          x_px: data.x_px,
+          y_px: data.y_px,
+          z_mm: data.z_mm,
+          valid_ratio: data.valid_ratio,
+        });
+        if (typeof data.valid_pct === 'number') {
+          setDepthTelemetry((prev) => ({
+            ...prev,
+            valid_pct: data.valid_pct,
+            center_z_mm: data.center_z_mm,
+            colormap_min_mm: data.colormap_min_mm,
+            colormap_max_mm: data.colormap_max_mm,
+            depth_width: data.depth_width,
+            depth_height: data.depth_height,
+          }));
+        }
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          // Probe network error
+        }
+      });
+  }, []);
+
+  const handleDepthMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (feedMode !== 'depth' || !isCameraSource || !isCameraConnected) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    setIsDepthHovering(true);
+    setDepthHoverScreen({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    probeDepthAt(nx, ny);
+  };
+
+  const handleDepthMouseLeave = () => {
+    if (feedMode === 'depth') {
+      setIsDepthHovering(false);
+      setDepthHoverPoint(null);
+      setDepthHoverScreen(null);
+      if (pendingProbeAbortRef.current) {
+        pendingProbeAbortRef.current.abort();
+        pendingProbeAbortRef.current = null;
+      }
+    }
+  };
 
   // When in stream mode (!isRunning), enforce feedMode is 'raw' or 'depth' (never 'inference') and close ROI editor.
   // When starting inference (isRunning), switch to 'inference' so detections are shown immediately.
@@ -375,26 +465,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     if (selectedTubeId) {
       onSelectTube(null);
     }
-    // Interactive Depth Probe: query point distance on click in depth mode
+    // Interactive Depth Probe: also probe immediately on click
     if (feedMode === 'depth' && isCameraSource && isCameraConnected) {
       const rect = e.currentTarget.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-        fetch(`${getApiBaseUrl()}/oak/depth/point?x=${nx.toFixed(4)}&y=${ny.toFixed(4)}&window=7`)
-          .then((res) => res.ok ? res.json() : null)
-          .then((data) => {
-            if (data) {
-              setDepthPoint({
-                x_px: data.x_px,
-                y_px: data.y_px,
-                z_mm: data.z_mm,
-                screenX: e.clientX - rect.left,
-                screenY: e.clientY - rect.top,
-              });
-            }
-          })
-          .catch((err) => console.warn('[Depth Probe] Click failed:', err));
+        setIsDepthHovering(true);
+        setDepthHoverScreen({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+        probeDepthAt(nx, ny);
       }
     }
   };
@@ -596,8 +675,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             style={{
               ...fittedRect,
               ...transformStyle,
+              cursor: feedMode === 'depth' ? 'crosshair' : cursorStyle,
             }}
             onClick={handleCanvasClick}
+            onMouseMove={handleDepthMouseMove}
+            onMouseLeave={handleDepthMouseLeave}
           >
             {/* BACKDROP: Cached or stopped frame rendered as a reliable persistent background */}
             {effectiveBackdrop && !isRunning && (
@@ -696,18 +778,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
               </div>
             )}
 
-            {/* Interactive Depth Probe Tooltip: Displayed when operator clicks on depth map */}
-            {feedMode === 'depth' && depthPoint && (
+            {/* Interactive Depth Tip Reticle: Follows pointer when hovering in depth mode */}
+            {feedMode === 'depth' && isDepthHovering && depthHoverScreen && (
               <div
-                className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-full mb-3 px-3 py-1.5 rounded-xl bg-slate-950/90 backdrop-blur-md border border-cyan-400 text-cyan-300 text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.45)] flex items-center gap-1.5 animate-in fade-in zoom-in-95"
-                style={{ left: `${depthPoint.screenX}px`, top: `${depthPoint.screenY}px` }}
+                className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-1/2"
+                style={{ left: `${depthHoverScreen.x}px`, top: `${depthHoverScreen.y}px` }}
               >
-                <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                <span>
-                  {depthPoint.z_mm !== null
-                    ? `Z: ${depthPoint.z_mm.toFixed(0)} mm (${(depthPoint.z_mm / 10).toFixed(1)} cm)`
-                    : 'Z: Invalid / Black Hole'}
-                </span>
+                <div className="w-5 h-5 rounded-full border border-cyan-400/90 flex items-center justify-center shadow-[0_0_8px_rgba(6,182,212,0.6)]">
+                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-300" />
+                </div>
               </div>
             )}
 
@@ -808,15 +887,23 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         />
       )} */}
 
-      {/* Floating Bottom-Left Corner Detection Mini Card: Neat card showing ID, HEAD/TAIL, and Width */}
-      {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (isRunning || hasInferenceResult || tubes.length > 0) && (
+      {/* Floating Bottom-Left Corner: In DEPTH mode, shows Depth HUD. In INFERENCE mode, shows DetectionMiniCard */}
+      {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (
         <div className="absolute bottom-3.5 left-3.5 sm:bottom-4 sm:left-4 z-30 pointer-events-auto">
-          <DetectionMiniCard
-            tubes={tubes}
-            selectedTubeId={selectedTubeId}
-            onSelectTube={onSelectTube}
-            isRunning={isRunning}
-          />
+          {feedMode === 'depth' && isCameraSource && isCameraConnected ? (
+            <DepthHud
+              telemetry={depthTelemetry}
+              hoverPoint={depthHoverPoint}
+              isHovering={isDepthHovering}
+            />
+          ) : (isRunning || hasInferenceResult || tubes.length > 0) ? (
+            <DetectionMiniCard
+              tubes={tubes}
+              selectedTubeId={selectedTubeId}
+              onSelectTube={onSelectTube}
+              isRunning={isRunning}
+            />
+          ) : null}
         </div>
       )}
 

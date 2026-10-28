@@ -602,6 +602,28 @@ class OakCameraService:
         self._depth_last_view = time.time()
         return self._latest_depth_jpeg
 
+    def get_depth_telemetry(self) -> dict | None:
+        """Instant statistical summary of the latest depth frame (center, valid %, range)."""
+        depth = self._latest_depth
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        valid_all = depth > 0
+        valid_pct = round(100.0 * float(valid_all.mean()), 1)
+        cy, cx = h // 2, w // 2
+        cpatch = depth[max(0, cy - 10):cy + 11, max(0, cx - 10):cx + 11]
+        cvalid = cpatch[cpatch > 0]
+        center_z_mm = float(np.median(cvalid)) if cvalid.size else None
+        return {
+            "depth_width": int(w),
+            "depth_height": int(h),
+            "valid_pct": valid_pct,
+            "center_z_mm": center_z_mm,
+            "colormap_min_mm": self._depth_min_mm,
+            "colormap_max_mm": self._depth_max_mm,
+            "aligned_to_rgb": self._depth_align_rgb,
+        }
+
     def get_depth_at(self, nx: float, ny: float, window: int = 7) -> dict | None:
         """Median depth (mm) around a normalized position (0..1, 0..1) of the depth frame."""
         depth = self._latest_depth
@@ -613,6 +635,15 @@ class OakCameraService:
         r = max(1, window) // 2
         patch = depth[max(0, v - r):v + r + 1, max(0, u - r):u + r + 1]
         valid = patch[patch > 0]
+
+        # Overall frame telemetry included so probe responses also refresh stream stats
+        valid_all = depth > 0
+        valid_pct = round(100.0 * float(valid_all.mean()), 1)
+        cy, cx = h // 2, w // 2
+        cpatch = depth[max(0, cy - 10):cy + 11, max(0, cx - 10):cx + 11]
+        cvalid = cpatch[cpatch > 0]
+        center_z_mm = float(np.median(cvalid)) if cvalid.size else None
+
         return {
             "x_px": u,
             "y_px": v,
@@ -620,15 +651,19 @@ class OakCameraService:
             "depth_height": int(h),
             "z_mm": float(np.median(valid)) if valid.size else None,
             "valid_ratio": round(valid.size / max(patch.size, 1), 3),
+            "valid_pct": valid_pct,
+            "center_z_mm": center_z_mm,
+            "colormap_min_mm": self._depth_min_mm,
+            "colormap_max_mm": self._depth_max_mm,
             "window": int(window),
             "aligned_to_rgb": self._depth_align_rgb,
         }
 
     def _render_depth_jpeg(self, depth: np.ndarray) -> bytes | None:
-        """Colorize uint16 mm depth (invalid = black) and overlay quick sanity readouts."""
+        """Colorize uint16 mm depth (invalid = black) with center crosshair.
+        All telemetry numbers are rendered by the frontend HUD at bottom-left without overlapping."""
         h, w = depth.shape[:2]
         valid = depth > 0
-        valid_pct = 100.0 * float(valid.mean())
 
         lo, hi = self._depth_min_mm, self._depth_max_mm
         norm = (np.clip(depth, lo, hi).astype(np.float32) - lo) * (255.0 / max(hi - lo, 1))
@@ -636,12 +671,7 @@ class OakCameraService:
         color[~valid] = 0
 
         cy, cx = h // 2, w // 2
-        patch = depth[max(0, cy - 10):cy + 11, max(0, cx - 10):cx + 11]
-        patch = patch[patch > 0]
-        center = f"{int(np.median(patch))} mm" if patch.size else "no depth"
         cv2.drawMarker(color, (cx, cy), (255, 255, 255), cv2.MARKER_CROSS, 16, 1)
-        label = f"center {center} | valid {valid_pct:.0f}% | colormap {lo}-{hi} mm"
-        cv2.putText(color, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
         ok, buf = cv2.imencode(".jpg", color, [cv2.IMWRITE_JPEG_QUALITY, 80])
         return buf.tobytes() if ok else None

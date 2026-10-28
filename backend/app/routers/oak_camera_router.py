@@ -407,6 +407,17 @@ def depth_point(
     return res
 
 
+@router.get("/depth/telemetry")
+def depth_telemetry():
+    """Summary telemetry statistics of the current depth frame (center mm, valid %, range)."""
+    if not oak_camera_service.depth_available():
+        raise HTTPException(status_code=503, detail="Depth not available")
+    res = oak_camera_service.get_depth_telemetry()
+    if res is None:
+        raise HTTPException(status_code=503, detail="No depth frame yet")
+    return res
+
+
 # ==================== Health & Devices ====================
 
 @router.get("/health")

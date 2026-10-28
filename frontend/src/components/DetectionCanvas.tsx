@@ -33,8 +33,8 @@ interface DetectionCanvasProps {
   tubes: TubeEntity[];
   setTubes?: React.Dispatch<React.SetStateAction<TubeEntity[]>>;
   anomalyStatus: AnomalyStatus;
-  feedMode: 'raw' | 'inference';
-  onFeedModeChange: (mode: 'raw' | 'inference') => void;
+  feedMode: 'raw' | 'depth' | 'inference';
+  onFeedModeChange: (mode: 'raw' | 'depth' | 'inference') => void;
   isRunning: boolean;
   isStarting?: boolean;
   onToggleRunning?: () => void;
@@ -339,6 +339,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef);
   const { fittedRect } = useContainerFit(containerRef, canvasRef, videoAspect, videoDimensions, isCameraSource);
   const { uploadProgress, isSelectingVideo, handleFileInputChange, handleSelectVideoAndStart, handleDragOver, handleDragLeave, handleDrop, isDragOver } = useVideoUpload(fileInputRef, onCustomVideoUploaded, recordedFile, clearRecording, initialUploadFile);
+  // Interactive depth probe (distance measurement on click in depth mode)
+  const [depthPoint, setDepthPoint] = useState<{ x_px: number; y_px: number; z_mm: number | null; screenX: number; screenY: number } | null>(null);
+
+  useEffect(() => {
+    if (feedMode !== 'depth') {
+      setDepthPoint(null);
+    }
+  }, [feedMode]);
+
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (hasMoved) return; // Do not trigger click/deselection if user was dragging to pan
     if (e.target !== e.currentTarget && (e.target as HTMLElement).closest('[role="button"]')) {
@@ -346,6 +355,28 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
     if (selectedTubeId) {
       onSelectTube(null);
+    }
+    // Interactive Depth Probe: query point distance on click in depth mode
+    if (feedMode === 'depth' && isCameraSource && isCameraConnected) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        fetch(`${getApiBaseUrl()}/oak/depth/point?x=${nx.toFixed(4)}&y=${ny.toFixed(4)}&window=7`)
+          .then((res) => res.ok ? res.json() : null)
+          .then((data) => {
+            if (data) {
+              setDepthPoint({
+                x_px: data.x_px,
+                y_px: data.y_px,
+                z_mm: data.z_mm,
+                screenX: e.clientX - rect.left,
+                screenY: e.clientY - rect.top,
+              });
+            }
+          })
+          .catch((err) => console.warn('[Depth Probe] Click failed:', err));
+      }
     }
   };
 
@@ -573,9 +604,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 crossOrigin="anonymous"
                 src={
                   isCameraSource
-                    ? (isRunning && feedMode === 'inference'
-                      ? (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')
-                      : `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`)
+                    ? (feedMode === 'depth'
+                      ? `${getApiBaseUrl()}/oak/depth/stream?t=${streamCacheBuster}`
+                      : (feedMode === 'raw'
+                        ? `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`
+                        : (isRunning && (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`) || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')))
                     : (isRunning && feedMode === 'inference'
                       ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
                       : effectiveVideoUrl)
@@ -641,6 +674,21 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                   onSelectTube={onSelectTube}
                   labelMode={labelMode}
                 />
+              </div>
+            )}
+
+            {/* Interactive Depth Probe Tooltip: Displayed when operator clicks on depth map */}
+            {feedMode === 'depth' && depthPoint && (
+              <div
+                className="absolute z-30 pointer-events-none transform -translate-x-1/2 -translate-y-full mb-3 px-3 py-1.5 rounded-xl bg-slate-950/90 backdrop-blur-md border border-cyan-400 text-cyan-300 text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.45)] flex items-center gap-1.5 animate-in fade-in zoom-in-95"
+                style={{ left: `${depthPoint.screenX}px`, top: `${depthPoint.screenY}px` }}
+              >
+                <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                <span>
+                  {depthPoint.z_mm !== null
+                    ? `Z: ${depthPoint.z_mm.toFixed(0)} mm (${(depthPoint.z_mm / 10).toFixed(1)} cm)`
+                    : 'Z: Invalid / Black Hole'}
+                </span>
               </div>
             )}
 

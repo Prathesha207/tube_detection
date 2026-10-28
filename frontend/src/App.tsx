@@ -56,7 +56,7 @@ export default function App() {
     setTheme(newTheme);
   };
 
-  const [feedMode, setFeedMode] = useState<'raw' | 'inference'>('inference');
+  const [feedMode, setFeedMode] = useState<'raw' | 'depth' | 'inference'>('inference');
   const [drawerOpen, setDrawerOpen] = useState<boolean>(true);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [helpOpen, setHelpOpen] = useState<boolean>(false);

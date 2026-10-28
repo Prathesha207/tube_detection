@@ -1298,8 +1298,8 @@ class OakCameraService:
     def get_hardware_calibration(self, width: int | None = None, height: int | None = None) -> dict:
         """Read 100% genuine hardware calibration and intrinsics from OAK-D camera EEPROM.
         
-        If width/height are None, queries the camera's genuine native calibration dimensions
-        (via getDefaultIntrinsics and getSourceWidth/getSourceHeight) without any hardcoded values.
+        Automatically detects the camera resolution from the active running stream or
+        native hardware sensor without requiring any manual user input.
         """
         calib = None
         device_mxid = None
@@ -1354,16 +1354,20 @@ class OakCameraService:
         except Exception:
             source_w, source_h = native_calib_w, native_calib_h
 
-        # Determine real dimensions: if width/height not specified, use real hardware values
+        # 4. Auto-detect active resolution:
+        # If camera is actively running, use its active pipeline resolution.
+        # Otherwise, use native calibration resolution from hardware.
         if width is not None and height is not None:
             actual_w, actual_h = int(width), int(height)
-            try:
-                k = np.array(calib.getCameraIntrinsics(socket, actual_w, actual_h))
-            except Exception:
-                k = np.array(raw_matrix)
+        elif getattr(self, "_pipeline_width", None) and getattr(self, "_pipeline_height", None):
+            actual_w, actual_h = int(self._pipeline_width), int(self._pipeline_height)
         else:
             actual_w = native_calib_w or source_w
             actual_h = native_calib_h or source_h
+
+        try:
+            k = np.array(calib.getCameraIntrinsics(socket, actual_w, actual_h))
+        except Exception:
             k = np.array(raw_matrix)
 
         try:

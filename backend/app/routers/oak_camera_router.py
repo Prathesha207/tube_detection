@@ -331,14 +331,14 @@ async def get_available_devices():
 # ==================== Camera Hardware Calibration & Intrinsics ====================
 
 @router.get("/calibration")
-def get_camera_calibration(width: Optional[int] = None, height: Optional[int] = None):
+def get_camera_calibration():
     """
     Read genuine hardware calibration matrix and intrinsics from OAK-D camera EEPROM.
-    If width and height are omitted, returns the camera's actual real hardware native calibration.
+    Automatically detects the camera resolution from the active stream or hardware sensor.
     Returns JSON with camera_matrix, fx, fy, cx, cy, distortion, and formatted YAML string.
     """
     try:
-        res = oak_camera_service.get_hardware_calibration(width=width, height=height)
+        res = oak_camera_service.get_hardware_calibration()
         if res.get("status") == "error":
             raise HTTPException(status_code=404, detail=res.get("message"))
         return res
@@ -350,13 +350,13 @@ def get_camera_calibration(width: Optional[int] = None, height: Optional[int] = 
 
 
 @router.get("/calibration/yaml")
-def get_camera_calibration_yaml(width: Optional[int] = None, height: Optional[int] = None):
+def get_camera_calibration_yaml():
     """
     Returns the exact CAMERA_MATRIX YAML text representation directly using genuine
     hardware calibration dimensions, ready to view or copy into configuration files.
     """
     try:
-        res = oak_camera_service.get_hardware_calibration(width=width, height=height)
+        res = oak_camera_service.get_hardware_calibration()
         if res.get("status") == "error":
             raise HTTPException(status_code=404, detail=res.get("message"))
         return Response(content=res.get("yaml_string", ""), media_type="text/yaml")

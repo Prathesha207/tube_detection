@@ -570,15 +570,20 @@ class OakCameraService:
             stereo_wired = True
             logger.info(f"[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback ({mono_w}x{mono_h})")
 
-        # 4. Align depth pixel-for-pixel to RGB camera (CAM_A) and enforce exact RGB output dimensions
+        # 4. Align depth pixel-for-pixel to RGB camera (CAM_A)
         if self._depth_align_rgb:
             try:
                 stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-                stereo.setOutputSize(out_w, out_h)
-                stereo.setOutputKeepAspectRatio(False)
-                logger.info(f"[PIPELINE] StereoDepth aligned to CAM_A (RGB) with output size {out_w}x{out_h}")
+                logger.info("[PIPELINE] StereoDepth aligned to CAM_A (RGB)")
             except Exception as align_err:
                 logger.warning(f"[PIPELINE] Stereo setDepthAlign to CAM_A failed: {align_err}")
+
+            try:
+                stereo.setOutputSize(out_w, out_h)
+                stereo.setOutputKeepAspectRatio(False)
+                logger.info(f"[PIPELINE] StereoDepth output size set to {out_w}x{out_h}")
+            except Exception as size_err:
+                logger.debug(f"[PIPELINE] Stereo setOutputSize not supported on this platform ({size_err})")
 
         # Created last so a half-built depth graph never leaves a dangling queue.
         self._depth_dai_queue = stereo.depth.createOutputQueue(maxSize=4, blocking=False)

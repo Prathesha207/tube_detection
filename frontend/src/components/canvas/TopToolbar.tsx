@@ -172,7 +172,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
       {/* Top-Right Corner: Action Controls */}
       <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink-0">
-        {/* Feed toggle pill: RAW vs DEPTH vs INFERENCE - Available for OAK camera */}
+        {/* Feed toggle pill: In stream mode shows [RAW | DEPTH]; in inference mode shows [RAW | DEPTH | INFERENCE] */}
         {!isRoiActive && isCameraSource && (
           <div className="flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0">
             <button
@@ -187,7 +187,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             </button>
             <button
               onClick={() => onFeedModeChange('depth')}
-              title="Live 30 FPS Stereo Depth stream (Turbo colormap)"
+              title="Live Stereo Depth stream (Turbo colormap)"
               className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'depth'
                 ? 'bg-cyan-500 text-white shadow-xs scale-100 shadow-[0_0_8px_rgba(6,182,212,0.4)]'
                 : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
@@ -195,21 +195,24 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             >
               DEPTH
             </button>
-            <button
-              onClick={() => onFeedModeChange('inference')}
-              title="Live YOLO detection & width measurement overlay"
-              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'inference'
-                ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
-                : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
-                }`}
-            >
-              INFERENCE
-            </button>
+            {/* INFERENCE button is strictly available only when AI inference is running */}
+            {isRunning && (
+              <button
+                onClick={() => onFeedModeChange('inference')}
+                title="Live YOLO detection & width measurement overlay"
+                className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'inference'
+                  ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
+                  : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+                  }`}
+              >
+                INFERENCE
+              </button>
+            )}
           </div>
         )}
 
-        {/* ROI Region of Interest Mask Toggle: Clean Icon Button [ 🎯 ] */}
-        {onToggleRoi && (
+        {/* ROI Region of Interest Mask Toggle: Only displayed during active INFERENCE (or on video) */}
+        {onToggleRoi && (isRunning || !isCameraSource) && (
           <button
             onClick={onToggleRoi}
             aria-label={isRoiActive ? "Close ROI Mask Editor" : "Open ROI Mask Editor"}

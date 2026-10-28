@@ -348,6 +348,25 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     }
   }, [feedMode]);
 
+  // When in stream mode (!isRunning), enforce feedMode is 'raw' or 'depth' (never 'inference') and close ROI editor.
+  // When starting inference (isRunning), switch to 'inference' so detections are shown immediately.
+  useEffect(() => {
+    if (isCameraSource) {
+      if (!isRunning) {
+        if (feedMode === 'inference') {
+          onFeedModeChange('raw');
+        }
+        if (isRoiActive) {
+          setIsRoiActive(false);
+        }
+      } else {
+        if (feedMode === 'raw') {
+          onFeedModeChange('inference');
+        }
+      }
+    }
+  }, [isRunning, isCameraSource, feedMode, isRoiActive, onFeedModeChange]);
+
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (hasMoved) return; // Do not trigger click/deselection if user was dragging to pan
     if (e.target !== e.currentTarget && (e.target as HTMLElement).closest('[role="button"]')) {

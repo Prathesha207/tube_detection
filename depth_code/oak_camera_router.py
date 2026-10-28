@@ -341,6 +341,29 @@ async def depth_snapshot():
     return Response(content=jpeg, media_type="image/jpeg")
 
 
+@router.get("/depth/raw")
+async def depth_raw():
+    """Download the raw uncompressed depth frame as a raw binary 16-bit uint16 buffer (in millimeters).
+    Dimensions are provided in X-Depth-Width and X-Depth-Height HTTP response headers.
+    """
+    if not oak_camera_service.depth_available():
+        raise HTTPException(status_code=503, detail="Depth not available")
+    depth = oak_camera_service.get_latest_depth_frame()
+    if depth is None:
+        raise HTTPException(status_code=503, detail="No depth frame yet")
+    h, w = depth.shape[:2]
+    return Response(
+        content=depth.tobytes(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Depth-Width": str(w),
+            "X-Depth-Height": str(h),
+            "X-Depth-Dtype": "uint16",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
 @router.get("/depth/point")
 def depth_point(
     x: float = Query(..., ge=0.0, le=1.0, description="0..1 across the depth image (left to right)"),

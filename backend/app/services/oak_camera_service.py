@@ -74,10 +74,10 @@ class OakCameraService:
         # OAK_DEPTH_ENABLED=0 turns depth off completely (RGB behaves exactly as before).
         # OAK_DEPTH_ALIGN_RGB=1 aligns depth to the RGB camera (step 2, after depth looks good).
         self._depth_enabled: bool = os.getenv("OAK_DEPTH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-        self._depth_align_rgb: bool = os.getenv("OAK_DEPTH_ALIGN_RGB", "1").strip().lower() not in {"0", "false", "no", "off"}
-        self._depth_width: int = 640
-        self._depth_height: int = 400
-        self._depth_min_mm: int = 300      # colormap range only, does not limit measurement
+        # Depth resolution: If None, automatically adopts the active RGB stream resolution (e.g. 1920x1080)
+        self._depth_width: int | None = int(os.getenv("OAK_DEPTH_WIDTH")) if os.getenv("OAK_DEPTH_WIDTH") else None
+        self._depth_height: int | None = int(os.getenv("OAK_DEPTH_HEIGHT")) if os.getenv("OAK_DEPTH_HEIGHT") else None
+        self._depth_min_mm: int = 300      # colormap preview range only, does not limit measurement
         self._depth_max_mm: int = 1500
         self._depth_dai_queue = None
         self._depth_thread: threading.Thread | None = None
@@ -494,7 +494,7 @@ class OakCameraService:
             self._depth_dai_queue = None
             if self._depth_enabled:
                 try:
-                    self._build_depth(pipeline)
+                    self._build_depth(pipeline, width, height)
                 except Exception as depth_err:
                     self._depth_dai_queue = None
                     logger.warning(f"[PIPELINE] Depth disabled - could not build stereo depth: {depth_err}")
@@ -508,9 +508,12 @@ class OakCameraService:
 
     # ==================== Depth ====================
 
-    def _build_depth(self, pipeline: dai.Pipeline) -> None:
-        """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB."""
-        w, h = self._depth_width, self._depth_height
+    def _build_depth(self, pipeline: dai.Pipeline, rgb_width: int = 1920, rgb_height: int = 1080) -> None:
+        """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB.
+        Automatically adopts the active stream resolution (e.g. 1920x1080).
+        """
+        w = self._depth_width or rgb_width
+        h = self._depth_height or rgb_height
 
         stereo = pipeline.create(dai.node.StereoDepth)
         if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):

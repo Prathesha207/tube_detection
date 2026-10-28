@@ -327,13 +327,41 @@ async def depth_stream(request: Request):
 
 
 @router.get("/depth/snapshot")
-async def depth_snapshot():
-    """Single colorized depth JPEG."""
+async def depth_snapshot(
+    format: str = Query("jpeg", description="Output format: 'jpeg' (fast preview), 'png' (lossless color), or '16bit_png' (lossless raw millimeters)")
+):
+    """Single depth snapshot in JPEG, lossless PNG, or 16-bit raw millimeter PNG."""
     if not oak_camera_service.depth_available():
         raise HTTPException(status_code=503, detail="Depth not available")
+
+    # 1. Genuine 16-bit lossless PNG (stores raw millimeters directly)
+    if format == "16bit_png":
+        depth = oak_camera_service.get_latest_depth_frame()
+        if depth is None:
+            raise HTTPException(status_code=503, detail="No depth frame yet")
+        ok, buf = cv2.imencode(".png", depth)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to encode 16-bit PNG")
+        return Response(content=buf.tobytes(), media_type="image/png")
+
+    # 2. Lossless 8-bit colorized PNG
+    if format == "png":
+        depth = oak_camera_service.get_latest_depth_frame()
+        if depth is None:
+            raise HTTPException(status_code=503, detail="No depth frame yet")
+        lo, hi = oak_camera_service._depth_min_mm, oak_camera_service._depth_max_mm
+        valid = depth > 0
+        norm = (np.clip(depth, lo, hi).astype(np.float32) - lo) * (255.0 / max(hi - lo, 1))
+        color = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_TURBO)
+        color[~valid] = 0
+        ok, buf = cv2.imencode(".png", color)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to encode PNG")
+        return Response(content=buf.tobytes(), media_type="image/png")
+
+    # 3. Default fast JPEG
     jpeg = oak_camera_service.get_depth_jpeg()
     if jpeg is None:
-        # first call only marks the view active; wait for the next frame to be rendered
         await asyncio.sleep(0.3)
         jpeg = oak_camera_service.get_depth_jpeg()
     if jpeg is None:

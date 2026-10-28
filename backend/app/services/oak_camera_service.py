@@ -2015,11 +2015,10 @@ class OakCameraService:
                 # Optional aligned depth video pair (<video>_depth.mkv)
                 depth_reader = None
                 try:
-                    from head_tail_analyzer.depth3d import find_depth_pair, DepthReader
-                    depth_pair = find_depth_pair(video_path)
-                    if depth_pair and os.path.exists(depth_pair):
-                        depth_reader = DepthReader(depth_pair)
-                        logger.info(f"[OFFLINE] Found paired depth video: {depth_pair}")
+                    from app.ml.camera_inference_service import open_offline_depth_reader
+                    depth_reader = open_offline_depth_reader(video_path)
+                    if depth_reader is not None:
+                        logger.info(f"[OFFLINE] Found paired depth video for: {video_path}")
                 except Exception as d_err:
                     logger.debug(f"[OFFLINE] Paired depth video check: {d_err}")
 

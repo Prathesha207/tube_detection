@@ -379,6 +379,22 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
                     analyzer.set_roi(points, frame_size)
 
 
+def open_offline_depth_reader(video_path: str):
+    """Optional paired depth video reader (<name>_depth.mkv) for offline videos."""
+    if not video_path:
+        return None
+    try:
+        from app.ml.tube_analyzer import rvf
+        if rvf is not None and hasattr(rvf, "depth3d"):
+            d3d = rvf.depth3d
+            depth_pair = d3d.find_depth_pair(video_path)
+            if depth_pair and Path(depth_pair).exists():
+                return d3d.DepthReader(depth_pair)
+    except Exception as e:
+        logger.debug(f"Could not open depth pair for {video_path}: {e}")
+    return None
+
+
 # Backward compatibility aliases
 clear_session = close_camera_session
 get_session_status = get_camera_session_stats

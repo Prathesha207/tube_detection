@@ -24,3 +24,5 @@ measured/
 *.log
 backend/app/ml/test_inference/sona_whl/
 inference_results/
+*.mkv
+depth_videos/

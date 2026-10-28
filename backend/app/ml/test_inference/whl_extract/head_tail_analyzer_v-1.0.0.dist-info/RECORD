@@ -1,0 +1,11 @@
+head_tail_analyzer/__init__.py,sha256=fnu_sLZJmNKWmcscTLtlj0JGmc2kECdCtLhJWrKkhyw,168
+head_tail_analyzer/main.py,sha256=01ikq8U7Zo23VTfRlchlcw3y1zqyWA1e9E7MWw_ZZws,15021
+head_tail_analyzer/measure_from_masks.py,sha256=ay7TCSizm0kPDCXy50QDHrxGGHiMxwEgYs2o4X7XxCw,18873
+head_tail_analyzer/run_video_frames.py,sha256=SRVzBdoWl44-JUMm6es8a_6retcz5Bat6e03SfoT5t4,70196
+head_tail_analyzer/tube_ends.py,sha256=CB0uK62hz0QIB28N3DSxMUcxTBUIwiXhNXZooAH_CWY,20294
+head_tail_analyzer/video_ends.py,sha256=U00ZcRm_2XjZl6yZSJXJ-u5LvWjstcZh7L3dDcJ9Jxw,31657
+head_tail_analyzer_v-1.0.0.dist-info/METADATA,sha256=5aWoYpSJJ06OZMaRffwOksg2c376zf4kD1WaBFRQAHs,454
+head_tail_analyzer_v-1.0.0.dist-info/WHEEL,sha256=mOdXR9C3wMVov7cSY8PY-XCzo3SmmWCHvGQr5csJoao,91
+head_tail_analyzer_v-1.0.0.dist-info/entry_points.txt,sha256=JVWZD1FaorxbPHbEELru0Q6L5WwxcXxDj7zQypDCWkA,236
+head_tail_analyzer_v-1.0.0.dist-info/top_level.txt,sha256=PV7UkBNjoNtNY3DcWqwyw2bm_xWTO5xoQKiAuqbuNXg,19
+head_tail_analyzer_v-1.0.0.dist-info/RECORD,,

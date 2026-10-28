@@ -52,8 +52,9 @@ def _ensure_env_file():
         return
     env_path = _ROOT / ".env"
     if not env_path.exists():
+        db_path = (_ROOT / "vision_ai.db").resolve().as_posix()
         env_path.write_text(
-            "DATABASE_URL=sqlite:///./vision_ai.db\n"
+            f"DATABASE_URL=sqlite:///{db_path}\n"
             "APP_NAME=Vision AI Command Center\n"
             "DEBUG=True\n",
             encoding="utf-8",

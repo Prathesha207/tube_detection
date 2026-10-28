@@ -407,13 +407,6 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _json_default(obj: Any) -> Any:
-    if hasattr(obj, "item"):
-        return obj.item()
-    if hasattr(obj, "tolist"):
-        return obj.tolist()
-    return str(obj)
-
 
 def new_stats(**fields: Any) -> Dict[str, Any]:
     """Zeroed stats dict for a new session (same keys the frontend reads every frame)."""
@@ -477,10 +470,11 @@ def _build_settings(config_path: Optional[str], model_path: str, device: str,
     overrides.update(model_path=model_path, device=device, draw_roi=draw_roi, print_frames=False)
 
     cfg, _roi = rvf.load_stream_config(config_path, use_roi=False, **overrides)   # roi: see __init__
-    # The CLI overwrites a "latest frame" JSON file on every frame when config.yaml names one. The
-    # backend delivers results through the API instead, so never let a CLI-oriented config.yaml make
-    # the server write that file 30 times a second. (history_jsonl is left as configured.)
+    # The CLI overwrites a "latest frame" JSON file or history.jsonl when config.yaml names one.
+    # The backend delivers results through the API / session folders instead, so never let a CLI
+    # config make the server write these files into the code directory.
     cfg.latest_json = None
+    cfg.history_jsonl = None
     return cfg
 
 

@@ -2,7 +2,7 @@
 # Relative paths are relative to THIS file's folder. Absolute paths are used as-is.
 # Any setting can be overridden on the command line, e.g. --video, --conf, --mm-per-px.
 
-model_path: .models\epoch100.pt
+model_path: models/best.pt
 video: null
 device: "0"                    # "0" = first GPU, "cpu" = CPU
 
@@ -16,15 +16,15 @@ iou: 0.5
 scale: 1.0                     # shrink frames first; try 0.33-0.5 if the ends look much bigger than in training
 tile: 1280                     # the model was trained at imgsz 1280
 tile_overlap: 0.3
-merge_iou: 0.5
-merge_contain: 0.75
+merge_iou: 0.3
+merge_contain: 0.6
 merge_gap: 0
 cross_role_contain: 0.5
-gray: true
+gray: false
 stride: 1
 
 # tracking
-min_frames: 5
+min_frames: 1
 max_dist: 80
 max_missed: 30
 
@@ -43,6 +43,6 @@ draw_roi: false
 # outputs (null = don't write) - each key only ONCE
 output_video: null
 latest_json: null
-history_jsonl: history.jsonl
-print_frames: false
+history_jsonl: null
+print_frames: true
 show_preview: false

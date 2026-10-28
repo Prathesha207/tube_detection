@@ -81,12 +81,18 @@ def _put_latest(queue: asyncio.Queue, item) -> None:
         pass
 
 
-def _json_default(obj):
+def _json_default(obj: Any) -> Any:
+    # 1. Converts single NumPy numbers (np.int64, np.float32) -> standard Python int or float
     if hasattr(obj, "item"):
         return obj.item()
+
+    # 2. Converts NumPy arrays (np.ndarray bounding boxes or masks) -> standard Python list [...]
     if hasattr(obj, "tolist"):
         return obj.tolist()
+
+    # 3. Fallback for objects like Path or UUID -> converts to string
     return str(obj)
+
 
 
 def _write_bytes(path: str, data: bytes) -> None:

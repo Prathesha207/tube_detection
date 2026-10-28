@@ -55,7 +55,7 @@ OUTPUT VIDEO DRAWING:
         ID: 3  Head / Conf: 0.92 / Smaller  18.4 px
     (the px value = measured tube width, the number that decides Bigger/Smaller/Same)
   * the segmentation mask outline of each end is drawn too (draw_masks)
-  * top-left info panel: FRAME n / total, FPS (video frame rate), HEADS (cyan), TAILS (yellow)
+  * top-left info panel: FRAME n / total, FPS (processing speed), HEADS (cyan), TAILS (yellow)
 
 Per frame (terminal + JSON), all restricted to the ROI:
   heads_count / tails_count      confirmed ends visible in this frame
@@ -103,14 +103,15 @@ DEFAULTS = {
     "max_tails": 0,
     "iou": 0.5,               # NMS inside each tile
     "scale": 1.0,             # shrink the frame by this factor before inference (ends too BIG for the model -> 0.33)
-    "imgsz": None,            # model input size; None = tile (or 640 if tile is 0). Set 1280 for a 1280-trained model
-    "tile": 640,              # must match training (0 = whole frame)
+    "imgsz": None,            # model input size; None = tile (or 640 if tile is 0). Keep = training imgsz
+    "tile": 1280,             # tile size; match the training imgsz (0 = whole frame)
     "tile_overlap": 0.3,
     "merge_iou": 0.4,         # merge duplicate boxes from overlapping tiles...
     "merge_contain": 0.75,    # ...or when one box is mostly inside another
     "merge_gap": 12,          # px: same-role boxes this close are ONE end split in two (0 = off)
     "cross_role_contain": 0.5,  # a head/tail box this much inside the other role's box is dropped (0 = off)
-    "gray": True,             # feed the model grayscale (it was trained on grayscale)
+    "gray": False,            # True only if the model was trained on grayscale images.
+                              # Width measurement always uses grayscale internally, either way.
     "stride": 1,              # 1 = every frame
     "min_frames": 5,          # sightings before an end is confirmed and counted
     "min_frames_tail": None,  # same, for tails only (None = min_frames). Weak tails: try 2-3
@@ -247,6 +248,15 @@ def box_gap(a, b):
     return max(dx, dy)
 
 
+def mask_overlap(ma, mb):
+    """Like box_overlap, but on the actual mask pixels: (IoU, overlap / smaller mask)."""
+    inter = int(np.logical_and(ma, mb).sum())
+    if inter == 0:
+        return 0.0, 0.0
+    a, b = int(ma.sum()), int(mb.sum())
+    return inter / (a + b - inter), inter / min(a, b)
+
+
 def _det(role, conf, box, mask=None):
     return {"role": role, "conf": conf, "xyxy": box, "mask": mask,
             "center": ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)}
@@ -256,8 +266,10 @@ def merge_duplicates(dets, cfg):
     """Clean up one frame's raw detections, in three steps:
 
     1. Same end seen twice (overlapping tiles, or the model firing twice on
-       one object): same role and IoU >= merge_iou or one box mostly inside
+       one object): same role and IoU >= merge_iou or one mostly inside
        the other (>= merge_contain) -> keep the most confident box.
+       Compared on the MASK pixels when both have masks (two real ends that
+       touch share almost no pixels, so they stay separate), else on the boxes.
     2. One end split into side-by-side pieces (e.g. a head reported as a left
        half and a right half): same role and at most merge_gap px apart ->
        replaced by ONE box (and one mask) around both. merge_gap = 0 turns this off.
@@ -272,7 +284,10 @@ def merge_duplicates(dets, cfg):
         for k in kept:
             if k["role"] != d["role"]:
                 continue
-            iou, contain = box_overlap(k["xyxy"], d["xyxy"])
+            if k.get("mask") is not None and d.get("mask") is not None:
+                iou, contain = mask_overlap(k["mask"], d["mask"])   # real pixels: touching tubes stay separate
+            else:
+                iou, contain = box_overlap(k["xyxy"], d["xyxy"])    # no masks -> fall back to boxes
             if iou >= cfg.merge_iou or contain >= cfg.merge_contain:
                 dup = k
                 break
@@ -611,7 +626,11 @@ def draw_roi_interactive(video, out_path, frame_no=0):
         elif event == cv2.EVENT_RBUTTONDOWN and pts:
             pts.pop()
 
-    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    try:
+        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    except cv2.error:
+        raise SystemExit("--draw-roi needs a screen and the GUI build of OpenCV (opencv-python); "
+                         "draw roi.json on a desktop machine and copy it in") from None
     cv2.setMouseCallback(win, on_mouse)
     while True:
         vis = cv2.resize(frame, None, fx=s, fy=s) if s != 1 else frame.copy()
@@ -838,8 +857,8 @@ def draw(frame, dets, result, roi, cfg):
     # 4. info panel (top-left)
     total = result.get("frame_total")
     ftxt = f"FRAME {result['frame']}" + (f" / {total}" if total else "")
-    fps = result.get("video_fps") or result.get("fps")     # video frame rate (else processing speed)
-    rows = [[(ftxt, (215, 215, 215)), (f"{fps:.0f} FPS" if fps else "- FPS", (215, 215, 215))],
+    fps = result.get("fps")                                 # real processing speed (changes per video/GPU)
+    rows = [[(ftxt, (215, 215, 215)), (f"{fps:.1f} FPS" if fps else "- FPS", (215, 215, 215))],
             [(f"HEADS {result['heads_count']}", COLORS["HEAD"]),
              (f"TAILS {result['tails_count']}", COLORS["TAIL"])]]
     pfs = max(0.42, 0.45 * s)

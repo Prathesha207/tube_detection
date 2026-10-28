@@ -41,10 +41,13 @@ Rules
 From the terminal:
 
     python main.py --config config.yaml --video part_0.avi --output out.mp4
+    python main.py --config config.yaml --video a.mp4 b.mp4 videos_folder --output results/out.mp4
+        -> model loaded ONCE, results/out_a.mp4, results/out_b.mp4, ... one per video
 """
 import argparse
 import functools
 import threading
+from pathlib import Path
 from typing import Iterator
 
 try:                                   # part of the package: python -m head_tail_analyzer.main
@@ -219,7 +222,9 @@ def main(argv=None):
         description="Count heads and tails in a video, measure widths, find the bigger tube.",
         epilog="Any flag overrides the same setting in the config file.")
     ap.add_argument("--config", help="config.yaml (paths inside it are relative to its folder)")
-    ap.add_argument("--video", help="video file, or 0 for webcam")
+    ap.add_argument("--video", nargs="+",
+                    help="one or more video files and/or folders of videos (or 0 for webcam). "
+                         "The model is loaded ONCE and reused for all of them")
     ap.add_argument("--model", help="trained YOLO11-seg weights (.pt)")
     ap.add_argument("--output", help="annotated video, e.g. out.mp4")
     ap.add_argument("--json", help="latest-frame JSON, overwritten every frame")
@@ -236,21 +241,67 @@ def main(argv=None):
 
     try:
         analyzer = HeadTailAnalyzer(
-            a.config, use_roi=not a.no_roi, video=a.video, model_path=a.model,
+            a.config, use_roi=not a.no_roi, model_path=a.model,
             output_video=a.output, latest_json=a.json, history_jsonl=a.history, roi_json=a.roi,
             device=a.device, conf=a.conf, stride=a.stride, mm_per_px=a.mm_per_px,
             print_frames=False if a.quiet else None)
-        analyzer.load_model()                            # loaded once
-        n = sum(1 for _ in analyzer.process_video(preview=a.preview))
-        analyzer.diagnosis()
-        analyzer.unload_model()                          # explicit: the CLI is done
+        videos = expand_videos(a.video) if a.video else [analyzer.cfg.video]
+        if not videos or videos == [None]:
+            raise AnalyzerError("no video: pass --video (files or folders) or set video in the config")
+        out_base, hist_base = analyzer.cfg.output_video, analyzer.cfg.history_jsonl
+        many = len(videos) > 1
+
+        analyzer.load_model()                            # loaded ONCE for every video below
+        summary = []
+        for i, video in enumerate(videos, 1):
+            print(f"\n===== video {i}/{len(videos)}: {video} =====")
+            analyzer.reset()                             # new video -> fresh tracks; model stays loaded
+            out = per_video(out_base, video) if many else out_base
+            analyzer.cfg.history_jsonl = per_video(hist_base, video) if many else hist_base
+            n = sum(1 for _ in analyzer.process_video(video=video, output=out, preview=a.preview))
+            analyzer.diagnosis()
+            summary.append((video, n, analyzer.totals(), out, analyzer.cfg.history_jsonl))
+        # no unload_model() here: the process ends next, which frees the model anyway.
+        # In a backend, keep the analyzer alive and never call unload_model() between videos.
     except AnalyzerError as e:
         raise SystemExit(f"error: {e}")
-    print(f"\n[done] {n} frames processed   {analyzer.totals()}")
-    for label, p in (("video", analyzer.cfg.output_video), ("json", analyzer.cfg.latest_json),
-                     ("history", analyzer.cfg.history_jsonl)):
-        if p:
-            print(f"  {label}: {p}")
+
+    print(f"\n[done] {len(summary)} video(s), model loaded {analyzer.model_load_count}x")
+    for video, n, totals, out, hist in summary:
+        print(f"  {video}: {n} frames  {totals}")
+        for label, p in (("video", out), ("history", hist)):
+            if p:
+                print(f"      {label}: {p}")
+    if analyzer.cfg.latest_json:
+        print(f"  json (last frame of the last video): {analyzer.cfg.latest_json}")
+
+
+VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".wmv"}
+
+
+def expand_videos(items):
+    """Files stay as given, folders become their video files (sorted), "0" = webcam."""
+    out = []
+    for it in items:
+        p = Path(it).expanduser()
+        if str(it).isdigit():
+            out.append(str(it))
+        elif p.is_dir():
+            out += sorted(str(f) for f in p.iterdir() if f.suffix.lower() in VIDEO_EXT)
+        elif p.exists():
+            out.append(str(p))
+        else:
+            raise AnalyzerError(f"video not found: {it}")
+    seen = set()                                   # same video listed twice -> run it once
+    return [v for v in out if not (str(Path(v).resolve()) in seen or seen.add(str(Path(v).resolve())))]
+
+
+def per_video(base, video):
+    """results/output.mp4 + part_3.avi -> results/output_part_3.mp4 (None stays None)."""
+    if not base:
+        return None
+    b = Path(base)
+    return str(b.with_name(f"{b.stem}_{Path(str(video)).stem}{b.suffix}"))
 
 
 if __name__ == "__main__":

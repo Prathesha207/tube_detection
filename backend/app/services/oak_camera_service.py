@@ -1295,6 +1295,136 @@ class OakCameraService:
         finally:
             db.close()
 
+    def get_hardware_calibration(self, width: int | None = None, height: int | None = None) -> dict:
+        """Read 100% genuine hardware calibration and intrinsics from OAK-D camera EEPROM.
+        
+        If width/height are None, queries the camera's genuine native calibration dimensions
+        (via getDefaultIntrinsics and getSourceWidth/getSourceHeight) without any hardcoded values.
+        """
+        calib = None
+        device_mxid = None
+
+        # 1. If device is already connected and running in oak_camera_service
+        if self.device is not None and self.is_connected:
+            try:
+                calib = self.device.readCalibration()
+                device_mxid = self.device.getMxId()
+            except Exception as e:
+                logger.warning(f"[CALIBRATION] Failed reading calibration from active device: {e}")
+
+        # 2. If not running, probe USB device directly under the thread lock
+        if calib is None:
+            with _depthai_device_enum_lock:
+                devices = dai.Device.getAllAvailableDevices()
+                if not devices:
+                    return {
+                        "status": "error",
+                        "message": "No OAK-D camera detected via USB. Please connect the camera."
+                    }
+                device_info = devices[0]
+                device_mxid = device_info.getMxId()
+                try:
+                    with dai.Device(device_info) as dev:
+                        calib = dev.readCalibration()
+                except Exception as e:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to connect to OAK-D device ({device_mxid}): {e}"
+                    }
+
+        if not calib.hasCalibrationData():
+            return {
+                "status": "error",
+                "message": f"Connected device ({device_mxid}) has no factory calibration data in EEPROM."
+            }
+
+        socket = dai.CameraBoardSocket.CAM_A
+
+        # 3. Read REAL native sensor resolution and genuine intrinsics from EEPROM
+        try:
+            raw_matrix, native_calib_w, native_calib_h = calib.getDefaultIntrinsics(socket)
+        except Exception:
+            raw_matrix = calib.getCameraIntrinsics(socket)
+            native_calib_w = 0
+            native_calib_h = 0
+
+        try:
+            source_w = calib.getSourceWidth(socket)
+            source_h = calib.getSourceHeight(socket)
+        except Exception:
+            source_w, source_h = native_calib_w, native_calib_h
+
+        # Determine real dimensions: if width/height not specified, use real hardware values
+        if width is not None and height is not None:
+            actual_w, actual_h = int(width), int(height)
+            try:
+                k = np.array(calib.getCameraIntrinsics(socket, actual_w, actual_h))
+            except Exception:
+                k = np.array(raw_matrix)
+        else:
+            actual_w = native_calib_w or source_w
+            actual_h = native_calib_h or source_h
+            k = np.array(raw_matrix)
+
+        try:
+            dist_coeffs = [float(c) for c in calib.getDistortionCoefficients(socket)]
+        except Exception:
+            dist_coeffs = []
+
+        try:
+            dist_model = str(calib.getDistortionModel(socket))
+        except Exception:
+            dist_model = None
+
+        try:
+            baseline_cm = calib.getBaselineDistance(dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C)
+            baseline_mm = float(baseline_cm * 10.0)
+        except Exception:
+            baseline_mm = None
+
+        try:
+            fov_deg = float(calib.getFov(socket))
+        except Exception:
+            fov_deg = None
+
+        fx = float(k[0, 0])
+        fy = float(k[1, 1])
+        cx = float(k[0, 2])
+        cy = float(k[1, 2])
+
+        # Format exact YAML output with the genuine hardware dimensions
+        yaml_lines = [
+            "CAMERA_MATRIX:",
+            f"  - [{k[0, 0]:.6f}, {k[0, 1]:.6f}, {k[0, 2]:.6f}]",
+            f"  - [{k[1, 0]:.6f}, {k[1, 1]:.6f}, {k[1, 2]:.6f}]",
+            f"  - [{k[2, 0]:.6f}, {k[2, 1]:.6f}, {k[2, 2]:.6f}]",
+            f"CALIBRATION_WIDTH: {actual_w}",
+            f"CALIBRATION_HEIGHT: {actual_h}",
+        ]
+        if dist_coeffs:
+            formatted_coeffs = ", ".join(f"{c:.6f}" for c in dist_coeffs)
+            yaml_lines.append(f"DISTORTION_COEFFICIENTS: [{formatted_coeffs}]")
+        yaml_string = "\n".join(yaml_lines)
+
+        return {
+            "status": "ok",
+            "device_mxid": device_mxid,
+            "calibration_width": actual_w,
+            "calibration_height": actual_h,
+            "sensor_source_width": source_w,
+            "sensor_source_height": source_h,
+            "camera_matrix": k.tolist(),
+            "fx": fx,
+            "fy": fy,
+            "cx": cx,
+            "cy": cy,
+            "distortion_coefficients": dist_coeffs,
+            "distortion_model": dist_model,
+            "baseline_distance_mm": baseline_mm,
+            "fov_degrees": fov_deg,
+            "yaml_string": yaml_string,
+        }
+
     # ==================== Inference ====================
 
     # ─────────────────────────────────────────────────────────────────────────────

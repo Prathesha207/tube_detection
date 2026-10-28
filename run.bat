@@ -65,6 +65,14 @@ if not exist "%FRONTEND_DIR%\node_modules\.bin\vite.cmd" (
     exit /b 1
 )
 
+REM Free ports 8000 & 5173 if lingering from a previous session to guarantee clean GPU memory
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING 2^>nul') do (
+    taskkill /f /pid %%a >nul 2>&1
+)
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5173 ^| findstr LISTENING 2^>nul') do (
+    taskkill /f /pid %%a >nul 2>&1
+)
+
 echo [1/2] Starting Vision Monitor Backend API (Port 8000)...
 start "Vision Monitor - Backend API" /d "%BACKEND_DIR%" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --host 127.0.0.1 --port 8000 --no-use-colors"
 if errorlevel 1 (

@@ -13,8 +13,8 @@ const formatRecordingTime = (totalSeconds: number) => {
 interface TopToolbarProps {
   isRunning: boolean;
   hasActiveVideo: boolean;
-  feedMode: 'raw' | 'depth' | 'inference';
-  onFeedModeChange: (mode: 'raw' | 'depth' | 'inference') => void;
+  feedMode: 'raw' | 'depth' | 'blend' | 'inference';
+  onFeedModeChange: (mode: 'raw' | 'depth' | 'blend' | 'inference') => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   showHUD: boolean;
@@ -196,6 +196,17 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                 }`}
             >
               DEPTH
+            </button>
+            <button
+              type="button"
+              onClick={() => onFeedModeChange('blend')}
+              title="Ghost Blend: 50% RGB + 50% Aligned Depth overlay to verify pixel sync"
+              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all touch-manipulation select-none ${feedMode === 'blend'
+                ? 'bg-purple-600 text-white shadow-xs scale-100 shadow-[0_0_8px_rgba(147,51,234,0.4)]'
+                : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
+                }`}
+            >
+              BLEND
             </button>
             {/* INFERENCE button is strictly available only when AI inference is running */}
             {isRunning && (

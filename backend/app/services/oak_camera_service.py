@@ -92,6 +92,10 @@ class OakCameraService:
         self._latest_depth_jpeg: bytes | None = None
         self._depth_buffer: deque = deque(maxlen=30)
         self._depth_buffer_lock = threading.Lock()
+        # ---- Blend (ghost overlay) + sync proof, built from the SAME pair the ML receives ----
+        self._blend_cache: tuple[int, bytes] | None = None   # (pair seq, jpeg)
+        self._blend_lock = threading.Lock()
+        self._sync_dt_hist: deque = deque(maxlen=150)         # |rgb_ts - depth_ts| in ms
         self._hires_packet_queue: Queue = Queue(maxsize=16)
 
         # ---- Offline frame queue (synchronized, every frame processed once) ----
@@ -654,6 +658,89 @@ class OakCameraService:
             self._latest_depth_jpeg = self._render_depth_jpeg(self._latest_depth)
         return self._latest_depth_jpeg
 
+    # ---- Blend (ghost overlay) view: same idea as the test script's mode 1 ----
+
+    def _render_blend_jpeg(self, bgr: np.ndarray, depth: np.ndarray, info: dict | None, seq: int) -> bytes | None:
+        """50/50 ghost blend of RGB and colorized depth (invalid depth = black), with a HUD that
+        prints the pair seq, the RGB-vs-depth timestamp gap and the valid-depth %.
+        If the pair is aligned, object edges in the colour image sit exactly on the depth edges."""
+        if bgr is None or depth is None:
+            return None
+        if depth.shape[:2] != bgr.shape[:2]:
+            depth = cv2.resize(depth, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
+        h, w = bgr.shape[:2]
+        valid = depth > 0
+        lo, hi = self._depth_min_mm, self._depth_max_mm
+        norm = (np.clip(depth, lo, hi).astype(np.float32) - lo) * (255.0 / max(hi - lo, 1))
+        color = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_TURBO)
+        color[~valid] = 0
+        blend = cv2.addWeighted(bgr, 0.55, color, 0.45, 0)
+
+        cy, cx = h // 2, w // 2
+        patch = depth[max(0, cy - 8):cy + 9, max(0, cx - 8):cx + 9]
+        vp = patch[patch > 0]
+        z_mm = float(np.median(vp)) if vp.size else 0.0
+        valid_pct = 100.0 * float(valid.mean())
+        dt = (info or {}).get("dt_ms")
+        dt_txt = f"{dt:.1f}ms" if dt is not None else "n/a"
+        native = (info or {}).get("depth_native")
+        res_txt = ""
+        if (info or {}).get("depth_resized") and native:
+            res_txt = f" | depth {native[1]}x{native[0]}->{w}x{h}"
+        hud = f"BLEND | pair #{seq} | rgb-depth dt {dt_txt} | valid {valid_pct:.0f}% | Z {z_mm:.0f}mm{res_txt}"
+        cv2.rectangle(blend, (8, 8), (w - 8, 38), (15, 20, 28), -1)
+        cv2.rectangle(blend, (8, 8), (w - 8, 38), (0, 200, 255), 1)
+        cv2.putText(blend, hud, (16, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.drawMarker(blend, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 1)
+
+        ok, buf = cv2.imencode(".jpg", blend, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return buf.tobytes() if ok else None
+
+    def get_blend_jpeg(self) -> tuple[int, bytes] | None:
+        """(pair seq, JPEG) of the ghost blend, built on demand from the latest atomic RGB+depth pair
+        (the very same tuple the inference worker reads). Cached per seq, so many viewers cost one render.
+        Because it renders on request, an unwatched blend costs the capture thread nothing."""
+        fd = self._latest_frame_data
+        if fd is None or len(fd) < 5 or fd[1] is None:
+            return None
+        bgr, depth, seq = fd[0], fd[1], fd[2]
+        info = fd[5] if len(fd) > 5 else None
+        with self._blend_lock:
+            cached = self._blend_cache
+            if cached is not None and cached[0] == seq:
+                return cached
+            jpeg = self._render_blend_jpeg(bgr, depth, info, seq)
+            if jpeg is None:
+                return None
+            self._blend_cache = (seq, jpeg)
+            return self._blend_cache
+
+    def get_sync_status(self) -> dict | None:
+        """Numbers that prove (or disprove) RGB/depth sync for the pair currently going to the ML."""
+        fd = self._latest_frame_data
+        if fd is None or len(fd) < 5:
+            return None
+        bgr, depth, seq = fd[0], fd[1], fd[2]
+        info = dict(fd[5]) if len(fd) > 5 and fd[5] else {}
+        hist = list(self._sync_dt_hist)
+        thr = 25.0
+        return {
+            "pair_seq": int(seq),
+            "mode": "hardware_sync_node" if self._sync_dai_queue is not None else "fallback_direct_queues",
+            "rgb_shape": list(bgr.shape[:2]) if bgr is not None else None,
+            "depth_shape": list(depth.shape[:2]) if depth is not None else None,
+            "depth_native_shape": list(info["depth_native"]) if info.get("depth_native") else None,
+            "depth_resized_to_rgb": bool(info.get("depth_resized")),
+            "aligned_to_rgb": self._depth_align_rgb,
+            "dt_ms_now": info.get("dt_ms"),
+            "dt_ms_avg": round(sum(hist) / len(hist), 2) if hist else None,
+            "dt_ms_max": round(max(hist), 2) if hist else None,
+            "pct_pairs_within_threshold": round(100.0 * sum(1 for x in hist if x <= thr) / len(hist), 1) if hist else None,
+            "threshold_ms": thr,
+            "pairs_measured": len(hist),
+            "depth_valid_pct": round(100.0 * float((depth > 0).mean()), 1) if depth is not None else None,
+        }
+
     def get_depth_telemetry(self) -> dict | None:
         """Instant statistical summary of the latest depth frame (center, valid %, range)."""
         depth = self._latest_depth
@@ -1126,12 +1213,36 @@ class OakCameraService:
                 now = time.time()
                 hw_ts = rgb_pkt.getTimestamp().total_seconds() if hasattr(rgb_pkt, "getTimestamp") else now
 
-                # 3. Atomic state update
+                # Pair metadata: proves RGB and depth came from the same Sync group.
+                pair_info = {"seq": seq, "rgb_ts": hw_ts, "depth_ts": None, "dt_ms": None,
+                             "rgb_seq": None, "depth_seq": None, "depth_native": None,
+                             "depth_resized": False}
+                try:
+                    pair_info["rgb_seq"] = int(rgb_pkt.getSequenceNum())
+                except Exception:
+                    pass
+                if depth_pkt is not None:
+                    try:
+                        d_ts = depth_pkt.getTimestamp().total_seconds()
+                        pair_info["depth_ts"] = d_ts
+                        pair_info["dt_ms"] = abs(hw_ts - d_ts) * 1000.0
+                        self._sync_dt_hist.append(pair_info["dt_ms"])
+                    except Exception:
+                        pass
+                    try:
+                        pair_info["depth_seq"] = int(depth_pkt.getSequenceNum())
+                        nat = (int(depth_pkt.getHeight()), int(depth_pkt.getWidth()))
+                        pair_info["depth_native"] = nat
+                        pair_info["depth_resized"] = nat != tuple(bgr_frame.shape[:2])
+                    except Exception:
+                        pass
+
+                # 3. Atomic state update (bgr + depth + metadata travel together as ONE pair)
                 with self._capture_lock:
                     self._latest_bgr = bgr_frame
                     self._latest_bgr_seq = seq
                     self._latest_depth = depth_frame
-                    self._latest_frame_data = (bgr_frame, depth_frame, seq, now, hw_ts)
+                    self._latest_frame_data = (bgr_frame, depth_frame, seq, now, hw_ts, pair_info)
 
                 # 4. Stream preview encoding (MJPEG for RAW view in browser)
                 has_subscribers = len(self._stream_subscribers) > 0 or self._stream_queue is not None
@@ -1926,6 +2037,7 @@ class OakCameraService:
 
                 # ── Frame acquisition ──────────────────────────────────────────
                 depth_frame = None
+                pair_info = None
                 if self._inference_offline:
                     frame = None
                     _got_boundary = False
@@ -1989,6 +2101,7 @@ class OakCameraService:
                         frame_seq = frame_data[2]
                         frame_ts = frame_data[3]
                         hw_ts = frame_data[4]
+                        pair_info = frame_data[5] if len(frame_data) > 5 else None
                     else:
                         frame = frame_data[0]
                         depth_frame = None
@@ -2064,6 +2177,10 @@ class OakCameraService:
 
                 result["frame_seq"] = _live_frame_count if not self._inference_offline else self._offline_frame_index
                 result["camera_packet_seq"] = frame_seq if not self._inference_offline else self._offline_frame_index
+                if pair_info:
+                    # Same seq as the BLEND view HUD: proves which RGB+depth pair these detections came from.
+                    result["pair_seq"] = pair_info.get("seq")
+                    result["pair_dt_ms"] = round(pair_info["dt_ms"], 2) if pair_info.get("dt_ms") is not None else None
                 _fp = result.get("frames_processed")
                 result["frames_processed"] = _live_frame_count if not self._inference_offline else (_fp if _fp is not None else self._offline_frame_index)
                 result["frame"] = result["frames_processed"]

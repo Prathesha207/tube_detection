@@ -186,8 +186,9 @@ async def stream(request: Request, session_id: Optional[str] = None):
 
     # Ensure capture threads are active so frames are actively produced
     if oak_camera_service._is_running and oak_camera_service.is_connected:
-        if not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()) and \
-           not (oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive()):
+        capture_alive = (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()) or \
+                        (oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive())
+        if not capture_alive:
             logger.info("[STREAM] Capture threads not running — starting them now")
             oak_camera_service._start_capture_threads()
 
@@ -215,15 +216,15 @@ async def stream(request: Request, session_id: Optional[str] = None):
                         logger.info(f"[STREAM] Camera stopped or disconnected on timeout — ending client stream (frames sent: {frames_sent})")
                         break
                     # If capture threads died while streaming is active, attempt restart ONLY if pipeline & queues are healthy
-                    has_any_queue = oak_camera_service._mjpeg_dai_queue is not None or oak_camera_service._sync_dai_queue is not None
-                    mjpeg_alive = oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()
-                    sync_alive = oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive()
+                    has_queue = oak_camera_service._mjpeg_dai_queue is not None or oak_camera_service._sync_dai_queue is not None
+                    thread_alive = (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()) or \
+                                   (oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive())
                     if (
                         oak_camera_service._is_streaming
                         and oak_camera_service._is_running
                         and oak_camera_service.is_connected
-                        and has_any_queue
-                        and not mjpeg_alive and not sync_alive
+                        and has_queue
+                        and not thread_alive
                     ):
                         logger.info("[STREAM] Attempting to restart capture threads")
                         oak_camera_service._start_capture_threads()
@@ -352,6 +353,76 @@ async def depth_stream(request: Request):
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Connection": "close"},
     )
+
+
+@router.get("/blend/stream")
+async def blend_stream(request: Request):
+    """MJPEG ghost blend (50% RGB + 50% colorized depth) built from the SAME pair the ML receives.
+    The HUD prints the pair number, the RGB-vs-depth timestamp gap and valid-depth %.
+    Aligned pair = object/table edges in RGB sit exactly on the depth edges."""
+    if not oak_camera_service.depth_available():
+        return Response(
+            content=b"Depth not available (camera not started, depth disabled, or stereo failed to build)",
+            status_code=503,
+            media_type="text/plain",
+        )
+
+    async def generate():
+        last_seq = None
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                if not oak_camera_service.depth_available():
+                    break
+                item = await asyncio.to_thread(oak_camera_service.get_blend_jpeg)
+                if item is None:
+                    await asyncio.sleep(0.05)
+                    continue
+                seq, jpeg = item
+                if seq == last_seq:
+                    await asyncio.sleep(0.01)
+                    continue
+                last_seq = seq
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+                await asyncio.sleep(0.04)   # ~20 fps cap; this is a verification view
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception as e:
+            logger.error(f"[BLEND STREAM] Generator error: {e}")
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Connection": "close"},
+    )
+
+
+@router.get("/blend/snapshot")
+async def blend_snapshot():
+    """One ghost-blend JPEG of the latest RGB+depth pair."""
+    if not oak_camera_service.depth_available():
+        return Response(content=b"Depth not available", status_code=503, media_type="text/plain")
+    item = await asyncio.to_thread(oak_camera_service.get_blend_jpeg)
+    if item is None:
+        raise HTTPException(status_code=503, detail="No synced RGB+depth pair yet")
+    return Response(content=item[1], media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Pair-Seq": str(item[0])})
+
+
+@router.get("/sync/status")
+def sync_status():
+    """Proof of sync for the pair currently going to the ML: sync mode, RGB-vs-depth timestamp gap
+    (now / average / max), % of pairs within the Sync threshold, shapes and whether depth was resized."""
+    if not oak_camera_service.depth_available():
+        raise HTTPException(status_code=503, detail="Depth not available")
+    res = oak_camera_service.get_sync_status()
+    if res is None:
+        raise HTTPException(status_code=503, detail="No synced RGB+depth pair yet")
+    return res
 
 
 @router.get("/depth/snapshot")
@@ -793,4 +864,3 @@ async def inference_ws(websocket: WebSocket, session_id: str):
             await websocket.close()
         except Exception:
             pass
-

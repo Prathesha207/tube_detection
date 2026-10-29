@@ -34,8 +34,8 @@ interface DetectionCanvasProps {
   tubes: TubeEntity[];
   setTubes?: React.Dispatch<React.SetStateAction<TubeEntity[]>>;
   anomalyStatus: AnomalyStatus;
-  feedMode: 'raw' | 'depth' | 'inference';
-  onFeedModeChange: (mode: 'raw' | 'depth' | 'inference') => void;
+  feedMode: 'raw' | 'depth' | 'blend' | 'inference';
+  onFeedModeChange: (mode: 'raw' | 'depth' | 'blend' | 'inference') => void;
   isRunning: boolean;
   isStarting?: boolean;
   onToggleRunning?: () => void;
@@ -703,9 +703,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                   isCameraSource
                     ? (feedMode === 'depth'
                       ? `${getApiBaseUrl()}/oak/depth/stream?t=${streamCacheBuster}`
-                      : (feedMode === 'raw'
-                        ? (isRunning && lastCameraFrame ? lastCameraFrame : `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`)
-                        : (isRunning && (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`) || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')))
+                      : feedMode === 'blend'
+                        ? `${getApiBaseUrl()}/oak/blend/stream?t=${streamCacheBuster}`
+                        : (feedMode === 'raw'
+                          ? (isRunning && lastCameraFrame ? lastCameraFrame : `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`)
+                          : (isRunning && (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`) || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')))
                     : (isRunning && feedMode === 'inference'
                       ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
                       : effectiveVideoUrl)

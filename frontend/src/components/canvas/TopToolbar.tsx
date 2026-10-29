@@ -174,11 +174,12 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink-0">
         {/* Feed toggle pill: In stream mode shows [RAW | DEPTH]; in inference mode shows [RAW | DEPTH | INFERENCE] */}
         {!isRoiActive && isCameraSource && (
-          <div className="flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0">
+          <div className="flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs shrink-0 select-none">
             <button
+              type="button"
               onClick={() => onFeedModeChange('raw')}
               title="Raw RGB stream from camera"
-              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'raw'
+              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all touch-manipulation select-none ${feedMode === 'raw'
                 ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
                 : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
                 }`}
@@ -186,9 +187,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
               RAW
             </button>
             <button
+              type="button"
               onClick={() => onFeedModeChange('depth')}
               title="Live Stereo Depth stream (Turbo colormap)"
-              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'depth'
+              className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all touch-manipulation select-none ${feedMode === 'depth'
                 ? 'bg-cyan-500 text-white shadow-xs scale-100 shadow-[0_0_8px_rgba(6,182,212,0.4)]'
                 : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
                 }`}
@@ -198,9 +200,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             {/* INFERENCE button is strictly available only when AI inference is running */}
             {isRunning && (
               <button
+                type="button"
                 onClick={() => onFeedModeChange('inference')}
                 title="Live YOLO detection & width measurement overlay"
-                className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all ${feedMode === 'inference'
+                className={`h-6 sm:h-7 px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-xs font-bold tracking-wide flex items-center justify-center cursor-pointer transition-all touch-manipulation select-none ${feedMode === 'inference'
                   ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] shadow-xs scale-100'
                   : 'text-[var(--text-primary)] hover:bg-[var(--btn-secondary-hover)]'
                   }`}

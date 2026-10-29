@@ -435,7 +435,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   };
 
   // When in stream mode (!isRunning), enforce feedMode is 'raw' or 'depth' (never 'inference') and close ROI editor.
-  // When starting inference (isRunning), switch to 'inference' so detections are shown immediately.
+  // When starting inference (isRunning transitions from false to true), default to 'inference' once.
+  const prevIsRunningRef = useRef(isRunning);
   useEffect(() => {
     if (isCameraSource) {
       if (!isRunning) {
@@ -445,12 +446,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         if (isRoiActive) {
           setIsRoiActive(false);
         }
-      } else {
-        if (feedMode === 'raw') {
-          onFeedModeChange('inference');
-        }
+      } else if (!prevIsRunningRef.current && isRunning) {
+        // Transitioned from stopped -> running: default to 'inference' view
+        onFeedModeChange('inference');
       }
     }
+    prevIsRunningRef.current = isRunning;
   }, [isRunning, isCameraSource, feedMode, isRoiActive, onFeedModeChange]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -703,7 +704,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                     ? (feedMode === 'depth'
                       ? `${getApiBaseUrl()}/oak/depth/stream?t=${streamCacheBuster}`
                       : (feedMode === 'raw'
-                        ? `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`
+                        ? (isRunning && lastCameraFrame ? lastCameraFrame : `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`)
                         : (isRunning && (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`) || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')))
                     : (isRunning && feedMode === 'inference'
                       ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')

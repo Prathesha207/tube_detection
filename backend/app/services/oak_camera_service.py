@@ -549,12 +549,16 @@ class OakCameraService:
             mono_w, mono_h = 1280, 800   # 16:10 full sensor mode
 
         stereo = pipeline.create(dai.node.StereoDepth)
-        if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):
-            stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
-        elif hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "DEFAULT"):
+        # Use DEFAULT preset — matches the working test_oak4_sync.py configuration.
+        # HIGH_DETAIL preset + explicit setRectification(True) interferes with
+        # setDepthAlign(CAM_A) on RVC4/OAK4, producing mis-aligned depth maps.
+        if hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "DEFAULT"):
             stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
+        elif hasattr(dai.node.StereoDepth, "PresetMode") and hasattr(dai.node.StereoDepth.PresetMode, "HIGH_DETAIL"):
+            stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
 
-        stereo.setRectification(True)
+        # NOTE: Do NOT call setRectification(True) explicitly — the preset already
+        # configures rectification, and re-calling it on RVC4 can break depth alignment.
         stereo.setLeftRightCheck(True)      # removes occlusion errors
         stereo.setSubpixel(True)            # subpixel accuracy for close-range tubing
 

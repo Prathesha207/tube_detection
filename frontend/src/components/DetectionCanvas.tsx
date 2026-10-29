@@ -349,7 +349,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
   // Periodic Depth Telemetry Polling (keeps center mm and valid % up to date)
   useEffect(() => {
-    if (feedMode !== 'depth' || !isCameraSource || !isCameraConnected) {
+    if ((feedMode !== 'depth' && feedMode !== 'blend') || !isCameraSource || !isCameraConnected) {
       setDepthHoverPoint(null);
       setIsDepthHovering(false);
       return;
@@ -413,7 +413,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   }, []);
 
   const handleDepthMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (feedMode !== 'depth' || !isCameraSource || !isCameraConnected) return;
+    if ((feedMode !== 'depth' && feedMode !== 'blend') || !isCameraSource || !isCameraConnected) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
 
@@ -424,7 +424,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   };
 
   const handleDepthMouseLeave = () => {
-    if (feedMode === 'depth') {
+    if (feedMode === 'depth' || feedMode === 'blend') {
       setIsDepthHovering(false);
       setDepthHoverPoint(null);
       if (pendingProbeAbortRef.current) {
@@ -463,7 +463,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       onSelectTube(null);
     }
     // Interactive Depth Probe: also probe immediately on click
-    if (feedMode === 'depth' && isCameraSource && isCameraConnected) {
+    if ((feedMode === 'depth' || feedMode === 'blend') && isCameraSource && isCameraConnected) {
       const rect = e.currentTarget.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -671,7 +671,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
             style={{
               ...fittedRect,
               ...transformStyle,
-              cursor: feedMode === 'depth' ? 'crosshair' : cursorStyle,
+              cursor: (feedMode === 'depth' || feedMode === 'blend') ? 'crosshair' : cursorStyle,
             }}
             onClick={handleCanvasClick}
             onMouseMove={handleDepthMouseMove}
@@ -878,7 +878,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       {/* Floating Bottom-Left Corner: In DEPTH mode, shows Depth HUD. In INFERENCE mode, shows DetectionMiniCard */}
       {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (
         <div className="absolute bottom-3.5 left-3.5 sm:bottom-4 sm:left-4 z-30 pointer-events-auto">
-          {feedMode === 'depth' && isCameraSource && isCameraConnected ? (
+          {(feedMode === 'depth' || feedMode === 'blend') && isCameraSource && isCameraConnected ? (
             <DepthHud
               telemetry={depthTelemetry}
               hoverPoint={depthHoverPoint}

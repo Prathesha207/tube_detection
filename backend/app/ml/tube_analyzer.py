@@ -671,6 +671,15 @@ class TubeAnalyzer:
                 raise ValueError("mm_per_px must be a positive number")
         self.cfg.mm_per_px = mm_per_px
 
+    def set_camera_matrix(self, matrix: Any, calib_width: int, calib_height: int, dist_coeffs: Optional[Any] = None) -> None:
+        """Dynamically update camera intrinsics (e.g. from OAK EEPROM) for the active resolution."""
+        if matrix is not None:
+            self.cfg.camera_matrix = matrix
+            self.cfg.calib_width = int(calib_width)
+            self.cfg.calib_height = int(calib_height)
+            if dist_coeffs is not None:
+                self.cfg.dist_coeffs = dist_coeffs
+
     def set_video_info(self, frame_total: Optional[int], video_fps: Optional[float]) -> None:
         """Tell the wheel about the video (same two values HeadTailAnalyzer.process_video sets), so it
         fills ``frame_total`` / ``video_fps`` in every result and draws ``FRAME n / total``."""

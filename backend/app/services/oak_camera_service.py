@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections import deque
+from datetime import timedelta
 from queue import Queue, Empty
 
 import cv2
@@ -69,6 +70,9 @@ class OakCameraService:
         self._mjpeg_dai_queue = None
         self._raw_dai_queue = None
         self._control_queue = None
+        self._sync_dai_queue = None
+        self._sync_thread: threading.Thread | None = None
+        self._sync_stop = threading.Event()
 
         # ---- Depth (optional stereo depth; isolated from the RGB path) ----
         # OAK_DEPTH_ENABLED=0 turns depth off completely (RGB behaves exactly as before).
@@ -464,37 +468,58 @@ class OakCameraService:
 
             raw_fps = min(fps, 10) if is_usb2 else fps
 
-            encoder = pipeline.create(dai.node.VideoEncoder)
-            encoder.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.MJPEG)
+            # --- Depth node setup ---
+            stereo_node = None
+            if enable_depth and self._depth_enabled:
+                stereo_node = self._build_depth(pipeline, width, height)
 
-            if not is_color_camera:
-                # --- Node 1: MJPEG encoder → stream preview ---
-                mjpeg_out = cam.requestOutput(
-                    (width, height), type=dai.ImgFrame.Type.NV12, fps=fps
-                )
-                mjpeg_out.link(encoder.input)
-                self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
-                logger.info("[PIPELINE] Node 1: MJPEG encoder ready")
+            # --- Unified Hardware Sync (CAM_A RGB + StereoDepth) ---
+            self._sync_dai_queue = None
+            if stereo_node is not None:
+                try:
+                    sync = pipeline.create(dai.node.Sync)
+                    sync.setSyncThreshold(timedelta(milliseconds=25))
 
-                # --- Node 2: Raw NV12 → inference / recording ---
-                raw_out = cam.requestOutput(
-                    (width, height), type=dai.ImgFrame.Type.NV12, fps=raw_fps
-                )
-                self._raw_dai_queue = raw_out.createOutputQueue(maxSize=2, blocking=False)
-                logger.info(f"[PIPELINE] Node 2: Raw NV12 ready (fps={raw_fps})")
-            else:
-                cam.video.link(encoder.input)
-                self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
-                self._raw_dai_queue = cam.video.createOutputQueue(maxSize=2, blocking=False)
-                logger.info("[PIPELINE] ColorCamera outputs wired successfully")
+                    if not is_color_camera:
+                        rgb_cam_out = cam.requestOutput((width, height), type=dai.ImgFrame.Type.NV12, fps=fps)
+                    else:
+                        rgb_cam_out = cam.video
+
+                    rgb_cam_out.link(sync.inputs["rgb"])
+                    stereo_node.depth.link(sync.inputs["depth"])
+
+                    self._sync_dai_queue = sync.out.createOutputQueue(maxSize=4, blocking=False)
+                    self._depth_dai_queue = self._sync_dai_queue
+                    logger.info(f"[PIPELINE] Unified Hardware Sync Node ready ({width}x{height} @ {fps}fps, threshold=25ms)")
+                except Exception as sync_err:
+                    logger.warning(f"[PIPELINE] Sync node wiring failed ({sync_err}), falling back to direct queues")
+                    self._sync_dai_queue = None
+
+            # Fallback direct queues if Sync node is not used (e.g. depth disabled or sync failed)
+            if self._sync_dai_queue is None:
+                encoder = pipeline.create(dai.node.VideoEncoder)
+                encoder.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.MJPEG)
+                if not is_color_camera:
+                    mjpeg_out = cam.requestOutput(
+                        (width, height), type=dai.ImgFrame.Type.NV12, fps=fps
+                    )
+                    mjpeg_out.link(encoder.input)
+                    self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
+
+                    raw_out = cam.requestOutput(
+                        (width, height), type=dai.ImgFrame.Type.NV12, fps=raw_fps
+                    )
+                    self._raw_dai_queue = raw_out.createOutputQueue(maxSize=2, blocking=False)
+                    logger.info(f"[PIPELINE] Fallback direct queues wired (mjpeg + raw, fps={raw_fps})")
+                else:
+                    cam.video.link(encoder.input)
+                    self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
+                    self._raw_dai_queue = cam.video.createOutputQueue(maxSize=2, blocking=False)
+                if stereo_node is not None:
+                    self._depth_dai_queue = stereo_node.depth.createOutputQueue(maxSize=4, blocking=False)
 
             # --- Camera control input ---
             self._control_queue = cam.inputControl.createInputQueue(maxSize=4, blocking=False)
-
-            # --- Node 3: Stereo depth (optional; a failure here must never break RGB) ---
-            self._depth_dai_queue = None
-            if enable_depth and self._depth_enabled:
-                self._build_depth(pipeline, width, height)
 
             logger.info("[PIPELINE] Build success")
             return True
@@ -505,21 +530,19 @@ class OakCameraService:
 
     # ==================== Depth ====================
 
-    def _build_depth(self, pipeline: dai.Pipeline, rgb_width: int = 1920, rgb_height: int = 1080) -> None:
+    def _build_depth(self, pipeline: dai.Pipeline, rgb_width: int = 1920, rgb_height: int = 1080):
         """Add left/right mono cameras + StereoDepth to the SAME pipeline as RGB.
-        Automatically aligns to and outputs at the active RGB stream resolution (e.g. 1920x1080).
-        Mono cameras (OV9282 hardware) are captured at their supported sensor mode (720p/800p),
-        and DepthAI hardware projects and scales the output depth map to match RGB exactly.
+        Automatically aligns to and outputs at the active RGB stream resolution (e.g. 1920x1080 or 1280x720).
+        Returns the StereoDepth node on success, or None on failure.
         """
-        # 1. Output resolution: Automatically matches the active RGB stream (e.g. 1920x1080)
+        # 1. Output resolution: Automatically matches the active RGB stream
         out_w = self._depth_width or rgb_width
         out_h = self._depth_height or rgb_height
 
-        # 2. Input sensor mode: OV9282 physical sensors on OAK-D only have 1280x800 pixels.
-        # Select the hardware sensor mode that matches the target aspect ratio:
+        # 2. Input sensor mode: OV9282 physical sensors on OAK-D
         aspect = out_w / max(out_h, 1)
         if abs(aspect - 16 / 9) < 0.15:
-            mono_w, mono_h = 1280, 720   # 16:9 native mode matching 1080p
+            mono_w, mono_h = 1280, 720   # 16:9 native mode matching 720p/1080p
         elif out_w <= 640 or out_h <= 400:
             mono_w, mono_h = 640, 400    # 2x2 binned mode
         else:
@@ -549,26 +572,30 @@ class OakCameraService:
 
         # Fallback to dai.node.MonoCamera (classic OAK-D / OAK-D Lite / OAK-D Pro)
         if not stereo_wired:
-            left = pipeline.create(dai.node.MonoCamera)
-            left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-            if hasattr(dai.MonoCameraProperties, "SensorResolution"):
-                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
-                    dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
-                )
-                left.setResolution(res)
+            try:
+                left = pipeline.create(dai.node.MonoCamera)
+                left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+                if hasattr(dai.MonoCameraProperties, "SensorResolution"):
+                    res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
+                        dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                    )
+                    left.setResolution(res)
 
-            right = pipeline.create(dai.node.MonoCamera)
-            right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-            if hasattr(dai.MonoCameraProperties, "SensorResolution"):
-                res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
-                    dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
-                )
-                right.setResolution(res)
+                right = pipeline.create(dai.node.MonoCamera)
+                right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+                if hasattr(dai.MonoCameraProperties, "SensorResolution"):
+                    res = dai.MonoCameraProperties.SensorResolution.THE_720_P if mono_h == 720 else (
+                        dai.MonoCameraProperties.SensorResolution.THE_800_P if mono_h == 800 else dai.MonoCameraProperties.SensorResolution.THE_400_P
+                    )
+                    right.setResolution(res)
 
-            left.out.link(stereo.left)
-            right.out.link(stereo.right)
-            stereo_wired = True
-            logger.info(f"[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback ({mono_w}x{mono_h})")
+                left.out.link(stereo.left)
+                right.out.link(stereo.right)
+                stereo_wired = True
+                logger.info(f"[PIPELINE] Stereo cameras created with dai.node.MonoCamera fallback ({mono_w}x{mono_h})")
+            except Exception as mono_err:
+                logger.warning(f"[PIPELINE] Stereo cameras failed to initialize: {mono_err}")
+                return None
 
         # 4. Align depth pixel-for-pixel to RGB camera (CAM_A)
         if self._depth_align_rgb:
@@ -585,9 +612,8 @@ class OakCameraService:
             except Exception as size_err:
                 logger.debug(f"[PIPELINE] Stereo setOutputSize not supported on this platform ({size_err})")
 
-        # Created last so a half-built depth graph never leaves a dangling queue.
-        self._depth_dai_queue = stereo.depth.createOutputQueue(maxSize=4, blocking=False)
-        logger.info(f"[PIPELINE] Node 3: Stereo depth ready ({out_w}x{out_h}, mono_sensor={mono_w}x{mono_h}, align_rgb={self._depth_align_rgb})")
+        logger.info(f"[PIPELINE] Stereo depth configured ({out_w}x{out_h}, mono_sensor={mono_w}x{mono_h}, align_rgb={self._depth_align_rgb})")
+        return stereo
 
     def depth_available(self) -> bool:
         return bool(self._depth_dai_queue is not None and self._is_running and self.is_connected)
@@ -760,6 +786,7 @@ class OakCameraService:
                 self._is_running = False
                 self._mjpeg_dai_queue = None
                 self._raw_dai_queue = None
+                self._sync_dai_queue = None
                 self._control_queue = None
                 self._latest_jpeg = None
                 self._latest_bgr = None
@@ -909,8 +936,25 @@ class OakCameraService:
 
     def _start_capture_threads(self) -> bool:
         with self._capture_lock:
-            if not self._is_running or not self.is_connected or self._mjpeg_dai_queue is None:
+            if not self._is_running or not self.is_connected:
                 logger.warning("[CAPTURE] Cannot start — pipeline or device queue not running")
+                return False
+
+            # --- Priority 1: Unified Sync Thread (RGB + Depth paired) ---
+            if self._sync_dai_queue is not None:
+                sync_alive = self._sync_thread and self._sync_thread.is_alive()
+                if not sync_alive:
+                    self._sync_stop.clear()
+                    self._sync_thread = threading.Thread(
+                        target=self._sync_capture_loop, name="oak-sync-capture", daemon=True
+                    )
+                    self._sync_thread.start()
+                    logger.info("[CAPTURE] Unified RGB+Depth Sync capture thread started")
+                return True
+
+            # --- Priority 2: Fallback separate threads (e.g. RGB only fallback) ---
+            if self._mjpeg_dai_queue is None:
+                logger.warning("[CAPTURE] Cannot start — no queue running")
                 return False
 
             mjpeg_alive = self._mjpeg_thread and self._mjpeg_thread.is_alive()
@@ -942,7 +986,7 @@ class OakCameraService:
                 logger.info("[CAPTURE] Converter thread started")
 
             depth_alive = self._depth_thread and self._depth_thread.is_alive()
-            if self._depth_dai_queue is not None and not depth_alive:
+            if self._depth_dai_queue is not None and not depth_alive and self._depth_dai_queue is not self._sync_dai_queue:
                 self._depth_stop.clear()
                 self._depth_thread = threading.Thread(
                     target=self._depth_loop, name="oak-depth", daemon=True
@@ -956,7 +1000,13 @@ class OakCameraService:
         with self._capture_lock:
             logger.info("[CAPTURE] Stopping threads...")
 
-            # Signal all
+            # Stop Sync thread
+            self._sync_stop.set()
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=2.5)
+            self._sync_thread = None
+
+            # Signal legacy fallback threads
             self._mjpeg_stop.set()
             self._hires_stop.set()
             self._convert_stop.set()
@@ -1002,6 +1052,107 @@ class OakCameraService:
                 break
         if drained:
             logger.info(f"[CAPTURE] Drained {drained} stale hi-res packets")
+
+    def _sync_capture_loop(self) -> None:
+        """Unified capture loop draining the DepthAI Sync queue (RGB + Depth paired).
+        Feeds live stream, depth stream, and AI inference from the exact same frames.
+        """
+        logger.info("[SYNC-CAPTURE] Loop started")
+        q = self._sync_dai_queue
+        seq = 0
+        frames_count = 0
+        last_log = time.time()
+
+        try:
+            while not self._sync_stop.is_set() and self._is_running:
+                if q is None:
+                    break
+                try:
+                    group = q.tryGet()
+                except Exception as e:
+                    logger.error(f"[SYNC-CAPTURE] tryGet failed: {e}")
+                    break
+
+                if group is None:
+                    time.sleep(0.001)
+                    continue
+
+                try:
+                    rgb_pkt = group["rgb"]
+                    depth_pkt = group.get("depth") if "depth" in group else None
+                except Exception as extract_err:
+                    logger.debug(f"[SYNC-CAPTURE] Extract error: {extract_err}")
+                    continue
+
+                if rgb_pkt is None:
+                    continue
+
+                # 1. RGB Frame conversion
+                try:
+                    bgr_frame = rgb_pkt.getCvFrame()
+                except Exception as cv_err:
+                    logger.error(f"[SYNC-CAPTURE] getCvFrame failed: {cv_err}")
+                    continue
+
+                # 2. Depth Frame extraction & shape verification
+                depth_frame = None
+                if depth_pkt is not None:
+                    try:
+                        depth_frame = depth_pkt.getFrame()  # uint16 mm
+                        if depth_frame is not None and depth_frame.shape[:2] != bgr_frame.shape[:2]:
+                            depth_frame = cv2.resize(
+                                depth_frame,
+                                (bgr_frame.shape[1], bgr_frame.shape[0]),
+                                interpolation=cv2.INTER_NEAREST
+                            )
+                    except Exception as d_err:
+                        logger.debug(f"[SYNC-CAPTURE] Depth getFrame error: {d_err}")
+
+                seq += 1
+                frames_count += 1
+                now = time.time()
+                hw_ts = rgb_pkt.getTimestamp().total_seconds() if hasattr(rgb_pkt, "getTimestamp") else now
+
+                # 3. Atomic state update
+                with self._capture_lock:
+                    self._latest_bgr = bgr_frame
+                    self._latest_bgr_seq = seq
+                    self._latest_depth = depth_frame
+                    self._latest_frame_data = (bgr_frame, depth_frame, seq, now, hw_ts)
+
+                # 4. Stream preview encoding (MJPEG for RAW view in browser)
+                has_subscribers = len(self._stream_subscribers) > 0 or self._stream_queue is not None
+                if has_subscribers:
+                    ok, jpeg_buf = cv2.imencode(".jpg", bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if ok:
+                        jpeg_bytes = jpeg_buf.tobytes()
+                        self._latest_jpeg = jpeg_bytes
+                        loop = self._server_loop
+                        if loop is not None and not loop.is_closed():
+                            try:
+                                loop.call_soon_threadsafe(self._push_sync, jpeg_bytes)
+                            except Exception:
+                                pass
+
+                # 5. Depth preview rendering (if depth stream is being watched)
+                if depth_frame is not None and (now - self._depth_last_view < 5.0):
+                    self._latest_depth_jpeg = self._render_depth_jpeg(depth_frame)
+
+                # Periodic telemetry logging
+                if now - last_log >= 5.0:
+                    elapsed = now - last_log
+                    real_fps = frames_count / max(elapsed, 0.001)
+                    val_pct = 100.0 * float((depth_frame > 0).mean()) if depth_frame is not None else 0.0
+                    logger.info(f"[SYNC-CAPTURE] FPS: {real_fps:.1f} | Shape: {bgr_frame.shape} | Depth valid: {val_pct:.0f}%")
+                    frames_count = 0
+                    last_log = now
+
+        except Exception as e:
+            if not self._sync_stop.is_set():
+                logger.error(f"[SYNC-CAPTURE] Thread error: {e}", exc_info=True)
+                self._on_device_lost(f"Sync capture error: {e}")
+        finally:
+            logger.info("[SYNC-CAPTURE] Thread ended")
 
     # ---- Thread 1: MJPEG consumer ----
 
@@ -1812,18 +1963,32 @@ class OakCameraService:
                     self._latest_bgr = frame
                 else:
                     frame_data = self._latest_frame_data
-                    if frame_data is None or frame_data[1] == last_seen_seq:
+                    if frame_data is None:
                         time.sleep(0.002)
                         continue
-                    frame = frame_data[0]
-                    frame_seq = frame_data[1]
-                    frame_ts = frame_data[2]
-                    hw_ts = frame_data[3] if len(frame_data) > 3 else frame_ts
+
+                    if len(frame_data) >= 5:
+                        frame = frame_data[0]
+                        depth_frame = frame_data[1]
+                        frame_seq = frame_data[2]
+                        frame_ts = frame_data[3]
+                        hw_ts = frame_data[4]
+                    else:
+                        frame = frame_data[0]
+                        depth_frame = None
+                        frame_seq = frame_data[1]
+                        frame_ts = frame_data[2]
+                        hw_ts = frame_data[3] if len(frame_data) > 3 else frame_ts
+
+                    if frame_seq == last_seen_seq:
+                        time.sleep(0.002)
+                        continue
+
                     last_seen_seq = frame_seq
                     _live_frame_count += 1
 
-                    # Retrieve the exact synchronized depth frame for this RGB frame
-                    depth_frame = self.get_synchronized_depth(hw_ts)
+                    if depth_frame is None and self._depth_enabled:
+                        depth_frame = self.get_synchronized_depth(hw_ts)
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:
@@ -2646,6 +2811,27 @@ class OakCameraService:
 
                 # Immediately launch capture threads so DepthAI hardware queues are continuously drained
                 self._start_capture_threads()
+
+                # Read factory camera intrinsics for active resolution and inject into ML analyzer
+                try:
+                    calib = self.device.readCalibration()
+                    w_cal = int(self._pipeline_width or 1920)
+                    h_cal = int(self._pipeline_height or 1080)
+                    eeprom_k = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w_cal, h_cal)
+                    k_mat = [
+                        [float(eeprom_k[0][0]), float(eeprom_k[0][1]), float(eeprom_k[0][2])],
+                        [float(eeprom_k[1][0]), float(eeprom_k[1][1]), float(eeprom_k[1][2])],
+                        [float(eeprom_k[2][0]), float(eeprom_k[2][1]), float(eeprom_k[2][2])],
+                    ]
+                    try:
+                        dist_coeffs = [float(c) for c in calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A)]
+                    except Exception:
+                        dist_coeffs = None
+                    from app.ml.camera_inference_service import update_camera_calibration
+                    update_camera_calibration(k_mat, w_cal, h_cal, dist_coeffs)
+                    logger.info(f"[CALIB] Factory CAM_A intrinsics injected for {w_cal}x{h_cal}: fx={eeprom_k[0][0]:.1f}, fy={eeprom_k[1][1]:.1f}")
+                except Exception as cal_err:
+                    logger.warning(f"[CALIB] Could not read factory calibration: {cal_err}")
 
                 if self._legacy_preset_migration:
                     self._save_calibrated_preset()

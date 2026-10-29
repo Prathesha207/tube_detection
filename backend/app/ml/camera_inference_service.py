@@ -395,9 +395,22 @@ def open_offline_depth_reader(video_path: str):
     return None
 
 
+def update_camera_calibration(camera_matrix: Any, calib_width: int, calib_height: int, dist_coeffs: Optional[Any] = None) -> None:
+    """Update active camera intrinsics from camera hardware calibration."""
+    global _shared_camera_analyzer
+    if _shared_camera_analyzer is not None and hasattr(_shared_camera_analyzer, "set_camera_matrix"):
+        _shared_camera_analyzer.set_camera_matrix(camera_matrix, calib_width, calib_height, dist_coeffs)
+    with _sessions_lock:
+        for session in _sessions.values():
+            analyzer = session.get("analyzer")
+            if analyzer and hasattr(analyzer, "set_camera_matrix"):
+                analyzer.set_camera_matrix(camera_matrix, calib_width, calib_height, dist_coeffs)
+
+
 # Backward compatibility aliases
 clear_session = close_camera_session
 get_session_status = get_camera_session_stats
 cleanup_stale_sessions = evict_idle_camera_sessions
 run_inference = analyze_camera_frame
+
 

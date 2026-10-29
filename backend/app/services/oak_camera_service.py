@@ -646,6 +646,8 @@ class OakCameraService:
         """Latest colorized depth JPEG. Calling this marks the depth view as 'being watched',
         so colorizing/encoding only costs CPU while someone is actually looking."""
         self._depth_last_view = time.time()
+        if self._latest_depth_jpeg is None and self._latest_depth is not None:
+            self._latest_depth_jpeg = self._render_depth_jpeg(self._latest_depth)
         return self._latest_depth_jpeg
 
     def get_depth_telemetry(self) -> dict | None:
@@ -1077,12 +1079,17 @@ class OakCameraService:
                     time.sleep(0.001)
                     continue
 
+                rgb_pkt = None
                 try:
                     rgb_pkt = group["rgb"]
-                    depth_pkt = group.get("depth") if "depth" in group else None
-                except Exception as extract_err:
-                    logger.debug(f"[SYNC-CAPTURE] Extract error: {extract_err}")
-                    continue
+                except Exception:
+                    rgb_pkt = None
+
+                depth_pkt = None
+                try:
+                    depth_pkt = group["depth"]
+                except Exception:
+                    depth_pkt = None
 
                 if rgb_pkt is None:
                     continue
@@ -1134,9 +1141,12 @@ class OakCameraService:
                             except Exception:
                                 pass
 
-                # 5. Depth preview rendering (if depth stream is being watched)
-                if depth_frame is not None and (now - self._depth_last_view < 5.0):
-                    self._latest_depth_jpeg = self._render_depth_jpeg(depth_frame)
+                # 5. Depth buffer and preview rendering
+                if depth_frame is not None:
+                    with self._depth_buffer_lock:
+                        self._depth_buffer.append((hw_ts, seq, depth_frame))
+                    if (now - self._depth_last_view < 5.0) or self._latest_depth_jpeg is None:
+                        self._latest_depth_jpeg = self._render_depth_jpeg(depth_frame)
 
                 # Periodic telemetry logging
                 if now - last_log >= 5.0:

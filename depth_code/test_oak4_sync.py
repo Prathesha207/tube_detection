@@ -162,12 +162,26 @@ def main():
     except Exception as e:
         print(f"Note: setOutputSize skipped on RVC4 ({e}). Depth will match stereo dimensions.")
 
-    # 4. Temporal Sync Node
+    # 4. Temporal Sync Node & Optical ImageAlign
     sync = pipeline.create(dai.node.Sync)
     sync.setSyncThreshold(timedelta(milliseconds=args.sync_thresh_ms))
 
-    rgb.requestOutput((width, height), dai.ImgFrame.Type.NV12, fps=target_fps).link(sync.inputs["rgb"])
-    stereo.depth.link(sync.inputs["depth"])
+    rgb_out = rgb.requestOutput((width, height), dai.ImgFrame.Type.NV12, fps=target_fps)
+
+    depth_out = stereo.depth
+    if hasattr(dai.node, "ImageAlign"):
+        try:
+            align = pipeline.create(dai.node.ImageAlign)
+            stereo.depth.link(align.input)
+            rgb_out.link(align.inputAlignTo)
+            depth_out = align.outputAligned
+            print("Optical Alignment: dai.node.ImageAlign active (depth geometrically warped to CAM_A).")
+        except Exception as e:
+            print(f"Warning: ImageAlign unavailable ({e}), using direct stereo.depth")
+            depth_out = stereo.depth
+
+    rgb_out.link(sync.inputs["rgb"])
+    depth_out.link(sync.inputs["depth"])
 
     # Unified Output Queue
     queue = sync.out.createOutputQueue(maxSize=4, blocking=False)

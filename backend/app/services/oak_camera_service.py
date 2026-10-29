@@ -489,8 +489,21 @@ class OakCameraService:
                     else:
                         rgb_cam_out = cam.video
 
+                    # Optical Alignment: Use dedicated ImageAlign node to geometrically warp depth into CAM_A
+                    depth_node_out = stereo_node.depth
+                    if self._depth_align_rgb and hasattr(dai.node, "ImageAlign"):
+                        try:
+                            align = pipeline.create(dai.node.ImageAlign)
+                            depth_node_out.link(align.input)
+                            rgb_cam_out.link(align.inputAlignTo)
+                            depth_node_out = align.outputAligned
+                            logger.info("[PIPELINE] dai.node.ImageAlign linked: depth warped directly to CAM_A optical frame")
+                        except Exception as align_err:
+                            logger.warning(f"[PIPELINE] ImageAlign linking failed ({align_err}), using direct stereo depth")
+                            depth_node_out = stereo_node.depth
+
                     rgb_cam_out.link(sync.inputs["rgb"])
-                    stereo_node.depth.link(sync.inputs["depth"])
+                    depth_node_out.link(sync.inputs["depth"])
 
                     self._sync_dai_queue = sync.out.createOutputQueue(maxSize=4, blocking=False)
                     self._depth_dai_queue = self._sync_dai_queue

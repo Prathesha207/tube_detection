@@ -186,7 +186,8 @@ async def stream(request: Request, session_id: Optional[str] = None):
 
     # Ensure capture threads are active so frames are actively produced
     if oak_camera_service._is_running and oak_camera_service.is_connected:
-        if not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()):
+        if not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()) and \
+           not (oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive()):
             logger.info("[STREAM] Capture threads not running — starting them now")
             oak_camera_service._start_capture_threads()
 
@@ -214,12 +215,15 @@ async def stream(request: Request, session_id: Optional[str] = None):
                         logger.info(f"[STREAM] Camera stopped or disconnected on timeout — ending client stream (frames sent: {frames_sent})")
                         break
                     # If capture threads died while streaming is active, attempt restart ONLY if pipeline & queues are healthy
+                    has_any_queue = oak_camera_service._mjpeg_dai_queue is not None or oak_camera_service._sync_dai_queue is not None
+                    mjpeg_alive = oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive()
+                    sync_alive = oak_camera_service._sync_thread and oak_camera_service._sync_thread.is_alive()
                     if (
                         oak_camera_service._is_streaming
                         and oak_camera_service._is_running
                         and oak_camera_service.is_connected
-                        and oak_camera_service._mjpeg_dai_queue is not None
-                        and not (oak_camera_service._mjpeg_thread and oak_camera_service._mjpeg_thread.is_alive())
+                        and has_any_queue
+                        and not mjpeg_alive and not sync_alive
                     ):
                         logger.info("[STREAM] Attempting to restart capture threads")
                         oak_camera_service._start_capture_threads()

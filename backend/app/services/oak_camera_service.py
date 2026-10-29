@@ -814,11 +814,13 @@ class OakCameraService:
             self._hires_stop.set()
             self._convert_stop.set()
             self._depth_stop.set()
+            self._sync_stop.set()
             self._inference_stop.set()
 
             # Invalidate queues so callers know device is unavailable
             self._mjpeg_dai_queue = None
             self._raw_dai_queue = None
+            self._sync_dai_queue = None
             self._control_queue = None
             self._depth_dai_queue = None
             self._pipeline = None
@@ -2458,7 +2460,10 @@ class OakCameraService:
                 msg = "Pipeline not started"
                 _push_error(msg)
                 return {"status": "error", "message": msg}
-            if not (self._hires_thread and self._hires_thread.is_alive()):
+            # Check if ANY capture thread is alive (Sync mode uses _sync_thread, fallback uses _hires_thread)
+            sync_alive = self._sync_thread and self._sync_thread.is_alive()
+            hires_alive = self._hires_thread and self._hires_thread.is_alive()
+            if not sync_alive and not hires_alive:
                 logger.info("[INFERENCE] Capture threads not running — starting now")
                 self._start_capture_threads()
                 self._enforce_fixed_controls()

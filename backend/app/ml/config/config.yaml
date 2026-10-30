@@ -9,7 +9,7 @@ device: "0"                    # "0" = first GPU, "cpu" = CPU
 # ---------------------------------------------------------------- detection
 conf: 0.15
 conf_head: 0.4
-conf_tail: 0.3
+conf_tail: 0.2
 max_heads: 0                   # 0 = no limit
 max_tails: 0
 iou: 0.5

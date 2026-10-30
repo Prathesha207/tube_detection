@@ -103,8 +103,18 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
 
   const verdictText = useMemo(() => {
     if (bigger && typeof bigger === 'object') {
+      const getBiggerWidth = (t: any) => {
+        const wDepth = t.width_mm_depth ?? t.width_mm;
+        const wPx = t.width_px;
+        const hasDepth = typeof wDepth === 'number' && wDepth > 0;
+        const hasPx = typeof wPx === 'number' && wPx > 0;
+        if (hasDepth && hasPx) return `${Number(wDepth).toFixed(1)}mm (${Number(wPx).toFixed(1)}px)`;
+        if (hasDepth) return `${Number(wDepth).toFixed(1)}mm`;
+        if (hasPx) return `${Number(wPx).toFixed(1)}px`;
+        return '';
+      };
       if (bigger.status === 'OK') {
-        const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(2)}mm` : '');
+        const bw = getBiggerWidth(bigger);
         const role = bigger.role ? `${String(bigger.role).toLowerCase()} ` : '';
         const id = bigger.id != null ? `#${bigger.id} ` : '';
         const ratio = bigger.ratio ? ` (x${Number(bigger.ratio).toFixed(2)})` : '';
@@ -118,11 +128,11 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
         return 'BIGGER TUBE: need 2 measured tubes';
       }
       if (smaller) {
-        const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
-        const sw = smaller.width_px ? `${Number(smaller.width_px).toFixed(1)}px` : (smaller.width_mm ? `${Number(smaller.width_mm).toFixed(1)}mm` : '');
+        const bw = getBiggerWidth(bigger);
+        const sw = getBiggerWidth(smaller);
         return `BIGGER tube: ${bw} | SMALLER tube: ${sw}`;
       }
-      const bw = bigger.width_px ? `${Number(bigger.width_px).toFixed(1)}px` : (bigger.width_mm ? `${Number(bigger.width_mm).toFixed(1)}mm` : '');
+      const bw = getBiggerWidth(bigger);
       if (bw) return `BIGGER tube: ${bw}`;
     }
     if ((anomalyStatus.headsCount ?? 0) === 0 && (anomalyStatus.tailsCount ?? 0) === 0 && tubes.length === 0) {
@@ -326,14 +336,32 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                           <div className="flex items-center gap-2 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
                             <span>
                               w:{' '}
-                              <strong className="text-[var(--text-primary)]">
-                                {typeof d.width_mm === 'number' && d.width_mm > 0
-                                  ? `${d.width_mm.toFixed(1)}mm`
-                                  : typeof d.width_px === 'number' && d.width_px > 0
-                                    ? `${d.width_px.toFixed(1)}px`
-                                    : 'null'}
-                              </strong>
+                              {typeof (d.width_mm_depth ?? d.width_mm) === 'number' && (d.width_mm_depth ?? d.width_mm)! > 0 ? (
+                                <>
+                                  <strong className="text-[var(--text-primary)]">
+                                    {(d.width_mm_depth ?? d.width_mm)!.toFixed(1)}mm
+                                  </strong>
+                                  {typeof d.width_px === 'number' && d.width_px > 0 && (
+                                    <span className="text-[var(--text-secondary)] opacity-80 ml-1">
+                                      ({d.width_px.toFixed(1)}px)
+                                    </span>
+                                  )}
+                                </>
+                              ) : typeof d.width_px === 'number' && d.width_px > 0 ? (
+                                <strong className="text-[var(--text-primary)]">
+                                  {d.width_px.toFixed(1)}px
+                                </strong>
+                              ) : (
+                                <strong className="text-[var(--text-secondary)]">
+                                  null
+                                </strong>
+                              )}
                             </span>
+                            {typeof d.z_mm === 'number' && d.z_mm > 0 && (
+                              <span className="text-cyan-400 font-mono text-[9px] opacity-90 ml-0.5 bg-cyan-950/40 px-1 py-0.2 rounded border border-cyan-500/20" title={`Distance Z: ${d.z_mm} mm`}>
+                                z:{d.z_mm.toFixed(0)}mm
+                              </span>
+                            )}
                             {d.size === 'BIGGER' && (
                               <span className="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-400 border border-rose-500/35">
                                 BIGGER

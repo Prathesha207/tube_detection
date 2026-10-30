@@ -6,6 +6,7 @@ interface BoundingBoxOverlayProps {
   selectedTubeId: string | null;
   onSelectTube: (id: string | null) => void;
   labelMode?: LabelMode;
+  boxesOnly?: boolean;
 }
 
 
@@ -126,6 +127,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
   selectedTubeId,
   onSelectTube,
   labelMode = 'hidden',
+  boxesOnly = false,
 }) => {
   const [hoveredTubeId, setHoveredTubeId] = useState<string | null>(null);
 
@@ -261,8 +263,8 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
         return (
           <div
             key={`bbox-${tube.id}`}
-            role="button"
-            tabIndex={0}
+            role={boxesOnly ? undefined : "button"}
+            tabIndex={boxesOnly ? -1 : 0}
             aria-label={`Select tube end ${tube.id}`}
             onClick={(e) => {
               e.stopPropagation();
@@ -284,7 +286,9 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               height: `${tube.height}%`,
               zIndex: effectiveZIndex,
             }}
-            className={`absolute border-2 rounded-sm pointer-events-auto cursor-pointer transition-colors duration-75 ${borderColor} ${glowShadow} bg-transparent hover:bg-white/5 ${isCoasting ? 'border-dashed opacity-70' : 'border-solid'
+            className={`absolute border-2 rounded-sm transition-colors duration-75 ${
+              boxesOnly ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer hover:bg-white/5'
+            } ${borderColor} ${glowShadow} bg-transparent ${isCoasting ? 'border-dashed opacity-70' : 'border-solid'
               }`}
           >
             {/* Corner Crosshair Brackets (High contrast for pinpoint accuracy) */}
@@ -300,7 +304,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             />
 
             {/* 3. PINS MODE: Minimalist, non-intrusive numbered circle pins */}
-            {labelMode === 'pins' && (
+            {!boxesOnly && labelMode === 'pins' && (
               <div
                 className={`absolute -top-2.5 -left-2.5 min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center font-mono font-black text-[9.5px] shadow-md border pointer-events-none transition-transform ${isHead
                     ? 'bg-cyan-500 text-slate-950 border-cyan-200'
@@ -312,7 +316,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             )}
 
             {/* 4. QUADRANT COMPACT MODE: Badges placed in North, South, East, West with guide stems */}
-            {labelMode === 'compact' && (
+            {!boxesOnly && labelMode === 'compact' && (
               <div
                 style={placement.containerStyle}
                 className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${isHead
@@ -335,9 +339,9 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                   {(tube.width_mm_depth != null || tube.width_mm != null || tube.width_px != null) && (
                     <span className="text-white font-mono opacity-90 font-bold">
                       {tube.width_mm_depth != null
-                        ? `Ø${tube.width_mm_depth.toFixed(1)}mm`
+                        ? `Ø${tube.width_mm_depth.toFixed(1)}mm${tube.width_px != null ? ` (${tube.width_px.toFixed(0)}px)` : ''}`
                         : tube.width_mm != null
-                          ? `Ø${tube.width_mm.toFixed(1)}mm`
+                          ? `Ø${tube.width_mm.toFixed(1)}mm${tube.width_px != null ? ` (${tube.width_px.toFixed(0)}px)` : ''}`
                           : `${tube.width_px?.toFixed(0)}px`}
                     </span>
                   )}
@@ -356,7 +360,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             )}
 
             {/* 5. HOVER TOOLTIP: Rich popover when hovering or clicking a tube */}
-            {(isHovered || isSelected) && (
+            {!boxesOnly && (isHovered || isSelected) && (
               <div
                 className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 p-2 rounded-xl bg-slate-950/95 backdrop-blur-lg border border-white/20 text-white shadow-xl z-50 pointer-events-none min-w-[140px] flex flex-col gap-1 text-[10px] font-mono animate-in fade-in zoom-in-95 duration-100"
               >
@@ -371,12 +375,12 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-slate-300">
-                  <span>Width:</span>
+                  <span>{typeof (tube.width_mm_depth ?? tube.width_mm) === 'number' ? 'Width (3D):' : 'Width:'}</span>
                   <span className="font-bold text-white font-mono">
                     {typeof tube.width_mm_depth === 'number'
-                      ? `${tube.width_mm_depth.toFixed(2)}mm (3D)`
+                      ? `${tube.width_mm_depth.toFixed(2)}mm${tube.width_px != null ? ` (${tube.width_px.toFixed(1)}px)` : ''}`
                       : typeof tube.width_mm === 'number'
-                        ? `${tube.width_mm.toFixed(2)}mm`
+                        ? `${tube.width_mm.toFixed(2)}mm${tube.width_px != null ? ` (${tube.width_px.toFixed(1)}px)` : ''}`
                         : typeof tube.width_px === 'number'
                           ? `${tube.width_px.toFixed(1)}px`
                           : 'null'}

@@ -127,7 +127,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       </div>
 
       {/* Top-Center: Label Mode View Switcher (Boxes | Pins | Quadrant) using App Theme */}
-      {/* {!isRoiActive && (showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
+      {!isRoiActive && (showInferenceStatus || hasActiveVideo) && (feedMode === 'inference' || feedMode === 'blend' || !isCameraSource || hasCameraRecording) && onLabelModeChange && (
         <div className="pointer-events-auto absolute left-1/2 -translate-x-1/2 top-2 sm:top-3 flex items-center h-7 sm:h-8 p-0.5 rounded-xl bg-[var(--bg-card)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-xs select-none z-30">
           <button
             type="button"
@@ -168,7 +168,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
             <span>Quadrant</span>
           </button>
         </div>
-      )} */}
+      )}
 
       {/* Top-Right Corner: Action Controls */}
       <div className="pointer-events-auto flex items-center gap-1 sm:gap-1.5 flex-nowrap justify-end shrink-0">

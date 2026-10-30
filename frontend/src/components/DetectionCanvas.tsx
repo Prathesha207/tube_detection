@@ -764,14 +764,15 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: Shown in INFERENCE mode */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && feedMode === 'inference' && tubes.length > 0 && (
-              <div className={`absolute inset-0 ${isRoiActive ? 'pointer-events-none opacity-40' : 'pointer-events-auto'}`}>
+            {/* AI Bounding Boxes: Shown in INFERENCE and BLEND modes */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && tubes.length > 0 && (
+              <div className={`absolute inset-0 ${isRoiActive || feedMode === 'blend' ? 'pointer-events-none' : 'pointer-events-auto'} ${isRoiActive ? 'opacity-40' : ''}`.trim()}>
                 <BoundingBoxOverlay
                   tubes={tubes}
                   selectedTubeId={selectedTubeId}
                   onSelectTube={onSelectTube}
                   labelMode={labelMode}
+                  boxesOnly={feedMode === 'blend'}
                 />
               </div>
             )}
@@ -878,18 +879,33 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       {/* Floating Bottom-Left Corner: In DEPTH mode, shows Depth HUD. In INFERENCE mode, shows DetectionMiniCard */}
       {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (
         <div className="absolute bottom-3.5 left-3.5 sm:bottom-4 sm:left-4 z-30 pointer-events-auto">
-          {(feedMode === 'depth' || feedMode === 'blend') && isCameraSource && isCameraConnected ? (
+          {feedMode === 'depth' && isCameraSource && isCameraConnected ? (
             <DepthHud
               telemetry={depthTelemetry}
               hoverPoint={depthHoverPoint}
               isHovering={isDepthHovering}
             />
           ) : (isRunning || hasInferenceResult || tubes.length > 0) ? (
-            <DetectionMiniCard
-              tubes={tubes}
-              selectedTubeId={selectedTubeId}
-              onSelectTube={onSelectTube}
-              isRunning={isRunning}
+            <div className="flex flex-col gap-2">
+              {feedMode === 'blend' && isCameraSource && isCameraConnected && isDepthHovering && (
+                <DepthHud
+                  telemetry={depthTelemetry}
+                  hoverPoint={depthHoverPoint}
+                  isHovering={isDepthHovering}
+                />
+              )}
+              <DetectionMiniCard
+                tubes={tubes}
+                selectedTubeId={selectedTubeId}
+                onSelectTube={onSelectTube}
+                isRunning={isRunning}
+              />
+            </div>
+          ) : (feedMode === 'blend' && isCameraSource && isCameraConnected) ? (
+            <DepthHud
+              telemetry={depthTelemetry}
+              hoverPoint={depthHoverPoint}
+              isHovering={isDepthHovering}
             />
           ) : null}
         </div>

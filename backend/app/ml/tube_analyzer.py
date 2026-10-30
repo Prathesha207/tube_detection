@@ -370,7 +370,11 @@ _WIDTH_DETECTION_KEYS = (
 )
 
 # ------------------------------------------------------ what the frontend gets
-def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
+def build_frontend_stats(
+    result: Dict[str, Any],
+    depth_frame: Optional[np.ndarray] = None,
+    cfg: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Wheel result dict -> the dict the frontend / API returns (one place, used by both services).
     These functions prepare the raw ML data so the React frontend can understand it.
     Adds: per-detection ``confidence`` / ``class`` / ``status`` aliases, ``total_count``
@@ -385,12 +389,59 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     heads = result.get("heads_count", 0)
     tails = result.get("tails_count", 0)
     detections = []
+
+    # Camera intrinsics for physical depth back-projection and 3D width calculation
+    fx = None
+    fy = None
+    cx_cam = None
+    cy_cam = None
+    calib_w = getattr(cfg, "calib_width", None) if cfg else None
+    if cfg and getattr(cfg, "camera_matrix", None):
+        try:
+            k = np.array(cfg.camera_matrix, dtype=np.float64)
+            fx = float(k[0, 0])
+            fy = float(k[1, 1])
+            cx_cam = float(k[0, 2])
+            cy_cam = float(k[1, 2])
+        except Exception:
+            fx, fy, cx_cam, cy_cam = 1425.3, 1424.6, 941.9, 554.3
+    else:
+        fx, fy, cx_cam, cy_cam = 1425.3, 1424.6, 941.9, 554.3
+
+    depth_h, depth_w = (depth_frame.shape[:2]) if (depth_frame is not None and getattr(depth_frame, "ndim", 0) >= 2) else (0, 0)
+    if depth_w > 0 and calib_w and calib_w > 0 and calib_w != depth_w and fx is not None:
+        scale_fac = depth_w / float(calib_w)
+        fx = fx * scale_fac
+        if fy is not None:
+            fy = fy * scale_fac
+        if cx_cam is not None:
+            cx_cam = cx_cam * scale_fac
+        if cy_cam is not None:
+            calib_h = getattr(cfg, "calib_height", 1080) or 1080
+            cy_cam = cy_cam * (depth_h / float(calib_h))
+
+    depth_min = float(getattr(cfg, "depth_min_mm", 100) or 100)
+    depth_max = float(getattr(cfg, "depth_max_mm", 3000) or 3000)
+    rgb_w = result.get("video_width") or (calib_w if calib_w and calib_w > 0 else 1920)
+    rgb_h = result.get("video_height") or (getattr(cfg, "calib_height", None) or 1080)
+    sx = (depth_w / float(rgb_w)) if (depth_w > 0 and rgb_w > 0) else 1.0
+    sy = (depth_h / float(rgb_h)) if (depth_h > 0 and rgb_h > 0) else 1.0
+    fx_rgb = fx / sx if (sx > 0 and fx) else (fx or 1425.3)
+
     for d in result.get("detections", []):
         det = dict(d)
         det["confidence"] = det.get("conf")        # alias only; never a made-up default
         det["class"] = det.get("role")             # alias only
         # the wheel only emits CONFIRMED ends in ``detections``, so "OK" is true for every entry
         det["status"] = d.get("status", "OK")
+
+        # Keep pixel width always available
+        w_px_val = det.get("width_px") or det.get("width_now_px")
+        if w_px_val is not None:
+            try:
+                det["width_px"] = round(float(w_px_val), 1)
+            except Exception:
+                pass
 
         # Compute z_mm convenience distance for the frontend
         if det.get("z_m") is not None:
@@ -404,9 +455,85 @@ def build_frontend_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         if det.get("width_mm") is None and det.get("width_mm_depth") is not None:
             det["width_mm"] = det["width_mm_depth"]
 
+        # If z_mm or width_mm_depth was not captured by the wheel, but depth_frame is available,
+        # extract accurate physical depth and 3D width from the synchronized depth map
+        if depth_frame is not None and depth_w > 0 and (det.get("z_mm") is None or det.get("width_mm_depth") is None):
+            center = det.get("center")
+            bbox = det.get("bbox")
+            if not center and bbox and len(bbox) >= 4:
+                center = [float(bbox[0] + bbox[2] / 2.0), float(bbox[1] + bbox[3] / 2.0)]
+            z_extracted = None
+            src_extracted = None
+
+            # 1. Sample center patch (radius 10px in depth coordinates)
+            if center and len(center) >= 2:
+                cx_d = int(min(max(round(center[0] * sx), 0), depth_w - 1))
+                cy_d = int(min(max(round(center[1] * sy), 0), depth_h - 1))
+                cpatch = depth_frame[max(0, cy_d - 10):min(depth_h, cy_d + 11), max(0, cx_d - 10):min(depth_w, cx_d + 11)]
+                c_valid = cpatch[(cpatch >= depth_min) & (cpatch <= depth_max)]
+                if len(c_valid) >= 5:
+                    z_extracted = float(np.median(c_valid))
+                    src_extracted = "depth_center"
+
+            # 2. Sample inside the bounding box (in depth coordinates)
+            if z_extracted is None and bbox and len(bbox) >= 4:
+                bx_d = int(min(max(round(bbox[0] * sx), 0), depth_w - 1))
+                by_d = int(min(max(round(bbox[1] * sy), 0), depth_h - 1))
+                bw_d = max(1, int(round(bbox[2] * sx)))
+                bh_d = max(1, int(round(bbox[3] * sy)))
+                bpatch = depth_frame[max(0, by_d):min(depth_h, by_d + bh_d), max(0, bx_d):min(depth_w, bx_d + bw_d)]
+                b_valid = bpatch[(bpatch >= depth_min) & (bpatch <= depth_max)]
+                if len(b_valid) >= 5:
+                    z_extracted = float(np.median(b_valid))
+                    src_extracted = "depth_bbox"
+
+            # 3. Sample surrounding support perimeter (e.g. table surface where tube rests)
+            if z_extracted is None and bbox and len(bbox) >= 4:
+                bx_d = int(min(max(round(bbox[0] * sx), 0), depth_w - 1))
+                by_d = int(min(max(round(bbox[1] * sy), 0), depth_h - 1))
+                bw_d = max(1, int(round(bbox[2] * sx)))
+                bh_d = max(1, int(round(bbox[3] * sy)))
+                ppatch = depth_frame[max(0, by_d - 15):min(depth_h, by_d + bh_d + 15), max(0, bx_d - 15):min(depth_w, bx_d + bw_d + 15)]
+                p_valid = ppatch[(ppatch >= depth_min) & (ppatch <= depth_max)]
+                if len(p_valid) >= 8:
+                    z_extracted = float(np.median(p_valid))
+                    src_extracted = "depth_roi"
+
+            if z_extracted is not None and z_extracted > 0:
+                if det.get("z_mm") is None:
+                    det["z_mm"] = round(z_extracted, 1)
+                    det["z_m"] = round(z_extracted / 1000.0, 4)
+                    det["depth_source"] = det.get("depth_source") or src_extracted
+
+                if det.get("xyz_m") is None and center and len(center) >= 2 and fx_rgb:
+                    cx = float(center[0])
+                    cy = float(center[1])
+                    zm = z_extracted / 1000.0
+                    X = (cx - (cx_cam or (rgb_w / 2.0))) * zm / fx_rgb
+                    Y = (cy - (cy_cam or (rgb_h / 2.0))) * zm / (fy or fx_rgb)
+                    det["xyz_m"] = [round(X, 3), round(Y, 3), round(zm, 3)]
+
+                # Compute true physical width (width_mm_depth) from pixel width:
+                # physical_width_mm = (pixel_width * z_mm) / fx_rgb
+                w_px = det.get("width_px") or det.get("width_now_px")
+                if w_px and w_px > 0 and fx_rgb and (det.get("width_mm_depth") is None or det.get("width_mm") is None):
+                    w_depth = round(float(w_px) * z_extracted / fx_rgb, 2)
+                    det["width_mm_depth"] = w_depth
+                    det["width_mm"] = w_depth
+
         for key in _WIDTH_DETECTION_KEYS:          # stable schema even if nothing was measured
             det.setdefault(key, None)
         detections.append(det)
+
+    bigger = result.get("bigger_tube")
+    if isinstance(bigger, dict) and bigger.get("width_mm") is None:
+        for d in detections:
+            if d.get("id") == bigger.get("id") and d.get("width_mm") is not None:
+                bigger["width_mm"] = d["width_mm"]
+                if d.get("width_mm_depth") is not None:
+                    bigger["width_mm_depth"] = d["width_mm_depth"]
+                break
+
     return {
         **result,
         "heads_count": heads,
@@ -791,7 +918,7 @@ class TubeAnalyzer:
 
         wheel_fps = analysis.result.get("fps")          # None on the very first frame (nothing to time yet)
         return {
-            **build_frontend_stats(analysis.result),
+            **build_frontend_stats(analysis.result, depth_frame=depth, cfg=self.cfg),
             "status": "processing",
             "frame": frame_number,
             "fps": wheel_fps if wheel_fps else 0.0,     # 0.0 = "not known yet", so the UI never gets null

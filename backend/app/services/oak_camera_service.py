@@ -2130,7 +2130,7 @@ class OakCameraService:
                     _live_frame_count += 1
 
                     if depth_frame is None and self._depth_enabled:
-                        depth_frame = self.get_synchronized_depth(hw_ts)
+                        depth_frame = self.get_synchronized_depth(hw_ts) or self._latest_depth
 
                 # ── Online frame normalization ────────────────────────────────
                 if not self._inference_offline:

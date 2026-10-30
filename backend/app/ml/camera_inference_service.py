@@ -44,14 +44,22 @@ _idle_sweeper: Optional[threading.Thread] = None
 _shared_camera_analyzer: Optional[TubeAnalyzer] = None
 _global_roi_points: list = []
 _global_roi_frame_size: Optional[Tuple[int, int]] = None
+_global_camera_calib: Optional[Dict[str, Any]] = None
 
 _model_ready_event = threading.Event()
 
 ############### Setup & Lifecycle Functions ###############
 def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
     """Preloaded TubeAnalyzer from backend startup lifespan for instant zero-delay camera inference."""
-    global _shared_camera_analyzer, _model_prewarmed
+    global _shared_camera_analyzer, _model_prewarmed, _global_camera_calib
     _shared_camera_analyzer = analyzer
+    if _global_camera_calib and hasattr(analyzer, "set_camera_matrix"):
+        analyzer.set_camera_matrix(
+            _global_camera_calib["matrix"],
+            _global_camera_calib["width"],
+            _global_camera_calib["height"],
+            _global_camera_calib.get("dist_coeffs"),
+        )
     _model_prewarmed = True
     _model_ready_event.set()
     logger.info("Preloaded TubeAnalyzer registered into camera_inference_service — ready for instant inference")
@@ -202,6 +210,13 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                     logger.error(f"[HOT-RELOAD] Failed to hot-reload updated model: {reload_err}", exc_info=True)
 
         _shared_camera_analyzer.reset_tracking()
+        if _global_camera_calib and hasattr(_shared_camera_analyzer, "set_camera_matrix"):
+            _shared_camera_analyzer.set_camera_matrix(
+                _global_camera_calib["matrix"],
+                _global_camera_calib["width"],
+                _global_camera_calib["height"],
+                _global_camera_calib.get("dist_coeffs"),
+            )
         if _global_roi_points:
             try:
                 _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
@@ -397,7 +412,13 @@ def open_offline_depth_reader(video_path: str):
 
 def update_camera_calibration(camera_matrix: Any, calib_width: int, calib_height: int, dist_coeffs: Optional[Any] = None) -> None:
     """Update active camera intrinsics from camera hardware calibration."""
-    global _shared_camera_analyzer
+    global _shared_camera_analyzer, _global_camera_calib
+    _global_camera_calib = {
+        "matrix": camera_matrix,
+        "width": calib_width,
+        "height": calib_height,
+        "dist_coeffs": dist_coeffs,
+    }
     if _shared_camera_analyzer is not None and hasattr(_shared_camera_analyzer, "set_camera_matrix"):
         _shared_camera_analyzer.set_camera_matrix(camera_matrix, calib_width, calib_height, dist_coeffs)
     with _sessions_lock:

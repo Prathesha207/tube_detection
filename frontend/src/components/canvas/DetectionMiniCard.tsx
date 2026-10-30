@@ -155,7 +155,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                             {widthStr}
                           </strong>
                           {typeof d.z_mm === 'number' && (
-                            <span className="text-cyan-400 font-mono text-[8.5px] opacity-90 font-medium" title={`Distance: ${d.z_mm} mm`}>
+                            <span className="font-mono text-[8.5px] font-bold px-1 py-0.2 rounded border leading-none whitespace-nowrap text-cyan-900 dark:text-cyan-300 bg-cyan-100/90 dark:bg-cyan-950/60 border-cyan-300 dark:border-cyan-500/30" title={`Distance: ${d.z_mm} mm`}>
                               z:{d.z_mm.toFixed(0)}mm
                             </span>
                           )}

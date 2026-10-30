@@ -327,8 +327,8 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                               }`}>
                               {d.role || 'END'}
                             </span>
-                            <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-75">
-                              ID: {d.displayId ?? d.id}
+                            <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-80 whitespace-nowrap">
+                              ID:{d.displayId ?? d.id}
                             </span>
                           </div>
 
@@ -358,7 +358,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                               )}
                             </span>
                             {typeof d.z_mm === 'number' && d.z_mm > 0 && (
-                              <span className="text-cyan-400 font-mono text-[9px] opacity-90 ml-0.5 bg-cyan-950/40 px-1 py-0.2 rounded border border-cyan-500/20" title={`Distance Z: ${d.z_mm} mm`}>
+                              <span className="font-mono text-[9.5px] font-bold px-1.5 py-0.5 rounded border leading-none whitespace-nowrap text-cyan-900 dark:text-cyan-300 bg-cyan-100/90 dark:bg-cyan-950/60 border-cyan-300 dark:border-cyan-500/40" title={`Distance Z: ${d.z_mm} mm`}>
                                 z:{d.z_mm.toFixed(0)}mm
                               </span>
                             )}

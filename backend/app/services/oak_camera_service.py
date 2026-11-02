@@ -1169,6 +1169,7 @@ class OakCameraService:
         q = self._sync_dai_queue
         seq = 0
         frames_count = 0
+        record_frames = 0
         last_log = time.time()
 
         try:
@@ -1257,6 +1258,11 @@ class OakCameraService:
                     self._latest_depth = depth_frame
                     self._latest_frame_data = (bgr_frame, depth_frame, seq, now, hw_ts, pair_info)
 
+                # Feed active recording session if one is running
+                if self._active_recording is not None:
+                    self._active_recording.add_frame(bgr_frame)
+                    record_frames += 1
+
                 # 4. Stream preview encoding (MJPEG for RAW view in browser)
                 has_subscribers = len(self._stream_subscribers) > 0 or self._stream_queue is not None
                 if has_subscribers:
@@ -1283,8 +1289,10 @@ class OakCameraService:
                     elapsed = now - last_log
                     real_fps = frames_count / max(elapsed, 0.001)
                     val_pct = 100.0 * float((depth_frame > 0).mean()) if depth_frame is not None else 0.0
-                    logger.info(f"[SYNC-CAPTURE] FPS: {real_fps:.1f} | Shape: {bgr_frame.shape} | Depth valid: {val_pct:.0f}%")
+                    rec_str = f" | recording: True ({record_frames} frames fed)" if self._active_recording is not None else ""
+                    logger.info(f"[SYNC-CAPTURE] FPS: {real_fps:.1f} | Shape: {bgr_frame.shape} | Depth valid: {val_pct:.0f}%{rec_str}")
                     frames_count = 0
+                    record_frames = 0
                     last_log = now
 
         except Exception as e:
@@ -2813,7 +2821,12 @@ class OakCameraService:
         )
 
         # Start capture threads if not already running (e.g. recording without streaming)
-        if not (self._hires_thread and self._hires_thread.is_alive()):
+        capture_alive = bool(
+            (self._sync_thread and self._sync_thread.is_alive()) or
+            (self._hires_thread and self._hires_thread.is_alive()) or
+            (self._convert_thread and self._convert_thread.is_alive())
+        )
+        if not capture_alive:
             logger.info("[RECORD] Step 1 — capture threads not running, starting now")
             self._start_capture_threads()
             self._enforce_fixed_controls()
@@ -2822,13 +2835,14 @@ class OakCameraService:
             logger.info("[RECORD] Capture threads already running (AE limit already applied at stream start)")
         self._is_streaming = True
 
+        root_path = root_path or self._resolve_recording_path()
         path = _start(session_id, width, height, fps, root_path, rec_fmt, camera_settings)
         self._active_recording = active_recordings.get(session_id)
 
         if self._active_recording is None:
             logger.error("[RECORD] Failed to get recording session from active_recordings!")
         else:
-            logger.info(f"[RECORD] Session active — frames will be fed from _convert_loop → path: {path}")
+            logger.info(f"[RECORD] Session active — frames will be fed from active capture loop → path: {path}")
 
         return path
 

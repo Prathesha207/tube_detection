@@ -6,8 +6,7 @@ from typing import List, Literal, Optional
 from sqlalchemy.orm import Session
 from app.dependencies import get_db
 from app.schemas.camera_schema import CameraCreate, CameraResponse, CameraUpdate
-from app.schemas.basic_config_update_schema import BasicConfigUpdate
-from app.schemas.basic_config_response_schema import BasicConfigResponse
+from app.schemas.basic_config_schema import BasicConfigResponse, BasicConfigUpdate
 
 from app.services import camera_service
 from app.schemas.camera_live_control_schema import CameraLiveControl

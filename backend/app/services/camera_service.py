@@ -7,7 +7,7 @@ from app.models.camera_model import Camera
 
 
 from app.schemas.camera_schema import CameraCreate, CameraUpdate
-from app.schemas.basic_config_update_schema import BasicConfigUpdate
+from app.schemas.basic_config_schema import BasicConfigUpdate
 
 from app.core.logger import setup_logger
 from app.services.realtime_log_service import realtime_log_service
@@ -256,20 +256,14 @@ def _load_stored_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
             with open(_CONFIG_FILE, "r") as f:
-                return json.load(f)
+                stored = json.load(f)
+            mode = (stored.get("inference") or {}).get("mode", "production")
+            # Keep only the active inference setting. Legacy model counters,
+            # output paths, and format flags are no longer part of this config.
+            return {"inference": {"mode": mode}}
         except Exception:
             pass
-    return {
-        "training": {
-            "record_duration": 10,
-            "feature_window": 5,
-            "anomaly_scorer_nn_count": 3,
-        },
-        "inference": {
-            "mode": "production",
-            "recording_format": "MP4",
-        }
-    }
+    return {"inference": {"mode": "production"}}
 
 
 def _save_stored_config(cfg: dict) -> None:
@@ -338,11 +332,9 @@ def update_basic_config(db: Session, data: BasicConfigUpdate):
             camera.auto_focus = False
 
         # =========================================================
-        # TRAINING & INFERENCE
+        # INFERENCE MODE
         # =========================================================
         cfg = _load_stored_config()
-        if data.training:
-            cfg.setdefault("training", {}).update(data.training.model_dump(exclude_unset=True))
         if data.inference:
             cfg.setdefault("inference", {}).update(data.inference.model_dump(exclude_unset=True))
         _save_stored_config(cfg)
@@ -392,6 +384,5 @@ def get_basic_config(db: Session):
 
     return {
         "camera": camera,
-        "training": cfg.get("training", {}),
         "inference": cfg.get("inference", {"mode": "production"}),
     }

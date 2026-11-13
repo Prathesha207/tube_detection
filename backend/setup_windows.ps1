@@ -439,14 +439,14 @@ if ($TubeCheck -ne 'INSTALLED') {
 # Automatically install / update head_tail_analyzer wheel from backend/app/ml/whl
 $WhlDir = Join-Path $BackendDir 'app\ml\whl'
 if (Test-Path $WhlDir) {
-    $WhlFile = Get-ChildItem -Path $WhlDir -Filter 'head_tail_analyzer*.whl' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-    if ($WhlFile) {
-        Write-Host "Installing latest ML wheel ($($WhlFile.Name))..." -ForegroundColor Cyan
-        & $VenvPython -m pip install --force-reinstall --no-deps $WhlFile.FullName
+    $WhlPath = & $VenvPython (Join-Path $BackendDir 'select_latest_analyzer_wheel.py') $WhlDir
+    if ($LASTEXITCODE -eq 0 -and $WhlPath) {
+        Write-Host "Installing latest ML wheel ($([System.IO.Path]::GetFileName($WhlPath)))..." -ForegroundColor Cyan
+        & $VenvPython -m pip install --force-reinstall --no-deps $WhlPath
         if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install ML wheel $($WhlFile.Name)."
+            throw "Failed to install ML wheel $WhlPath."
         }
-        Write-Host "[OK] ML wheel $($WhlFile.Name) installed successfully." -ForegroundColor Green
+        Write-Host "[OK] ML wheel $([System.IO.Path]::GetFileName($WhlPath)) installed successfully." -ForegroundColor Green
     } else {
         Write-Host "[WARN] No head_tail_analyzer wheel found in $WhlDir." -ForegroundColor Yellow
     }

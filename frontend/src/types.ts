@@ -5,14 +5,14 @@ export type StreamSourceType = 'sample-pond' | 'oak-camera' | 'uploaded-video' |
 export type TubeRole = 'HEAD' | 'TAIL' | string;
 export type TubeSize = 'BIGGER' | 'SMALLER' | 'SAME' | null;
 
-// Raw detection from TubeAnalyzer backend (from process_frame() or build_export_json() —
-// this is the exact shape both camera and video inference emit).
+// Native detection record emitted by head_tail_analyzer.
 export interface TubeDetection {
   id: number;
   displayId?: string | number;
   role: TubeRole;
-  class: string;
-  status: string; // e.g. "OK"
+  conf?: number;
+  class?: string;
+  status?: string;
   bbox?: [number, number, number, number]; // [x, y, width, height] px, top-left origin
   width_px?: number | null;
   width_mm?: number | null;
@@ -61,10 +61,8 @@ export interface MLFrameOutput {
 
 
 
-// Normalized entity for frontend canvas overlay. Everything here is either a
-// direct pass-through of TubeDetection or something the frontend mapper
-// (mlDataMapper.ts) derives from it — nothing here comes from a legacy
-// tube-counting payload.
+// Canvas geometry is normalized for display in the frontend mapper. Detection
+// measurements and confidence come from the native wheel fields above.
 export interface TubeEntity {
   id: string;
   displayId?: string | number;
@@ -73,9 +71,8 @@ export interface TubeEntity {
   label?: string; // Human-friendly display label (e.g. 'Head End', 'Tail End')
   species?: string; // Optional alias for backward compatibility
   status?: string;
-  isAnomaly: boolean; // derived client-side (e.g. status !== 'OK'), not sent by the backend
   is_coasting?: boolean;
-  confidence: number; // derived client-side; backend detections carry no confidence score
+  confidence?: number;
   x: number; // percentage 0 - 100
   y: number; // percentage 0 - 100
   width: number;

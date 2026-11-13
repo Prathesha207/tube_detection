@@ -101,8 +101,6 @@ def prewarm_camera_model() -> None:
                     device=default_device(),
                     draw_overlay=False,
                 )
-            # Pre-warm directly with full 1080p frame so CUDA kernels and cuDNN graphs compile
-            _shared_camera_analyzer.warm_up((1080, 1920))
             _model_prewarmed = True
             _model_ready_event.set()
             logger.info("[PREWARM] TubeAnalyzer fully pre-warmed on GPU — ready for instant 0.0s camera inference.")
@@ -352,7 +350,11 @@ def analyze_camera_frame(
         if annotate:
             session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # the wheel's picture of THIS frame
 
-    stats.update(session_id=session_id, frames_processed=session["frames_processed"])
+    stats.update(
+        status="processing",
+        session_id=session_id,
+        frames_processed=session["frames_processed"],
+    )
     session["last_stats"] = stats
     return stats, clean_frame
 
@@ -362,7 +364,7 @@ def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_s
     global _global_roi_points, _global_roi_frame_size
     if points and len(points) >= 3:
         try:
-            from app.ml.tube_analyzer import roi_from_points
+            from app.utils.roi_utils import roi_from_points
             _ = roi_from_points(points, frame_size)
         except Exception as val_err:
             logger.warning(f"Invalid ROI geometry in set_camera_roi: {val_err}")

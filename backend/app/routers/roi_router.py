@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
-from app.ml.tube_analyzer import ROI_JSON, roi_from_points, save_roi, load_roi
+from app.utils.roi_utils import ROI_JSON, roi_from_points, save_roi, load_roi
 from app.ml.camera_inference_service import set_camera_roi, _sessions as camera_sessions, _sessions_lock as camera_sessions_lock
 from app.ml.video_inference_service import set_video_roi, video_inference_service
 

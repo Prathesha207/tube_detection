@@ -14,7 +14,6 @@ import { AlertTriangle } from 'lucide-react';
 import { getApiBaseUrl } from './lib/api';
 import { cameraService } from './components/service/cameraService';
 import { resetBBoxCache, mapDetectionsToTubes } from './utils/mlDataMapper';
-import { DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT } from './utils/constants';
 import { loadSessionState, saveSessionState, clearSessionState } from './utils/sessionPersistence';
 
 // Extracted hooks — each one owns a clean slice of state + effects
@@ -325,9 +324,7 @@ export default function App() {
             video.setVideoDimensions({ width: data.video_width, height: data.video_height });
           }
 
-          const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
-          const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-          const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+          const incomingTubes = mapDetectionsToTubes(data);
           setTubes(incomingTubes);
 
           const backendIsRunning = data.status === 'processing' || data.status === 'running' || data.status === 'queued';
@@ -455,7 +452,7 @@ export default function App() {
 
   // ─── 11. Metrics ──────────────────────────────────────────────────
   const metrics = useMemo(() => {
-    const totalConf = anomalyFinal.activeTubes.reduce((acc, d) => acc + d.confidence, 0);
+    const totalConf = anomalyFinal.activeTubes.reduce((acc, d) => acc + (d.confidence ?? 0), 0);
     const avgConfidence = anomalyFinal.activeTubes.length > 0 ? totalConf / anomalyFinal.activeTubes.length : 0;
     const roleCounts: Record<string, number> = { HEAD: 0, TAIL: 0 };
     const speciesCounts: Record<string, number> = {};

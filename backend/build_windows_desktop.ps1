@@ -125,11 +125,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Failed to install backend requirements.' }
 # Install latest head_tail_analyzer wheel
 $WhlDir = Join-Path $BackendDir 'app\ml\whl'
 if (Test-Path $WhlDir) {
-  $WhlFile = Get-ChildItem -Path $WhlDir -Filter 'head_tail_analyzer*.whl' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-  if ($WhlFile) {
-    Write-Host "Installing latest ML wheel ($($WhlFile.Name))..."
-    & $VenvPython -m pip install --force-reinstall --no-deps $WhlFile.FullName
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install ML wheel $($WhlFile.Name)." }
+  $WhlPath = & $VenvPython (Join-Path $BackendDir 'select_latest_analyzer_wheel.py') $WhlDir
+  if ($LASTEXITCODE -eq 0 -and $WhlPath) {
+    Write-Host "Installing latest ML wheel ($([System.IO.Path]::GetFileName($WhlPath)))..."
+    & $VenvPython -m pip install --force-reinstall --no-deps $WhlPath
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install ML wheel $WhlPath." }
   }
 }
 if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backend\backend.exe'))) {

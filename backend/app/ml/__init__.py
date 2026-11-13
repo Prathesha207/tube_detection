@@ -3,7 +3,8 @@ app.ml package
 Exports TubeAnalyzer, inference services, and ML state coordination.
 """
 
-from .tube_analyzer import TubeAnalyzer, MODEL_PATH, ROI_JSON, CONFIG_PATH, load_roi
+from .tube_analyzer import TubeAnalyzer, MODEL_PATH, CONFIG_PATH
+from app.utils.roi_utils import ROI_JSON, load_roi
 from .camera_inference_service import (
     analyze_camera_frame as run_camera_inference,
     close_camera_session as clear_camera_session,

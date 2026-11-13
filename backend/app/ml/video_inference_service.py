@@ -445,7 +445,6 @@ class VideoInferenceService:
             # Same two values HeadTailAnalyzer.process_video gives the wheel: it then reports
             # frame_total / video_fps / fps itself and draws "FRAME n / total".
             analyzer.set_video_info(total, round(video_fps, 2))
-            analyzer.warm_up((height, width))                    # so frame 1 is not slow
 
             session_dir = os.path.join(_output_base_dir(), session_id)
             os.makedirs(session_dir, exist_ok=True)

@@ -2,74 +2,43 @@ import { TubeEntity } from '../types';
 
 export const resetBBoxCache = () => {};
 
-/**
- * Maps raw backend Tube ML detection dictionary into frontend-friendly TubeEntity objects.
- * Everything here is a direct pass-through of TubeDetection properties
- * (role, bbox, width_px, width_mm, size, pair_id, opaque, colour, status).
- */
-export const mapDetectionsToTubes = (
-  data: any,
-  vw: number,
-  vh: number
-): TubeEntity[] => {
-  if (!data || !Array.isArray(data.detections)) {
-    return [];
-  }
+/** Convert the wheel's native pixel boxes to canvas percentages for rendering. */
+export const mapDetectionsToTubes = (data: any): TubeEntity[] => {
+  const frameWidth = Number(data?.video_width);
+  const frameHeight = Number(data?.video_height);
+  if (!Array.isArray(data?.detections) || frameWidth <= 0 || frameHeight <= 0) return [];
 
-  const rawVw = Number(data?.video_width);
-  const rawVh = Number(data?.video_height);
-  const effectiveVw = rawVw > 0 ? rawVw : (vw > 0 ? vw : 1920);
-  const effectiveVh = rawVh > 0 ? rawVh : (vh > 0 ? vh : 1080);
+  return data.detections.flatMap((d: any): TubeEntity[] => {
+    const bbox = d?.bbox;
+    if (!Array.isArray(bbox) || bbox.length !== 4 || d.id == null || !d.role) return [];
+    const [x, y, width, height] = bbox.map(Number);
+    if (![x, y, width, height].every(Number.isFinite)) return [];
 
-  const incomingTubes: TubeEntity[] = [];
+    const role = String(d.role);
+    const status = typeof d.status === 'string' ? d.status : undefined;
+    const zMm = typeof d.z_mm === 'number'
+      ? d.z_mm
+      : (typeof d.z_m === 'number' ? d.z_m * 1000 : null);
 
-  data.detections.forEach((d: any, idx: number) => {
-    let px = 0, py = 0, pw = 0, ph = 0;
-    const bArr = d.bbox || d.box;
-    if (Array.isArray(bArr) && bArr.length === 4) {
-      if (d.role !== undefined || d.width_px !== undefined || d.pair_id !== undefined) {
-        // Tube ML bbox: [x, y, width, height] in pixels
-        px = (bArr[0] / effectiveVw) * 100;
-        py = (bArr[1] / effectiveVh) * 100;
-        pw = (bArr[2] / effectiveVw) * 100;
-        ph = (bArr[3] / effectiveVh) * 100;
-      } else {
-        // Fallback: [x1, y1, x2, y2]
-        px = (bArr[0] / effectiveVw) * 100;
-        py = (bArr[1] / effectiveVh) * 100;
-        pw = ((bArr[2] - bArr[0]) / effectiveVw) * 100;
-        ph = ((bArr[3] - bArr[1]) / effectiveVh) * 100;
-      }
-    }
-
-    const role = d.role || 'UNKNOWN';
-    const status = d.status || 'OK';
-    const isAnomaly = status !== 'OK';
-    const rawId = d.id !== null && d.id !== undefined ? d.id : idx + 1;
-    const uniqueId = `${role}-${rawId}`;
-    const displayId = String(rawId);
-    const isCoasting = Boolean(d.is_coasting || (d.missed_frames && d.missed_frames > 0) || status === 'COASTED');
-
-    incomingTubes.push({
-      id: uniqueId,
-      displayId: displayId,
-      role: role,
-      label: role === 'HEAD' ? 'Head End' : role === 'TAIL' ? 'Tail End' : (d.class || 'Tube End'),
-      species: role === 'HEAD' ? 'Head' : role === 'TAIL' ? 'Tail' : (d.class || 'Tube'),
-      class: d.class || role,
-      status: status,
-      isAnomaly: isAnomaly,
-      is_coasting: isCoasting,
-      confidence: typeof d.confidence === 'number' ? d.confidence : 1.0,
-      x: px,
-      y: py,
-      width: pw,
-      height: ph,
+    return [{
+      id: `${role}-${d.id}`,
+      displayId: String(d.id),
+      role,
+      label: role === 'HEAD' ? 'Head End' : role === 'TAIL' ? 'Tail End' : role,
+      species: role === 'HEAD' ? 'Head' : role === 'TAIL' ? 'Tail' : role,
+      class: typeof d.class === 'string' ? d.class : role,
+      status,
+      is_coasting: d.is_coasting,
+      confidence: typeof d.conf === 'number' ? d.conf : undefined,
+      x: (x / frameWidth) * 100,
+      y: (y / frameHeight) * 100,
+      width: (width / frameWidth) * 100,
+      height: (height / frameHeight) * 100,
       width_px: typeof d.width_px === 'number' ? d.width_px : null,
       width_mm: typeof d.width_mm === 'number' ? d.width_mm : null,
       width_mm_depth: typeof d.width_mm_depth === 'number' ? d.width_mm_depth : null,
       z_m: typeof d.z_m === 'number' ? d.z_m : null,
-      z_mm: typeof d.z_mm === 'number' ? d.z_mm : (typeof d.z_m === 'number' ? Math.round(d.z_m * 1000) : null),
+      z_mm: zMm,
       xyz_m: Array.isArray(d.xyz_m) ? d.xyz_m : null,
       depth_source: d.depth_source ?? null,
       width_now_px: typeof d.width_now_px === 'number' ? d.width_now_px : null,
@@ -79,8 +48,6 @@ export const mapDetectionsToTubes = (
       pair_id: d.pair_id ?? null,
       opaque: d.opaque ?? null,
       colour: d.colour ?? null,
-    });
+    }];
   });
-
-  return incomingTubes;
 };

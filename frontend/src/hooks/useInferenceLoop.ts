@@ -3,7 +3,6 @@ import type { StreamSourceType, LogEntry, TubeEntity } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
 import { mapDetectionsToTubes, resetBBoxCache } from '../utils/mlDataMapper';
-import { DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT } from '../utils/constants';
 
 export function useInferenceLoop({
   sourceType,
@@ -112,9 +111,7 @@ export function useInferenceLoop({
                 setVideoDimensions({ width: data.video_width, height: data.video_height });
               }
 
-              const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
-              const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-              const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+              const incomingTubes = mapDetectionsToTubes(data);
               const thisSeq = ++renderSeq;
 
               // Decode the exact analyzed frame before applying its detections.
@@ -213,9 +210,7 @@ export function useInferenceLoop({
             setVideoDimensions({ width: data.video_width, height: data.video_height });
           }
 
-          const vw = data.video_width || DEFAULT_VIDEO_WIDTH;
-          const vh = data.video_height || DEFAULT_VIDEO_HEIGHT;
-          const incomingTubes = mapDetectionsToTubes(data, vw, vh);
+          const incomingTubes = mapDetectionsToTubes(data);
 
           // Fast Lockstep Frame Synchronization: avoid re-decoding duplicate frames
           if (data.frame && setLastVideoFrame) {

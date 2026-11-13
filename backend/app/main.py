@@ -87,12 +87,6 @@ def _ensure_tables():
 
             camera_migrations = []
 
-            if "recording_video_testing_path" not in existing_camera_columns:
-                camera_migrations.append(
-                    "ALTER TABLE cameras "
-                    "ADD COLUMN recording_video_testing_path VARCHAR"
-                )
-
             if "recording_format" not in existing_camera_columns:
                 camera_migrations.append(
                     "ALTER TABLE cameras "

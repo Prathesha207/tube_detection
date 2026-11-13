@@ -50,7 +50,6 @@ export type CameraConfig = {
     auto_exposure?: boolean;
     auto_focus?: boolean;
     recording_video_path?: string;
-    recording_video_testing_path?: string;
     stream_url?: string;
     is_inference_enabled?: boolean;
     roi_enabled?: boolean;
@@ -60,30 +59,8 @@ export type CameraConfig = {
 
 export type BasicConfig = {
     camera?: CameraConfig;
-    training?: {
-        feature_window?: number;
-        anomaly_scorer_nn_count?: number;
-    };
     inference?: {
-        trained_model?: string;
-        min_detection_area?: number;
-        use_dynamic_threshold?: boolean;
-        processed_video?: boolean;
-        raw_video?: boolean;
-        save_failed_frame?: boolean;
         mode?: "production" | "testing";
-        inference_video_path?: string;
-        inference_video_testing_path?: string;
-        model1_frame_count?: number;
-        model2_frame_count?: number;
-        model3_frame_count?: number;
-        model1_pass_frames?: number;
-        model2_pass_frames?: number;
-        model3_pass_frames?: number;
-        model2_start_skip_frame?: number;
-        model3_start_skip_frame?: number;
-        recording_format?: "MJPEG" | "FFV1";
-        inference_format?: "MJPEG" | "FFV1";
     };
 };
 
@@ -110,10 +87,8 @@ type StoreState = {
     isFetched: boolean;
     error: string | null;
 
-    /* MODE & TESTING PATHS */
+    /* MODE */
     systemMode: "testing" | "production";
-    inference_video_testing_path: string;
-    recording_video_testing_path: string;
 
     /* CONTROLS */
     exposure: number;
@@ -143,9 +118,8 @@ type StoreState = {
     fetchConfig: (force?: boolean) => Promise<void>;
     saveConfig: (data: BasicConfig) => Promise<boolean>;
 
-    // mode & testing paths
+    // mode
     setSystemMode: (mode: "testing" | "production") => Promise<void>;
-    setTestingPaths: (paths: { inference?: string; recording?: string }) => void;
 };
 
 /* ================= STORE ================= */
@@ -164,8 +138,6 @@ export const useCameraSystemStore = create<StoreState>()(
             error: null,
 
             systemMode: "production",
-            inference_video_testing_path: "",
-            recording_video_testing_path: "",
 
             ...DEFAULT_CONTROLS,
 
@@ -201,11 +173,6 @@ export const useCameraSystemStore = create<StoreState>()(
                     showToast("error", "Failed to update system mode");
                 }
             },
-
-            setTestingPaths: (paths) => set({
-                ...(paths.inference !== undefined && { inference_video_testing_path: paths.inference }),
-                ...(paths.recording !== undefined && { recording_video_testing_path: paths.recording }),
-            }),
 
             /* ================= CAMERA ================= */
 
@@ -423,7 +390,7 @@ export const useCameraSystemStore = create<StoreState>()(
         {
             name: "camera-system",
 
-            /* persist controls + mode + testing paths */
+            /* persist controls and mode */
             partialize: (state) => ({
                 exposure: state.exposure,
                 gain: state.gain,
@@ -431,8 +398,6 @@ export const useCameraSystemStore = create<StoreState>()(
                 brightness: state.brightness,
                 contrast: state.contrast,
                 systemMode: state.systemMode,
-                inference_video_testing_path: state.inference_video_testing_path,
-                recording_video_testing_path: state.recording_video_testing_path,
             }),
         }
     )

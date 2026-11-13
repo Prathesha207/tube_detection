@@ -43,7 +43,6 @@ class Camera(Base):
     is_inference_enabled = Column(Boolean, default=False)
     roi_enabled = Column(Boolean, default=False)
     recording_video_path = Column(String, nullable=True)
-    recording_video_testing_path = Column(String, nullable=True)
     recording_format = Column(String(20), default="MP4")
 
     is_enabled = Column(Boolean, default=True)

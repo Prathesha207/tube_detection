@@ -128,18 +128,18 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [showHUD, setShowHUD] = useState(true);
   const [labelMode, setLabelMode] = useState<LabelMode>(() => {
     try {
-      const saved = localStorage.getItem('vision_ai_label_mode');
+      const saved = localStorage.getItem('vision_ai_label_mode_v2');
       if (saved === 'compact' || saved === 'pins' || saved === 'hidden') {
         return saved as LabelMode;
       }
     } catch { }
-    return 'hidden'; // Default is always clean 'Boxes' mode
+    return 'hidden'; // Default is always clean 'Boxes' mode (not quadrant)
   });
 
   const handleLabelModeChange = (mode: LabelMode) => {
     setLabelMode(mode);
     try {
-      localStorage.setItem('vision_ai_label_mode', mode);
+      localStorage.setItem('vision_ai_label_mode_v2', mode);
     } catch { }
   };
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
@@ -764,8 +764,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: Shown in INFERENCE and BLEND modes */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && tubes.length > 0 && (
+            {/* AI Bounding Boxes: Shown in INFERENCE and BLEND modes, and always for video files */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (isVideoSource || feedMode === 'inference' || feedMode === 'blend') && tubes.length > 0 && (
               <div className={`absolute inset-0 ${isRoiActive || feedMode === 'blend' ? 'pointer-events-none' : 'pointer-events-auto'} ${isRoiActive ? 'opacity-40' : ''}`.trim()}>
                 <BoundingBoxOverlay
                   tubes={tubes}

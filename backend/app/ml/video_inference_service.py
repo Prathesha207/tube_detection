@@ -68,6 +68,32 @@ _SAVE_PREVIEW_EVERY_N_FRAMES = 15
 
 
 # ------------------------------------------------------------------- helpers
+def _probe_video_frames(video_path: str, cap_fps: float, cap_total: Optional[int]) -> Tuple[float, int]:
+    """Accurately determine real fps and total frames, correcting for container timebase artifacts
+    (such as PyAV AVI files written with rate=1000 which cause OpenCV to report 1000fps and 4000+ frames)."""
+    is_avi = bool(video_path and str(video_path).lower().endswith(".avi"))
+    if not is_avi and cap_fps and 0 < cap_fps < 100 and cap_total and cap_total > 0:
+        return cap_fps, cap_total
+
+    try:
+        import av
+        with av.open(video_path) as c:
+            v_stream = c.streams.video[0]
+            packet_count = sum(1 for p in c.demux(v_stream) if p.size > 0)
+            if packet_count > 0:
+                dur = float(v_stream.duration * v_stream.time_base) if (v_stream.duration and v_stream.time_base) else 0.0
+                if cap_fps >= 100 or cap_fps <= 0:
+                    real_fps = round(packet_count / dur, 2) if dur > 0.5 else 30.0
+                else:
+                    real_fps = cap_fps
+                logger.info(f"[PROBE] Corrected video metrics: fps={real_fps} (was {cap_fps}), total_frames={packet_count} (was {cap_total})")
+                return real_fps, packet_count
+    except Exception as probe_err:
+        logger.debug(f"[PROBE] Frame count probe fallback: {probe_err}")
+
+    fallback_total = cap_total if (cap_total and cap_total > 0) else 1
+    fallback_fps = cap_fps if (cap_fps and 0 < cap_fps < 100) else 30.0
+    return fallback_fps, fallback_total
 def _put_latest(queue: asyncio.Queue, item) -> None:
     """Put item in the queue, dropping the oldest entry when full. Must run on the event loop."""
     if queue.full():
@@ -413,6 +439,7 @@ class VideoInferenceService:
             cap, video_fps, total = rvf.open_video(video_path)
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            video_fps, total = _probe_video_frames(video_path, video_fps, total)
             stride = max(int(getattr(analyzer.cfg, "stride", 1) or 1), 1)   # config.yaml (ML team), not a guess from fps
             stats.update(total_frames=max(1, int(total or 0)), video_width=width, video_height=height)
             # Same two values HeadTailAnalyzer.process_video gives the wheel: it then reports
@@ -494,7 +521,7 @@ class VideoInferenceService:
                 stats.update({k: v for k, v in last_stats.items() if k != "status"},
                              frame=frame_number,
                              frames_processed=processed,
-                             progress=round(frame_number / stats["total_frames"] * 100, 1))
+                             progress=min(100.0, round(frame_number / max(1, stats["total_frames"]) * 100, 1)))
 
                 # Saved video: the wheel's own drawing of THIS frame; never dropped (the queue blocks
                 # when the encoder is behind, so the video has every processed frame).

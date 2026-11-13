@@ -427,6 +427,7 @@ export default function App() {
       }
     } else {
       camera.setCameraStartingState('ready');
+      setFeedMode('inference');
       if (video.customVideoUrl) {
         showToast('info', 'Switched to Video mode • Press Start Inference to evaluate');
       } else {
@@ -656,6 +657,7 @@ export default function App() {
   // Wrap toggle/stop/resume to pass startVideoInference
   const handleToggleRunning = async () => {
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
+      setFeedMode('inference');
       if (!video.videoSessionId) {
         uploadTriggerRef.current?.();
         return;
@@ -718,6 +720,7 @@ export default function App() {
   };
   const handleResumeInference = async () => {
     if (sourceType === 'uploaded-video' || sourceType === 'sample-pond') {
+      setFeedMode('inference');
       if (!video.videoSessionId) {
         uploadTriggerRef.current?.();
         return;

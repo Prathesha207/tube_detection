@@ -115,9 +115,11 @@ class RecordingSession:
                 # Fragmented MP4 writes playable chunks at each keyframe so video is crash-resilient
                 container_options = {"movflags": "frag_keyframe+empty_moov"}
             self.container = av.open(self.video_path, mode="w", options=container_options)
-            # rate=1000 → time_base = 1/1000 s = 1 ms per PTS unit.
-            # VFR timestamps allow precise wall-clock synchronization.
-            self.stream = self.container.add_stream(codec_name, rate=1000)
+            # AVI requires constant frame rate (CFR) matching capture rate so the container header
+            # correctly reflects true frame count and framerate (avoiding 1000fps timebase quirks).
+            # MP4/MKV support VFR with rate=1000 (1ms PTS resolution).
+            stream_rate = int(fps or 30) if fmt == "AVI" else 1000
+            self.stream = self.container.add_stream(codec_name, rate=stream_rate)
             self.stream.width   = width
             self.stream.height  = height
             self.stream.pix_fmt = pix_fmt
@@ -148,13 +150,16 @@ class RecordingSession:
                     if frame.format.name != self.stream.pix_fmt:
                         frame = frame.reformat(format=self.stream.pix_fmt)
 
-                    # pts_ms is milliseconds since recording start.
-                    # With time_base = 1/1000, one PTS unit = 1 ms.
-                    # Enforce strictly monotonic PTS so FFmpeg muxer never sees equal or decreasing timestamps.
-                    if pts_ms <= self._last_encoded_pts:
-                        pts_ms = self._last_encoded_pts + 1
-                    self._last_encoded_pts = pts_ms
-                    frame.pts = pts_ms
+                    if self.fmt == "AVI":
+                        frame.pts = self._frames_written
+                    else:
+                        # pts_ms is milliseconds since recording start.
+                        # With time_base = 1/1000, one PTS unit = 1 ms.
+                        # Enforce strictly monotonic PTS so FFmpeg muxer never sees equal or decreasing timestamps.
+                        if pts_ms <= self._last_encoded_pts:
+                            pts_ms = self._last_encoded_pts + 1
+                        self._last_encoded_pts = pts_ms
+                        frame.pts = pts_ms
 
                     for pkt in self.stream.encode(frame):
                         if pkt.dts is not None:

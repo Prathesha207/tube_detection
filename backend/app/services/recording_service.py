@@ -59,7 +59,9 @@ class RecordingSession:
         elif fmt in ("FFV1", "MKV"):
             fmt        = "FFV1"
             codec_name = "ffv1"
-            pix_fmt    = "yuv420p"
+            # bgr0 retains the camera's BGR channel values exactly. yuv420p
+            # subsamples chroma and changes pixel values even with FFV1.
+            pix_fmt    = "bgr0"
             ext        = ".mkv"
             options    = {"level": "3"}
         else:  # Default: MP4 (H.264)
@@ -94,8 +96,10 @@ class RecordingSession:
         # Initialize all state stop()/add_frame() touch BEFORE attempting to open
         # the container, so a failed open leaves a fully-formed (just inert)
         # object instead of a half-built one that crashes on the first stop().
-        # maxsize=150 keeps memory bounded under ~1 GB at 1080p BGR while tolerating transient stalls
+        # Bounded backpressure: never discard a captured frame when encoding
+        # falls behind. The capture thread waits until the writer frees space.
         self.frame_queue = queue.Queue(maxsize=150)
+        self._enqueue_lock = threading.Lock()
         self.is_running  = False
         # Set start clock at session creation — not on first frame — so the
         # container duration matches the wall-clock recording time exactly.
@@ -201,25 +205,29 @@ class RecordingSession:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def add_frame(self, bgr):
-        if not self.is_running:
+        if bgr is None or getattr(bgr, "ndim", 0) != 3 or bgr.shape[2] != 3:
+            logger.warning("[RECORD] Ignoring frame that is not a 3-channel BGR image")
             return
+        with self._enqueue_lock:
+            if not self.is_running:
+                return
+            pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+            if pts_ms <= self._last_pts_ms:
+                pts_ms = self._last_pts_ms + 1
+            self._last_pts_ms = pts_ms
 
-        pts_ms = int((time.monotonic() - self._start_mono) * 1000)
-        if pts_ms <= self._last_pts_ms:
-            pts_ms = self._last_pts_ms + 1
-        self._last_pts_ms = pts_ms
-
-        self._last_bgr = bgr
-
-        try:
-            self.frame_queue.put_nowait((bgr, pts_ms))
-        except queue.Full:
-            # Drop oldest frame to make room for the newest
-            try:
-                self.frame_queue.get_nowait()
-                self.frame_queue.put_nowait((bgr, pts_ms))
-            except Exception:
-                pass
+            # Own the pixels: some camera backends reuse their ndarray storage
+            # after the next capture.
+            owned_bgr = bgr.copy()
+            self._last_bgr = owned_bgr
+            while self.is_running:
+                try:
+                    self.frame_queue.put((owned_bgr, pts_ms), timeout=0.25)
+                    return
+                except queue.Full:
+                    if self.thread is not None and not self.thread.is_alive():
+                        logger.error("[RECORD] Writer stopped while the frame queue was full")
+                        return
 
     def add_settings_event(self, settings: dict) -> None:
         elapsed = round(time.monotonic() - self._start_mono, 3)
@@ -234,29 +242,31 @@ class RecordingSession:
         # The last real frame arrived some time ago (depends on camera fps).
         # Adding a duplicate of the last frame at "now" pads the container so
         # the video duration matches the real recording time exactly.
-        if self._last_bgr is not None:
-            pad_pts_ms = int((time.monotonic() - self._start_mono) * 1000)
-            if pad_pts_ms <= self._last_pts_ms:
-                pad_pts_ms = self._last_pts_ms + 1
-            gap_ms = pad_pts_ms - self._last_pts_ms
-            self._last_pts_ms = pad_pts_ms
-            logger.info(
-                f"[RECORD] Padding video by {gap_ms} ms "
-                f"(last frame at {self._last_pts_ms} ms → pad to {pad_pts_ms} ms)"
-            )
-            try:
-                self.frame_queue.put_nowait((self._last_bgr, pad_pts_ms))
-            except queue.Full:
-                try:
-                    self.frame_queue.get_nowait()
-                    self.frame_queue.put_nowait((self._last_bgr, pad_pts_ms))
-                except Exception:
-                    pass
+        with self._enqueue_lock:
+            if self._last_bgr is not None:
+                pad_pts_ms = int((time.monotonic() - self._start_mono) * 1000)
+                if pad_pts_ms <= self._last_pts_ms:
+                    pad_pts_ms = self._last_pts_ms + 1
+                gap_ms = pad_pts_ms - self._last_pts_ms
+                self._last_pts_ms = pad_pts_ms
+                logger.info(
+                    f"[RECORD] Padding video by {gap_ms} ms "
+                    f"(last frame at {pad_pts_ms - gap_ms} ms → pad to {pad_pts_ms} ms)"
+                )
+                # Preserve the final duration pad without evicting a real frame.
+                while True:
+                    try:
+                        self.frame_queue.put((self._last_bgr, pad_pts_ms), timeout=0.25)
+                        break
+                    except queue.Full:
+                        if self.thread is not None and not self.thread.is_alive():
+                            logger.error("[RECORD] Writer stopped before final frame could be queued")
+                            break
 
-        logger.info(
-            f"[RECORD] Stopping — {self.frame_queue.qsize()} frames still in queue"
-        )
-        self.is_running = False
+            logger.info(
+                f"[RECORD] Stopping — {self.frame_queue.qsize()} frames still in queue"
+            )
+            self.is_running = False
         if self.thread is not None:
             self.thread.join(timeout=30.0)
             if self.thread.is_alive():

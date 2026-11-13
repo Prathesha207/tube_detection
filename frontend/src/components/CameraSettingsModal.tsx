@@ -465,10 +465,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                     <span className="text-[10px] font-bold text-[var(--text-secondary)]">Recording Video Format</span>
                     <span className="text-[10px] font-semibold text-[var(--accent-pond)]">
                       {(localConfig.recordingFormat || 'MP4') === 'MP4'
-                        ? 'MP4 container • H.264 web/universal codec'
+                        ? 'MP4 container • H.264 lossy, broadly compatible'
                         : (localConfig.recordingFormat || 'MP4') === 'AVI'
-                          ? 'AVI container • MJPEG analytical codec'
-                          : 'MKV container • FFV1 lossless codec'}
+                          ? 'AVI container • MJPEG lossy codec'
+                          : 'MKV container • FFV1 lossless, preserves BGR pixels'}
                     </span>
                   </div>
                   <div className="inline-flex items-center gap-1 p-0.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)] w-full">

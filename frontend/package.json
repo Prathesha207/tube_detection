@@ -14,10 +14,11 @@
     "dev": "vite",
     "build": "vite build",
     "electron-dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron --no-sandbox .\"",
-    "electron-build": "npm run build && electron-builder",
-    "package:win:x64": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "package:linux:x64": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "package:linux:arm64": "npm run build && electron-builder --linux AppImage deb --arm64 --publish never"
+    "electron-build": "node patch_electron_builder.js && npm run build && electron-builder",
+    "postinstall": "node patch_electron_builder.js",
+    "package:win:x64": "node patch_electron_builder.js && npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:linux:x64": "node patch_electron_builder.js && npm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "package:linux:arm64": "node patch_electron_builder.js && npm run build && electron-builder --linux AppImage deb --arm64 --publish never"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",

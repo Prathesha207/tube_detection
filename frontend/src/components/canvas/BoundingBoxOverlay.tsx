@@ -24,13 +24,13 @@ interface BadgePlacement {
 
 function createPlacement(
   side: 'left' | 'right' | 'top' | 'bottom',
-  role: string,
+  tubeColor?: string | null,
   offsetPx: number = 0,
   stemLengthPx: number = 18
 ): BadgePlacement {
-  const isHead = role === 'HEAD';
-  const stemColor = isHead ? 'rgba(6, 182, 212, 1)' : 'rgba(245, 158, 11, 1)';
-  const glow = isHead ? '0 0 4px rgba(6, 182, 212, 0.7)' : '0 0 4px rgba(245, 158, 11, 0.7)';
+  const isBlue = String(tubeColor || '').toLowerCase() === 'blue';
+  const stemColor = isBlue ? 'rgba(56, 189, 248, 1)' : 'rgba(255, 255, 255, 0.95)';
+  const glow = isBlue ? '0 0 4px rgba(56, 189, 248, 0.7)' : '0 0 4px rgba(255, 255, 255, 0.7)';
 
   // Strictly clamp stem length between 14px and 22px to prevent huge stems or hiding behind toolbar
   const safeStem = Math.min(22, Math.max(14, stemLengthPx));
@@ -144,6 +144,9 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
   const validTubes = useMemo(() => {
     return tubes.filter((tube) => {
       return (
+        !(tube as any).held &&
+        tube.status !== 'COASTED' &&
+        !tube.is_coasting &&
         Number.isFinite(tube.x) &&
         Number.isFinite(tube.y) &&
         Number.isFinite(tube.width) &&
@@ -238,7 +241,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
       const offsetPx = count === 0 ? 0 : (count % 2 === 1 ? -42 * count : 42 * count);
       const stemLen = count === 0 ? 18 : 22;
 
-      result[tube.id] = createPlacement(side, tube.role, offsetPx, stemLen);
+      result[tube.id] = createPlacement(side, tube.tube_color, offsetPx, stemLen);
     });
 
     return result;
@@ -252,6 +255,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
     const bluePolys: number[][][] = [];
 
     for (const mask of tubeMasks) {
+      if ((mask as any).held) continue; // Never render ghost/held masks
       const color = String(mask.tube_color || '').toLowerCase();
       if (color !== 'blue' && color !== 'white') continue;
       const polys = (mask.polygons && mask.polygons.length > 0)
@@ -295,24 +299,15 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          {/* WHITE TUBES: Stable dual-stroke + translucent fill (never flips color) */}
+          {/* WHITE TUBES: Neat clean outline + subtle translucent fill */}
           {whiteTubePath && (
             <g key="layer-white-tubes">
               <path
                 d={whiteTubePath}
-                fill="none"
-                stroke="rgba(0, 0, 0, 0.75)"
-                strokeWidth={Math.max(3, frameWidth / 450)}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                vectorEffect="non-scaling-stroke"
-              />
-              <path
-                d={whiteTubePath}
-                fill="rgba(255, 255, 255, 0.20)"
+                fill="rgba(255, 255, 255, 0.12)"
                 stroke="#f8fafc"
                 strokeOpacity={0.95}
-                strokeWidth={Math.max(1.5, frameWidth / 900)}
+                strokeWidth={1.2}
                 strokeLinejoin="round"
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
@@ -320,39 +315,30 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             </g>
           )}
 
-          {/* BLUE TUBES: Stable dual-stroke + translucent fill (never flips color) */}
+          {/* BLUE TUBES: Neat clean outline + subtle translucent fill */}
           {blueTubePath && (
             <g key="layer-blue-tubes">
               <path
                 d={blueTubePath}
-                fill="none"
-                stroke="rgba(0, 0, 0, 0.75)"
-                strokeWidth={Math.max(3, frameWidth / 450)}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                vectorEffect="non-scaling-stroke"
-              />
-              <path
-                d={blueTubePath}
-                fill="rgba(56, 189, 248, 0.20)"
+                fill="rgba(56, 189, 248, 0.12)"
                 stroke="#38bdf8"
                 strokeOpacity={0.95}
-                strokeWidth={Math.max(1.5, frameWidth / 900)}
+                strokeWidth={1.2}
                 strokeLinejoin="round"
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
             </g>
           )}
-          {/* WRAPPER BAND: Distinct polygon overlay when detected */}
+          {/* WRAPPER BAND: Distinct sleek polygon overlay when detected */}
           {wrapper?.polygon && wrapper.polygon.length >= 3 && (
             <g key="layer-wrapper">
               <polygon
                 points={wrapper.polygon.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')}
-                fill="rgba(168, 85, 247, 0.20)"
+                fill="rgba(168, 85, 247, 0.15)"
                 stroke="#c084fc"
-                strokeWidth={Math.max(2, frameWidth / 700)}
-                strokeDasharray="5 3"
+                strokeWidth={1.2}
+                strokeDasharray="4 3"
                 strokeLinejoin="round"
                 vectorEffect="non-scaling-stroke"
               />
@@ -361,7 +347,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                   x={wrapper.center[0]}
                   y={wrapper.center[1]}
                   fill="#f3e8ff"
-                  fontSize={Math.max(10, frameWidth / 140)}
+                  fontSize={Math.max(9, frameWidth / 160)}
                   fontWeight="bold"
                   fontFamily="monospace"
                   textAnchor="middle"
@@ -374,7 +360,7 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             </g>
           )}
 
-          {/* TRACE PATHS: Dynamic centerline traces out of wrapper */}
+          {/* TRACE PATHS: Ultra-thin, precise centerline traces out of wrapper */}
           {traces && traces.length > 0 && (
             <g key="layer-traces">
               {traces.map((tr: TubeTrace, trIdx: number) => {
@@ -384,12 +370,12 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                 const traceColor = isBlue ? '#38bdf8' : '#f8fafc';
                 const endPt = tr.path[tr.path.length - 1];
                 return (
-                  <g key={`trace-${tr.tube_id ?? trIdx}-${tr.side ?? trIdx}`}>
+                  <g key={`trace-${tr.tube_id ?? 'untracked'}-${trIdx}`}>
                     <path
                       d={pathD}
                       fill="none"
-                      stroke="rgba(0, 0, 0, 0.8)"
-                      strokeWidth={Math.max(3, frameWidth / 500)}
+                      stroke="rgba(0, 0, 0, 0.55)"
+                      strokeWidth={1.8}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       vectorEffect="non-scaling-stroke"
@@ -398,8 +384,8 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                       d={pathD}
                       fill="none"
                       stroke={traceColor}
-                      strokeWidth={Math.max(2, frameWidth / 800)}
-                      strokeDasharray="5 3"
+                      strokeWidth={1.1}
+                      strokeDasharray="3 3"
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       vectorEffect="non-scaling-stroke"
@@ -408,24 +394,11 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                       <circle
                         cx={endPt[0]}
                         cy={endPt[1]}
-                        r={Math.max(3.5, frameWidth / 500)}
+                        r={2.2}
                         fill={traceColor}
                         stroke="#0f172a"
-                        strokeWidth="1.5"
+                        strokeWidth="1"
                       />
-                    )}
-                    {endPt && tr.end_xyz_m && (
-                      <text
-                        x={endPt[0] + 6}
-                        y={endPt[1] - 4}
-                        fill={traceColor}
-                        fontSize={Math.max(9, frameWidth / 180)}
-                        fontWeight="bold"
-                        fontFamily="monospace"
-                        style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}
-                      >
-                        Z:{(tr.end_xyz_m[2] * 1000).toFixed(0)}mm
-                      </text>
                     )}
                   </g>
                 );
@@ -433,17 +406,25 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             </g>
           )}
 
-          {tubes.map((end) => end.polygon && end.polygon.length >= 3 && (
-            <polygon
-              key={`end-mask-${end.id}`}
-              points={end.polygon.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')}
-              fill={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
-              fillOpacity={0.12}
-              stroke={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
-              strokeWidth={Math.max(1.5, frameWidth / 1000)}
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
+          {tubes.map((end) => {
+            if ((end as any).held || !end.polygon || end.polygon.length < 3) return null;
+            const isBlue = String(end.tube_color || '').toLowerCase() === 'blue';
+            // Blue tube = Sky Blue; White tube = Crisp White
+            const colorStroke = isBlue ? '#38bdf8' : '#f8fafc';
+            const colorFill = isBlue ? 'rgba(56, 189, 248, 0.14)' : 'rgba(255, 255, 255, 0.14)';
+            return (
+              <polygon
+                key={`end-mask-${end.id}`}
+                points={end.polygon.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')}
+                fill={colorFill}
+                stroke={colorStroke}
+                strokeWidth={1.0}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
         </svg>
       )}
       {/* High-Visibility Bounding Boxes */}
@@ -451,22 +432,19 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
         const isSelected = tube.id === selectedTubeId;
         const isHovered = tube.id === hoveredTubeId;
         const isHead = tube.role === 'HEAD';
-        const placement = placementMap[tube.id] || createPlacement('left', tube.role);
+        const placement = placementMap[tube.id] || createPlacement('left', tube.tube_color);
 
-        // Vibrant high-contrast styling:
-        // HEAD = Electric Cyan (High visibility on dark connectors)
-        // TAIL = Electric Amber/Gold (High visibility on clear tubes & white background)
-        const borderColor = isHead
-          ? (isSelected ? 'border-cyan-300' : 'border-cyan-400')
-          : (isSelected ? 'border-amber-300' : 'border-amber-400');
+        // Color coding: Blue tube = Sky Blue; White tube = Crisp White
+        const isBlue = String(tube.tube_color || '').toLowerCase() === 'blue';
+        const borderColor = isBlue
+          ? (isSelected ? 'border-sky-300' : 'border-sky-400')
+          : (isSelected ? 'border-white' : 'border-slate-100');
 
-        const glowShadow = isSelected
-          ? (isHead ? 'shadow-[0_0_14px_rgba(6,182,212,0.8)]' : 'shadow-[0_0_14px_rgba(245,158,11,0.8)]')
-          : isHovered
-            ? (isHead ? 'shadow-[0_0_10px_rgba(6,182,212,0.6)]' : 'shadow-[0_0_10px_rgba(245,158,11,0.6)]')
-            : (isHead ? 'shadow-[0_0_6px_rgba(6,182,212,0.4)]' : 'shadow-[0_0_6px_rgba(245,158,11,0.4)]');
+        const glowShadow = isBlue
+          ? (isSelected ? 'shadow-[0_0_8px_rgba(56,189,248,0.7)]' : isHovered ? 'shadow-[0_0_5px_rgba(56,189,248,0.45)]' : '')
+          : (isSelected ? 'shadow-[0_0_8px_rgba(255,255,255,0.7)]' : isHovered ? 'shadow-[0_0_5px_rgba(255,255,255,0.45)]' : '');
 
-        const bracketColor = isHead ? 'border-cyan-200' : 'border-amber-200';
+        const bracketColor = isBlue ? 'border-sky-300' : 'border-white';
         const effectiveZIndex = isSelected || isHovered ? 50 : placement.zIndex;
         const isCoasting = tube.status === 'COASTED' || Boolean(tube.is_coasting);
         const tooltipBelow = tube.y < 20;
@@ -504,30 +482,25 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               height: `${tube.height}%`,
               zIndex: effectiveZIndex,
             }}
-            className={`absolute border-2 rounded-sm transition-colors duration-75 ${
+            className={`absolute border rounded-xs transition-colors duration-75 ${
               boxesOnly ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer hover:bg-white/5'
             } ${borderColor} ${glowShadow} bg-transparent ${isCoasting ? 'border-dashed opacity-70' : 'border-solid'
               }`}
           >
-            {/* Corner Crosshair Brackets (High contrast for pinpoint accuracy) */}
-            <span className={`absolute -top-1 -left-1 w-2.5 h-2.5 border-t-2 border-l-2 ${bracketColor}`} />
-            <span className={`absolute -top-1 -right-1 w-2.5 h-2.5 border-t-2 border-r-2 ${bracketColor}`} />
-            <span className={`absolute -bottom-1 -left-1 w-2.5 h-2.5 border-b-2 border-l-2 ${bracketColor}`} />
-            <span className={`absolute -bottom-1 -right-1 w-2.5 h-2.5 border-b-2 border-r-2 ${bracketColor}`} />
-
-            {/* Subtle center reticle dot */}
-            <span
-              className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full ${isHead ? 'bg-cyan-300/80 shadow-[0_0_4px_cyan]' : 'bg-amber-300/80 shadow-[0_0_4px_orange]'
-                }`}
-            />
+            {/* Corner Crosshair Brackets (Slim, high-precision outer corners) */}
+            <span className={`absolute -top-0.5 -left-0.5 w-2 h-2 border-t-[1.5px] border-l-[1.5px] ${bracketColor}`} />
+            <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 border-t-[1.5px] border-r-[1.5px] ${bracketColor}`} />
+            <span className={`absolute -bottom-0.5 -left-0.5 w-2 h-2 border-b-[1.5px] border-l-[1.5px] ${bracketColor}`} />
+            <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 border-b-[1.5px] border-r-[1.5px] ${bracketColor}`} />
 
             {/* 3. PINS MODE: Minimalist, non-intrusive numbered circle pins */}
             {!boxesOnly && labelMode === 'pins' && (
               <div
-                className={`absolute -top-2.5 -left-2.5 min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center font-mono font-black text-[9.5px] shadow-md border pointer-events-none transition-transform ${isHead
-                    ? 'bg-cyan-500 text-slate-950 border-cyan-200'
-                    : 'bg-amber-500 text-slate-950 border-amber-200'
-                  } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}
+                className={`absolute -top-2.5 -left-2.5 min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center font-mono font-black text-[9.5px] shadow-md border pointer-events-none transition-transform ${
+                  isBlue
+                    ? 'bg-sky-500 text-white border-sky-300'
+                    : 'bg-white text-slate-950 border-slate-300'
+                } ${isHovered || isSelected ? 'scale-125 z-50' : ''}`}
               >
                 {tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}
               </div>
@@ -537,26 +510,29 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {!boxesOnly && labelMode === 'compact' && (
               <div
                 style={placement.containerStyle}
-                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${isHead
-                    ? 'bg-slate-950/90 text-cyan-200 border-cyan-500/70'
-                    : 'bg-slate-950/90 text-amber-200 border-amber-500/70'
-                  } ${isHovered || isSelected ? 'scale-105 border-white text-white z-50 shadow-lg' : ''}`}
+                className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-mono whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md shadow-md pointer-events-none border transition-colors ${
+                  isBlue
+                    ? 'bg-slate-950/90 text-sky-200 border-sky-500/70'
+                    : 'bg-slate-950/90 text-slate-100 border-white/70'
+                } ${isHovered || isSelected ? 'scale-105 border-white text-white z-50 shadow-lg' : ''}`}
               >
                 {/* Connecting guide line straight to the box edge */}
                 <span style={placement.stemStyle} />
 
                 <span className="font-bold flex items-center gap-1">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${isHead ? 'bg-cyan-400' : 'bg-amber-400'
-                      }`}
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      isBlue ? 'bg-sky-400' : 'bg-white'
+                    }`}
                   />
                   <span>#{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
-                  <span className={isHead ? 'text-cyan-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
+                  <span className={isBlue ? 'text-sky-300 font-extrabold' : 'text-slate-100 font-extrabold'}>
                     {tube.role}
                   </span>
                   {tube.tube_color && (
-                    <span className={`px-1 py-0.2 rounded text-[8px] font-black uppercase ${tube.tube_color === 'blue'
-                      ? 'bg-blue-600 text-white' : 'bg-white text-slate-900'}`}>
+                    <span className={`px-1 py-0.2 rounded text-[8px] font-black uppercase ${
+                      isBlue ? 'bg-sky-500 text-white' : 'bg-white text-slate-900'
+                    }`}>
                       {tube.tube_color}
                     </span>
                   )}
@@ -567,11 +543,6 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                         : tube.width_mm != null
                           ? `Ø${tube.width_mm.toFixed(1)}mm${tube.width_px != null ? ` (${tube.width_px.toFixed(0)}px)` : ''}`
                           : `${tube.width_px?.toFixed(0)}px`}
-                    </span>
-                  )}
-                  {tube.z_mm != null && (
-                    <span className="text-cyan-300 font-mono text-[9px] opacity-90 bg-cyan-950/60 px-1 py-0.2 rounded border border-cyan-500/30">
-                      Z:{tube.z_mm.toFixed(0)}mm
                     </span>
                   )}
                   {tube.pair_id != null && (
@@ -592,12 +563,13 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
               >
                 <div className="flex items-center justify-between pb-1 border-b border-white/10 font-bold">
                   <span className="flex items-center gap-1">
-                    <span className={`w-2 h-2 rounded-full ${isHead ? 'bg-cyan-400' : 'bg-amber-400'}`} />
+                    <span className={`w-2 h-2 rounded-full ${isBlue ? 'bg-sky-400' : 'bg-white'}`} />
                     <span>{tube.role} #{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
                   </span>
                   {tube.tube_color && (
-                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${tube.tube_color === 'blue'
-                      ? 'bg-blue-700 text-white' : 'bg-white text-slate-900'}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${
+                      isBlue ? 'bg-sky-500 text-white' : 'bg-white text-slate-900'
+                    }`}>
                       {tube.tube_color}
                     </span>
                   )}

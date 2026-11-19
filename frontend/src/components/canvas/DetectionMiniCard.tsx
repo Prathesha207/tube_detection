@@ -24,29 +24,27 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
     return null;
   }
 
-  const headsCount = tubes.filter((t) => t.role === 'HEAD').length;
-  const tailsCount = tubes.filter((t) => t.role === 'TAIL').length;
+  const activeTubes = tubes.filter((t) => !(t as any).held && t.status !== 'COASTED' && !t.is_coasting);
+  const headsCount = activeTubes.filter((t) => t.role === 'HEAD').length;
+  const tailsCount = activeTubes.filter((t) => t.role === 'TAIL').length;
 
   const formatWidth = (d: TubeEntity): string => {
     const rawDepth = d.width_mm_depth ?? d.width_mm;
     const wDepth: number | null = typeof rawDepth === 'number' ? rawDepth : null;
     const wPx: number | null = typeof d.width_px === 'number' ? d.width_px : null;
 
-    if (typeof wDepth === 'number' && wDepth > 0 && typeof wPx === 'number' && wPx > 0) {
-      return `${wDepth.toFixed(1)}mm (${wPx.toFixed(1)}px)`;
-    }
     if (typeof wDepth === 'number' && wDepth > 0) {
       return `${wDepth.toFixed(1)}mm`;
     }
     if (typeof wPx === 'number' && wPx > 0) {
       return `${wPx.toFixed(1)}px`;
     }
-    return 'null';
+    return '--';
   };
 
   return (
           <div
-            className={`pointer-events-auto w-fit min-w-[175px] max-w-[275px] rounded-xl bg-[var(--bg-card)]/95 dark:bg-slate-900/90 backdrop-blur-md border border-[var(--border-color)] dark:border-slate-700/80 shadow-xl overflow-hidden select-none transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 ${className}`}
+            className={`pointer-events-auto w-fit min-w-[270px] max-w-[360px] rounded-xl bg-[var(--bg-card)]/95 dark:bg-slate-900/95 backdrop-blur-md border border-[var(--border-color)] dark:border-slate-700/80 shadow-xl overflow-hidden select-none transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 ${className}`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header Bar with Counts */}
@@ -58,7 +56,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
               <div className="flex items-center gap-1.5 min-w-0">
                 <Layers className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] font-mono whitespace-nowrap">
-                  ENDS ({tubes.length})
+                  ENDS ({activeTubes.length})
                 </span>
               </div>
 
@@ -67,7 +65,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                   {headsCount}H
                 </span>
                 <span className="text-[var(--border-color)]">•</span>
-                <span className="inline-flex items-center px-1 py-0.2 rounded bg-indigo-500/15 text-indigo-400 font-bold">
+                <span className="inline-flex items-center px-1 py-0.2 rounded bg-slate-500/15 text-slate-300 font-bold">
                   {tailsCount}T
                 </span>
                 <button
@@ -84,25 +82,27 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
               </div>
             </div>
 
-            {/* Body: Compact List of detected tube ends (height fits 4 items; expands when > 4) */}
+            {/* Body: Compact List of detected tube ends with generous bottom padding so row #4 is never clipped */}
             {!isCollapsed && (
               <div
-                className={`p-1 flex flex-col gap-0.5 justify-start transition-all duration-200 ${tubes.length > 4
+                className={`p-1.5 pb-2.5 flex flex-col gap-1 justify-start transition-all duration-200 ${
+                  activeTubes.length > 4
                     ? 'h-auto max-h-[340px] overflow-y-auto invisible-scrollbar'
-                    : 'h-[104px] overflow-hidden'
-                  }`}
+                    : 'h-auto'
+                }`}
               >
-                {tubes.length === 0 ? (
+                {activeTubes.length === 0 ? (
                   <div className="h-full flex items-center justify-center px-2 py-1.5 text-[10px] font-mono text-[var(--text-secondary)] gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse shrink-0" />
                     <span>Scanning...</span>
                   </div>
                 ) : (
-                  tubes.map((d, idx) => {
+                  activeTubes.map((d, idx) => {
                     const isHead = d.role === 'HEAD';
                     const isSelected = selectedTubeId != null && String(d.id) === String(selectedTubeId);
+                    const isBlue = String(d.tube_color || '').toLowerCase() === 'blue';
                     const widthStr = formatWidth(d);
-                    const hasWidth = widthStr !== 'null';
+                    const hasWidth = widthStr !== '--';
 
               return (
                       <div
@@ -110,32 +110,42 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                         onClick={() => onSelectTube?.(isSelected ? null : String(d.id))}
                         role="button"
                         tabIndex={0}
-                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg font-mono text-[11px] border transition-all cursor-pointer shrink-0 ${isSelected
-                            ? 'bg-cyan-500/20 border-cyan-400/90 text-[var(--text-primary)] shadow-xs ring-1 ring-cyan-400/50'
-                            : 'bg-[var(--bg-card)]/60 hover:bg-[var(--bg-card)] border-[var(--border-color)]/70 text-[var(--text-primary)] hover:border-cyan-500/50'
+                        className={`flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg font-mono text-[10.5px] border transition-all cursor-pointer shrink-0 ${isSelected
+                            ? 'bg-sky-500/20 border-sky-400 text-[var(--text-primary)] shadow-xs ring-1 ring-sky-400/50'
+                            : 'bg-[var(--bg-card)]/70 hover:bg-[var(--bg-card)] border-[var(--border-color)]/70 text-[var(--text-primary)] hover:border-sky-500/50'
                           }`}
                       >
-                        {/* ID displayed directly first (no serial number) */}
-                        <span className="text-[10px] font-bold text-[var(--text-secondary)] font-mono shrink-0">
-                          ID:{d.displayId ?? d.id}
-                        </span>
-
-                        {/* Role badge */}
-                        <span
-                          className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider leading-tight shrink-0 ${isHead ? 'bg-sky-500 text-white shadow-2xs' : 'bg-indigo-500 text-white shadow-2xs'
-                            }`}
-                        >
-                          {d.role || 'END'}
-                        </span>
-                        {d.tube_color && (
-                          <span className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase shrink-0 ${d.tube_color === 'blue'
-                            ? 'bg-blue-700 text-white' : 'bg-white text-slate-900 border border-slate-300'}`}>
-                            {d.tube_color}
+                        {/* ID displayed directly first */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="text-[10px] font-bold text-[var(--text-secondary)] font-mono">
+                            ID:{d.displayId ?? d.id}
                           </span>
-                        )}
 
-                        {/* Width minimized right next to it with size tag */}
-                        <div className="flex items-center gap-1 ml-auto shrink-0 text-[10px] font-mono">
+                          {/* Role badge */}
+                          <span
+                            className={`px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider leading-tight ${
+                              isBlue
+                                ? (isHead ? 'bg-sky-500 text-white' : 'bg-sky-600 text-white')
+                                : (isHead ? 'bg-white text-slate-900 border border-slate-200' : 'bg-slate-100 text-slate-900 border border-slate-300')
+                            }`}
+                          >
+                            {d.role || 'END'}
+                          </span>
+
+                          {/* Tube color badge */}
+                          {d.tube_color && (
+                            <span className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase ${
+                              isBlue
+                                ? 'bg-sky-700 text-white'
+                                : 'bg-white text-slate-900 border border-slate-300'
+                            }`}>
+                              {d.tube_color}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Width and Z-depth on right */}
+                        <div className="flex items-center gap-1 shrink-0 text-[10px] font-mono">
                           {d.size === 'BIGGER' && (
                             <span className="px-1 py-0.2 rounded text-[7.5px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-400 border border-rose-500/30">
                               BIG
@@ -151,7 +161,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                               EQ
                             </span>
                           )}
-                          <span className="text-[var(--text-secondary)] opacity-65">w:</span>
+                          <span className="text-[var(--text-secondary)] opacity-60">w:</span>
                           <strong
                             className={`font-mono ${hasWidth
                                 ? 'text-emerald-500 dark:text-emerald-400 font-bold'
@@ -161,7 +171,7 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                             {widthStr}
                           </strong>
                           {typeof d.z_mm === 'number' && (
-                            <span className="font-mono text-[8.5px] font-bold px-1 py-0.2 rounded border leading-none whitespace-nowrap text-cyan-900 dark:text-cyan-300 bg-cyan-100/90 dark:bg-cyan-950/60 border-cyan-300 dark:border-cyan-500/30" title={`Distance: ${d.z_mm} mm`}>
+                            <span className="font-mono text-[8.5px] font-bold px-1.5 py-0.2 rounded border leading-none whitespace-nowrap text-cyan-900 dark:text-cyan-300 bg-cyan-100/90 dark:bg-cyan-950/60 border-cyan-300 dark:border-cyan-500/40" title={`Distance: ${d.z_mm} mm`}>
                               z:{d.z_mm.toFixed(0)}mm
                             </span>
                           )}

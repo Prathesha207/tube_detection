@@ -3,6 +3,7 @@ import type { TubeEntity, StreamSourceType, AnomalyStatus, LabelMode, CameraConf
 import { getApiBaseUrl } from '../lib/api';
 import { showToast } from '../lib/toast';
 import { useInferenceStore } from '../store/inferenceStore';
+import { useShallow } from 'zustand/react/shallow';
 import { cameraService } from './service/cameraService';
 
 import { Loader2 } from 'lucide-react';
@@ -154,7 +155,22 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     };
   }, []);
 
-  const backendStats = useInferenceStore((state) => state.stats);
+  const backendStats = useInferenceStore(useShallow((state) => ({
+    status: state.stats.status,
+    detections: state.stats.detections,
+    tubes: state.stats.tubes,
+    wrapper: state.stats.wrapper,
+    traces: state.stats.traces,
+    heads_count: state.stats.heads_count,
+    tails_count: state.stats.tails_count,
+    heads_total: state.stats.heads_total,
+    tails_total: state.stats.tails_total,
+    frames_processed: state.stats.frames_processed,
+    progress: state.stats.progress,
+    total_frames: state.stats.total_frames,
+    video_width: state.stats.video_width,
+    video_height: state.stats.video_height,
+  })));
 
   const isVideoSource = sourceType === 'uploaded-video' || sourceType === 'sample-pond';
   const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
@@ -186,14 +202,11 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   const [roiPoints, setRoiPoints] = useState<Point[]>([]);
   const [savedRoiPoints, setSavedRoiPoints] = useState<Point[]>([]);
   const [isSavingRoi, setIsSavingRoi] = useState<boolean>(false);
-  const [roiFrameSize, setRoiFrameSize] = useState<{ width: number; height: number }>({
-    width: 1920,
-    height: 1080,
-  });
-
-  // Effective native frame width and height (from authoritative ML stats or video dimensions)
-  const effectiveFw = Number(backendStats?.video_width) || Number(videoDimensions?.width) || 1920;
-  const effectiveFh = Number(backendStats?.video_height) || Number(videoDimensions?.height) || 1080;
+  // Use frame dimensions reported by inference or the loaded source metadata.
+  // If neither is available yet, leave the overlay without a viewBox instead of
+  // guessing a 1920x1080 coordinate system.
+  const effectiveFw = Number(backendStats?.video_width) || Number(videoDimensions?.width) || 0;
+  const effectiveFh = Number(backendStats?.video_height) || Number(videoDimensions?.height) || 0;
 
   // Active session id (video or camera)
   const activeSessionId = videoSessionId || (isCameraSource ? 'camera' : undefined);
@@ -220,8 +233,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     try {
       const res = await roiService.saveRoi(
         roiPoints,
-        roiFrameSize.width || effectiveFw,
-        roiFrameSize.height || effectiveFh,
+        effectiveFw,
+        effectiveFh,
         activeSessionId,
         isCameraSource ? 'camera' : 'video'
       );
@@ -231,7 +244,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       setIsRoiActive(false);
       // Reset counters in store to prevent jump in totals from looking like a bug
       useInferenceStore.getState().setStats({
-        ...backendStats,
         heads_total: 0,
         tails_total: 0,
       });
@@ -247,8 +259,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
     try {
       await roiService.saveRoi(
         [],
-        roiFrameSize.width || effectiveFw,
-        roiFrameSize.height || effectiveFh,
+        effectiveFw,
+        effectiveFh,
         activeSessionId,
         isCameraSource ? 'camera' : 'video'
       );
@@ -256,7 +268,6 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       setSavedRoiPoints([]);
       showToast('info', 'ROI deleted. Full frame is now being inspected.');
       useInferenceStore.getState().setStats({
-        ...backendStats,
         heads_total: 0,
         tails_total: 0,
       });
@@ -710,12 +721,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                       ? `${getApiBaseUrl()}/oak/depth/stream?t=${streamCacheBuster}`
                       : feedMode === 'blend'
                         ? `${getApiBaseUrl()}/oak/blend/stream?t=${streamCacheBuster}`
-                        : (feedMode === 'raw'
-                          ? (isRunning && lastCameraFrame ? lastCameraFrame : `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`)
-                          : (isRunning && (lastCameraFrame || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}`) || `${getApiBaseUrl()}/oak/inference/stream/live?t=${streamCacheBuster}` || effectiveBackdrop || '')))
-                    : (isRunning && feedMode === 'inference'
-                      ? (lastVideoFrame || effectiveVideoUrl || effectiveBackdrop || '')
-                      : effectiveVideoUrl)
+                        : feedMode === 'raw'
+                          ? `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`
+                          : (isRunning && lastCameraFrame)
+                            ? lastCameraFrame
+                            : `${getApiBaseUrl()}/oak/stream?t=${streamCacheBuster}`)
+                    : (isRunning && lastVideoFrame)
+                      ? lastVideoFrame
+                      : effectiveVideoUrl
                 }
                 className={`absolute inset-0 z-0 h-full w-full pointer-events-none rounded bg-black object-fill ${streamError && effectiveBackdrop ? 'opacity-0' : 'opacity-100'
                   }`}
@@ -769,14 +782,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes & Stable Tube Segmentations: Rendered via modern SVG/HTML overlay for both video and camera */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && (tubes.length > 0 || (backendStats?.tubes?.length ?? 0) > 0 || backendStats?.wrapper || (backendStats?.traces?.length ?? 0) > 0) && (
-              <div className={`absolute inset-0 ${isRoiActive || feedMode === 'blend' ? 'pointer-events-none' : 'pointer-events-auto'} ${isRoiActive ? 'opacity-40' : ''}`.trim()}>
+            {/* Keep the app's overlay style, using geometry committed with this displayed frame. */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && (
+              <div className="absolute inset-0 z-20">
                 <BoundingBoxOverlay
                   tubes={tubes}
-                  tubeMasks={backendStats?.tubes || []}
-                  wrapper={backendStats?.wrapper}
-                  traces={backendStats?.traces}
+                  tubeMasks={backendStats.tubes || []}
+                  wrapper={backendStats.wrapper}
+                  traces={backendStats.traces}
                   frameWidth={effectiveFw}
                   frameHeight={effectiveFh}
                   selectedTubeId={selectedTubeId}
@@ -787,14 +800,12 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
               </div>
             )}
 
-
-
             {/* Passive Saved ROI Reference Outline — only shown after the user draws & saves an ROI */}
             {!isRoiActive && savedRoiPoints.length >= 3 && (
               <svg
                 className="absolute inset-0 z-20 w-full h-full pointer-events-none"
                 style={{ zIndex: 20 }}
-                viewBox={`0 0 ${roiFrameSize.width || effectiveFw} ${roiFrameSize.height || effectiveFh}`}
+                viewBox={`0 0 ${effectiveFw} ${effectiveFh}`}
                 preserveAspectRatio="none"
               >
                 <polygon
@@ -814,8 +825,8 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
                 onChange={setRoiPoints}
                 activeTool={activeRoiTool}
                 onSelectTool={setActiveRoiTool}
-                frameWidth={roiFrameSize.width || effectiveFw}
-                frameHeight={roiFrameSize.height || effectiveFh}
+                frameWidth={effectiveFw}
+                frameHeight={effectiveFh}
               />
             )}
           </div>
@@ -888,7 +899,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
       {/* Floating Bottom-Left Corner: In DEPTH mode, shows Depth HUD. In INFERENCE mode, shows DetectionMiniCard */}
       {!isOverlayShowing && showHUD && isMediaActive && !isRoiActive && (
-        <div className="absolute bottom-3.5 left-3.5 sm:bottom-4 sm:left-4 z-30 pointer-events-auto">
+        <div className="absolute bottom-5 left-5 sm:bottom-6 sm:left-6 z-30 pointer-events-auto">
           {feedMode === 'depth' && isCameraSource && isCameraConnected ? (
             <DepthHud
               telemetry={depthTelemetry}

@@ -1,8 +1,16 @@
 import { useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import type { StreamSourceType, LogEntry, TubeEntity } from '../types';
 import { getApiBaseUrl } from '../lib/api';
 import { useInferenceStore } from '../store/inferenceStore';
 import { mapDetectionsToTubes, resetBBoxCache } from '../utils/mlDataMapper';
+
+const frameGeometry = (data: any) => ({
+  detections: Array.isArray(data?.detections) ? data.detections : [],
+  tubes: Array.isArray(data?.tubes) ? data.tubes : [],
+  wrapper: data?.wrapper ?? null,
+  traces: Array.isArray(data?.traces) ? data.traces : [],
+});
 
 export function useInferenceLoop({
   sourceType,
@@ -83,14 +91,23 @@ export function useInferenceLoop({
 
             if (stallTimer) clearTimeout(stallTimer);
             stallTimer = setTimeout(() => {
-              if (isMounted) setTubes([]);
+              if (isMounted) {
+                renderSeq += 1; // invalidate any frame decode that began before the stall
+                flushSync(() => {
+                  setTubes([]);
+                  useInferenceStore.getState().setStats(frameGeometry({}));
+                });
+              }
             }, 700);
-
-            useInferenceStore.getState().setStats(data);
 
             const statusLower = String(data.status || '').toLowerCase();
             const isError = statusLower === 'error';
             if (data.status === 'stopped' || data.done || isError) {
+              renderSeq += 1;
+              flushSync(() => {
+                setTubes([]);
+                useInferenceStore.getState().setStats({ ...data, ...frameGeometry({}) });
+              });
               if (stallTimer) clearTimeout(stallTimer);
               setIsRunning(false);
               if (isError) {
@@ -103,19 +120,14 @@ export function useInferenceLoop({
             }
 
             if (data.status !== 'queued' && data.status !== 'idle') {
-              setFps(data.metrics?.fps || data.fps || 0);
               const count = data.frames_processed ?? data.frame_seq ?? 0;
-              setFramesProcessed(count);
-
-              if (data.video_width && data.video_height) {
-                setVideoDimensions({ width: data.video_width, height: data.video_height });
-              }
 
               const incomingTubes = mapDetectionsToTubes(data);
               const thisSeq = ++renderSeq;
 
-              // Decode the exact analyzed frame before applying its detections.
-              if (data.frame && setLastCameraFrame) {
+              // Decode the exact analyzed frame before applying its detections for zero-lag lockstep sync.
+              const isValidFrame = typeof data.frame === 'string' && data.frame.startsWith('data:image');
+              if (isValidFrame && setLastCameraFrame) {
                 const img = new Image();
                 img.src = data.frame;
                 if (img.decode) {
@@ -127,12 +139,26 @@ export function useInferenceLoop({
                 }
                 if (!isMounted || thisSeq < renderSeq) return;
 
-                setLastCameraFrame(data.frame);
-                setTubes(incomingTubes);
-              } else {
-                if (isMounted && thisSeq === renderSeq) {
+                flushSync(() => {
+                  setLastCameraFrame(data.frame);
                   setTubes(incomingTubes);
-                }
+                  setFps(data.metrics?.fps || data.fps || 0);
+                  setFramesProcessed(count);
+                  if (data.video_width && data.video_height) {
+                    setVideoDimensions({ width: data.video_width, height: data.video_height });
+                  }
+                  useInferenceStore.getState().setStats({ ...data, ...frameGeometry(data) });
+                });
+              } else if (isMounted && thisSeq >= renderSeq) {
+                flushSync(() => {
+                  setTubes(incomingTubes);
+                  setFps(data.metrics?.fps || data.fps || 0);
+                  setFramesProcessed(count);
+                  if (data.video_width && data.video_height) {
+                    setVideoDimensions({ width: data.video_width, height: data.video_height });
+                  }
+                  useInferenceStore.getState().setStats({ ...data, ...frameGeometry(data) });
+                });
               }
             }
           } catch (e) { }
@@ -189,9 +215,12 @@ export function useInferenceLoop({
         const data = await res.json();
         if (!isMounted) return;
 
-        useInferenceStore.getState().setStats(data);
-
         if (data.status === 'error' || data.status === 'stopped' || data.done) {
+          videoRenderSeq += 1;
+          flushSync(() => {
+            setTubes([]);
+            useInferenceStore.getState().setStats({ ...data, ...frameGeometry({}) });
+          });
           setIsRunning(false);
           if (data.status === 'error') {
             const errDetail = data.reasons?.join(', ') || data.error || data.message || 'Video inference failed';
@@ -202,13 +231,7 @@ export function useInferenceLoop({
         }
 
         if (data.status !== 'queued' && data.status !== 'idle') {
-          setFps(data.fps || 0);
           const currentFrame = data.frames_processed ?? data.frame ?? 0;
-          setFramesProcessed(currentFrame);
-
-          if (data.video_width && data.video_height) {
-            setVideoDimensions({ width: data.video_width, height: data.video_height });
-          }
 
           const incomingTubes = mapDetectionsToTubes(data);
 
@@ -222,22 +245,39 @@ export function useInferenceLoop({
               if (img.decode) {
                 img.decode().then(() => {
                   if (isMounted && thisSeq >= videoRenderSeq) {
-                    setLastVideoFrame(data.frame);
-                    setTubes(incomingTubes);
+                    flushSync(() => {
+                      setLastVideoFrame(data.frame);
+                      setTubes(incomingTubes);
+                      setFps(data.fps || 0);
+                      setFramesProcessed(currentFrame);
+                      if (data.video_width && data.video_height) {
+                        setVideoDimensions({ width: data.video_width, height: data.video_height });
+                      }
+                      useInferenceStore.getState().setStats({ ...data, ...frameGeometry(data) });
+                    });
                   }
                 }).catch(() => {
-                  if (isMounted && thisSeq >= videoRenderSeq) {
-                    setLastVideoFrame(data.frame);
-                    setTubes(incomingTubes);
-                  }
+                  // A frame that failed to decode must not advance its geometry or counters.
+                  if (isMounted && thisSeq === videoRenderSeq) lastRenderedFrameSeq = -1;
                 });
               } else {
-                setLastVideoFrame(data.frame);
-                setTubes(incomingTubes);
+                flushSync(() => {
+                  setLastVideoFrame(data.frame);
+                  setTubes(incomingTubes);
+                  setFps(data.fps || 0);
+                  setFramesProcessed(currentFrame);
+                  if (data.video_width && data.video_height) {
+                    setVideoDimensions({ width: data.video_width, height: data.video_height });
+                  }
+                  useInferenceStore.getState().setStats({ ...data, ...frameGeometry(data) });
+                });
               }
             }
           } else {
-            setTubes(incomingTubes);
+            flushSync(() => {
+              setTubes([]);
+              useInferenceStore.getState().setStats({ ...data, ...frameGeometry({}) });
+            });
           }
 
           if (data.status === 'completed') {

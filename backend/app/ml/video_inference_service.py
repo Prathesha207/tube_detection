@@ -17,8 +17,8 @@ How a run works
                                               detect, track, sizes, result, fps AND the drawn picture
                    -> annotated picture (drawn by the wheel for THIS frame) -> VideoWriter (annotated mp4)
                    -> result                      -> history.jsonl (the wheel's dict, one line per processed frame)
-                   -> analyzer.get_clean_frame()  -> JPEG -> live stream queue
-                   -> session["stats"]            (polled by get_status)
+                   -> clean frame + result -> one atomic status/frame snapshot
+                   -> JPEG -> live stream queue
 
     Nothing here decides what a frame contains: counts, widths, Bigger/Smaller, fps, frame_total and
     video_fps are the wheel's. Frame skipping is the wheel's ``stride`` setting from config.yaml.
@@ -64,6 +64,20 @@ from .tube_analyzer import (
 )
 
 logger = setup_logger("tube-video-inference")
+
+def _get_config_trace_px() -> float:
+    try:
+        import yaml
+        from app.ml.tube_analyzer import CONFIG_PATH
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            val = cfg.get("trace_px")
+            if val is not None:
+                return float(val)
+    except Exception:
+        pass
+    return 100.0
 
 _FINISHED_STATES = ("completed", "stopped", "error")
 _JPEG_QUALITY = 85
@@ -240,7 +254,7 @@ class VideoInferenceService:
             "stop_event": threading.Event(),
             "run_seq": 0,
             "temp_file": None,
-            "trace_px": None,
+            "trace_px": _get_config_trace_px(),
         }
         with self._sessions_lock:
             self.sessions[session_id] = session
@@ -249,16 +263,17 @@ class VideoInferenceService:
     def get_status(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._sessions_lock:
             session = self.sessions.get(session_id)
-        if not session:
-            return None
-        res = dict(session["stats"])
-        # Frame-accurate synchronization: return pre-cached base64 frame (0ms event-loop cost)
-        b64 = session.get("last_frame_b64")
+            if not session:
+                return None
+            # Result and JPEG are committed together by the worker. Snapshot both under the
+            # same lock so polling can never mix adjacent frames.
+            res = dict(session["stats"])
+            b64 = session.get("last_frame_b64")
+            frame_bytes = session.get("last_frame_bytes")
         if b64:
             res["frame"] = b64
-        elif session.get("last_frame_bytes"):
-            b64 = "data:image/jpeg;base64," + base64.b64encode(session["last_frame_bytes"]).decode("ascii")
-            session["last_frame_b64"] = b64
+        elif frame_bytes:
+            b64 = "data:image/jpeg;base64," + base64.b64encode(frame_bytes).decode("ascii")
             res["frame"] = b64
         return res
 
@@ -336,6 +351,8 @@ class VideoInferenceService:
         session["run_seq"] += 1
         if trace_px is not None:
             session["trace_px"] = _parse_trace_px(trace_px)
+        elif session.get("trace_px") is None:
+            session["trace_px"] = _get_config_trace_px()
         session["stop_event"].set()                       # ends the previous run's loop
         _put_latest(session["queue"], None)               # ends the previous run's stream
         session["queue"] = asyncio.Queue(maxsize=2)
@@ -518,13 +535,6 @@ class VideoInferenceService:
                 analysis = analyzer._last_analysis
                 processed += 1
 
-                # Stats for the frontend (one update() so readers never see a half-written frame).
-                # "status" is left out: set_status() owns it, a late frame must not undo "stopped".
-                stats.update({k: v for k, v in last_stats.items() if k != "status"},
-                             frame=frame_number,
-                             frames_processed=processed,
-                             progress=min(100.0, round(frame_number / max(1, stats["total_frames"]) * 100, 1)))
-
                 # Saved video: the wheel's own drawing of THIS frame; never dropped (the queue blocks
                 # when the encoder is behind, so the video has every processed frame).
                 annotated = analysis.annotated if analysis is not None else None
@@ -547,7 +557,8 @@ class VideoInferenceService:
                     except Exception as h_write_err:
                         logger.warning(f"Session {session_id}: history write error on frame {frame_number}: {h_write_err}")
 
-                # Live stream: clean frame; the frontend draws boxes from stats["detections"].
+                # Publish the clean source image and its ML geometry together. The frontend
+                # keeps its own overlay style while drawing against this exact analyzed frame.
                 try:
                     clean_f = analyzer.get_clean_frame(frame)
                     h, w = clean_f.shape[:2]
@@ -560,8 +571,17 @@ class VideoInferenceService:
                                                    [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
                     if encoded:
                         frame_bytes = buffer.tobytes()
-                        session["last_frame_bytes"] = frame_bytes
-                        session["last_frame_b64"] = "data:image/jpeg;base64," + base64.b64encode(frame_bytes).decode("ascii")
+                        frame_b64 = "data:image/jpeg;base64," + base64.b64encode(frame_bytes).decode("ascii")
+                        # Lock the result and its image as one frame snapshot. get_status() takes
+                        # the same lock, so it cannot pair new detections with the prior JPEG.
+                        with self._sessions_lock:
+                            if self._is_current_run(session_id, run_seq):
+                                stats.update({k: v for k, v in last_stats.items() if k != "status"},
+                                             frame=frame_number,
+                                             frames_processed=processed,
+                                             progress=min(100.0, round(frame_number / max(1, stats["total_frames"]) * 100, 1)))
+                                session["last_frame_bytes"] = frame_bytes
+                                session["last_frame_b64"] = frame_b64
                         if frame_number == 1 or frame_number % _SAVE_PREVIEW_EVERY_N_FRAMES == 0:
                             _write_bytes(os.path.join(session_dir, "last_frame.jpg"), frame_bytes)
                         publish(frame_bytes)

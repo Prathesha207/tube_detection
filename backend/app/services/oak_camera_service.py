@@ -2168,10 +2168,10 @@ class OakCameraService:
                     continue
 
                 if isinstance(infer_res, tuple):
-                    res_dict, annotated_frame = infer_res
+                    res_dict, _display_frame = infer_res
                     result = dict(res_dict)
                 else:
-                    result, annotated_frame = dict(infer_res), frame
+                    result = dict(infer_res)
 
                 if not isinstance(result, dict):
                     logger.warning("❌ [INFERENCE] analyze_camera_frame result is not a dict")
@@ -2232,8 +2232,8 @@ class OakCameraService:
                     result["total_videos"]  = self._total_videos
                     result["video_name"]    = self._current_video_name
 
-                # Synchronized frame: attach the analyzed frame so frontend renders the exact frame
-                # in 100% lockstep with its detection bounding boxes (no latency mismatch or trail)
+                # Synchronized source frame: frontend overlays use the detections/masks from this
+                # exact RGB/depth pair while retaining their own drawing style.
                 result["_raw_frame"] = frame
 
                 # ── Push result to WebSocket ──────────────────────────────────

@@ -10,6 +10,8 @@ import { CameraSettingsModal } from './components/CameraSettingsModal';
 import { HelpModal } from './components/HelpModal';
 import { Modal, Toast, Button } from './components/ui';
 import { useInferenceStore } from './store/inferenceStore';
+import { useShallow } from 'zustand/react/shallow';
+import { flushSync } from 'react-dom';
 import { AlertTriangle } from 'lucide-react';
 import { getApiBaseUrl } from './lib/api';
 import { cameraService } from './components/service/cameraService';
@@ -147,7 +149,16 @@ export default function App() {
   });
 
   // ─── 6. Derived Source States ──────────────────────────────────────
-  const backendStats = useInferenceStore(state => state.stats);
+  const backendStats = useInferenceStore(useShallow(state => ({
+    status: state.stats.status,
+    heads_count: state.stats.heads_count,
+    tails_count: state.stats.tails_count,
+    progress: state.stats.progress,
+    total_frames: state.stats.total_frames,
+    frames_processed: state.stats.frames_processed,
+    latency_ms: state.stats.latency_ms,
+    frame_time_ms: state.stats.frame_time_ms,
+  })));
   const isVideoSource = sourceType === 'sample-pond' || sourceType === 'uploaded-video';
   const isCameraSource = sourceType === 'oak-camera' || sourceType === 'webcam';
 
@@ -313,8 +324,37 @@ export default function App() {
           const data = await res.json();
           if (!data) return;
 
+          if (data.frame) {
+            const img = new Image();
+            img.src = data.frame;
+            if (img.decode) {
+              try {
+                await img.decode();
+              } catch {
+                return;
+              }
+            }
+          }
+
+          // The regular inference poll may have advanced while this restore request's
+          // JPEG was decoding. Never let this one-off response roll the display back.
+          const restoredFrame = Number(data.frames_processed ?? data.frame_seq ?? data.frame_number ?? 0);
+          const displayedFrame = Number(useInferenceStore.getState().stats.frames_processed ?? 0);
+          if (savedIsRunning && restoredFrame > 0 && displayedFrame > restoredFrame) return;
+
           // Sync backend authoritative stats and detections
-          useInferenceStore.getState().setStats(data);
+          const incomingTubes = mapDetectionsToTubes(data);
+          flushSync(() => {
+            if (data.frame) setLastVideoFrame(data.frame);
+            setTubes(incomingTubes);
+            useInferenceStore.getState().setStats({
+              ...data,
+              detections: data.detections ?? [],
+              tubes: data.tubes ?? [],
+              wrapper: data.wrapper ?? null,
+              traces: data.traces ?? [],
+            });
+          });
           if (data.fps) setFps(data.fps);
           if (data.frames_processed) {
             setFramesProcessed(data.frames_processed);
@@ -323,9 +363,6 @@ export default function App() {
           if (data.video_width && data.video_height) {
             video.setVideoDimensions({ width: data.video_width, height: data.video_height });
           }
-
-          const incomingTubes = mapDetectionsToTubes(data);
-          setTubes(incomingTubes);
 
           const backendIsRunning = data.status === 'processing' || data.status === 'running' || data.status === 'queued';
 

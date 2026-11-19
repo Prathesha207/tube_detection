@@ -23,7 +23,15 @@ export const mapDetectionsToTubes = (data: any): TubeEntity[] => {
 
   return sortedDetections.flatMap((d: any): TubeEntity[] => {
     const bbox = d?.bbox;
-    if (!Array.isArray(bbox) || bbox.length !== 4 || d.id == null || !d.role) return [];
+    if (
+      !Array.isArray(bbox) ||
+      bbox.length !== 4 ||
+      d.id == null ||
+      !d.role ||
+      d.held ||
+      d.status === 'COASTED' ||
+      d.is_coasting
+    ) return [];
     const [x, y, width, height] = bbox.map(Number);
     if (![x, y, width, height].every(Number.isFinite)) return [];
 

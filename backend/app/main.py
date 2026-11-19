@@ -170,13 +170,9 @@ def _preload_model_background():
             except Exception:
                 pass
 
-            # Warm up for standard resolutions in the background so kernels compile
-            for h_w in [(1080, 1920), (720, 1280)]:
-                try:
-                    _analyzer.warm_up(h_w)
-                    logger.info(f"[STARTUP] ML model warm-up complete — {h_w[1]}x{h_w[0]} CUDA kernels compiled (device={device_val}).")
-                except Exception as warm_err:
-                    logger.warning(f"[STARTUP] Warm-up inference failed for {h_w}: {warm_err}")
+            # TubeAnalyzer loads through ModelManager, which performs its own warm-up.
+            # TubeAnalyzer has no warm_up() method; the old duplicate call emitted a
+            # warning on every startup and could not warm the requested resolutions.
         else:
             logger.info(f"[STARTUP] TubeAnalyzer or configured model not found ({MODEL_PATH}) — skipping preload.")
     except Exception as e:

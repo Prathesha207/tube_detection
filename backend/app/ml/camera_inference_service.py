@@ -6,7 +6,7 @@ Live, real-time per-frame inference (camera feeds, OAK streams, RTSP) for Tube t
 One session_id = one TubeAnalyzer (its own YOLO model + tracker state) = one GPU claim
 in app_state ("camera"). Public entry points:
 
-    analyze_camera_frame(frame, session_id)   -> (stats dict, clean frame)
+    analyze_camera_frame(frame, session_id)   -> (stats dict, display frame)
     get_camera_session_stats(session_id)      -> last stats dict, or None
     close_camera_session(session_id)          -> free the model and release the GPU claim
     evict_idle_camera_sessions()              -> close sessions that stopped sending frames
@@ -69,7 +69,22 @@ def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
 
 _prewarm_lock = threading.Lock()
 _model_prewarmed: bool = False
-_global_trace_px: Optional[float] = None
+
+def _get_config_trace_px() -> float:
+    try:
+        import yaml
+        from app.ml.tube_analyzer import CONFIG_PATH
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            val = cfg.get("trace_px")
+            if val is not None:
+                return float(val)
+    except Exception:
+        pass
+    return 100.0
+
+_global_trace_px: Optional[float] = _get_config_trace_px()
 
 
 def prewarm_camera_model() -> None:
@@ -201,8 +216,9 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
             except Exception as e:
                 logger.warning(f"Stored ROI invalid: {e}")
-        if _global_trace_px is not None and hasattr(_shared_camera_analyzer, "set_trace_px"):
-            _shared_camera_analyzer.set_trace_px(_global_trace_px)
+        current_trace_px = _global_trace_px if _global_trace_px is not None else _get_config_trace_px()
+        if hasattr(_shared_camera_analyzer, "set_trace_px"):
+            _shared_camera_analyzer.set_trace_px(current_trace_px)
 
         session = {
             "analyzer": _shared_camera_analyzer,
@@ -214,7 +230,7 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             "last_annotated_frame": None,
             "roi_points": list(_global_roi_points),
             "roi_frame_size": _global_roi_frame_size,
-            "trace_px": _global_trace_px,
+            "trace_px": current_trace_px,
             "load_error": None,
         }
         _sessions[session_id] = session
@@ -275,7 +291,8 @@ def analyze_camera_frame(
     frame_seq: Optional[int] = None,
     **kwargs,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Run the model on one camera frame (with optional aligned depth frame). Returns (stats, clean_frame).
+    """Run the model on one camera frame (with optional aligned depth frame). Returns
+    ``(stats, display_frame)``; when ``annotate=True`` that image is the wheel's drawing.
 
     ``fps`` is the wheel's own processing speed (``result["fps"]``, the number the CLI shows).
     ``frame_time_ms`` / ``model_fps`` are measured around TubeAnalyzer.analyze_frame() only
@@ -285,9 +302,8 @@ def analyze_camera_frame(
     ``depth_frame`` provides uint16 depth in mm aligned to CAM_A (RGB), enabling 3D positions
     (xyz_m, z_m, z_mm) and true physical diameter (width_mm_depth) without needing a calibration ruler.
 
-    ``annotate=True`` makes the wheel draw the boxes inside the same call and stores the image in
-    session["last_annotated_frame"]; it is off by default because drawing is wasted work
-    when the frontend draws boxes itself from stats["detections"]."""
+    ``annotate=True`` makes the wheel draw masks, detections, wrapper and traces inside the same
+    call and returns that exact image with its result. This keeps the live preview aligned."""
     if app_state.get_mode() == "TRAINING":
         return _error_stats(session_id, "Training is in progress -- camera inference paused", status="paused"), frame
 
@@ -323,7 +339,7 @@ def analyze_camera_frame(
             return _error_stats(session_id, "Camera session was closed", session["frames_processed"]), frame
 
         frame_number = frame_seq if frame_seq is not None else (session["frames_processed"] + 1)
-        trace_px = kwargs.get("trace_px") if kwargs.get("trace_px") is not None else session.get("trace_px", _global_trace_px)
+        trace_px = kwargs.get("trace_px") if kwargs.get("trace_px") is not None else (session.get("trace_px") or _global_trace_px or _get_config_trace_px())
         try:
             stats = analyzer.infer(
                 frame, frame_number, annotate=annotate, depth=depth_frame, trace_px=trace_px
@@ -333,9 +349,10 @@ def analyze_camera_frame(
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
             return _error_stats(session_id, str(e), session["frames_processed"]), frame
 
-        clean_frame = analyzer.get_clean_frame(frame)
+        display_frame = analyzer.get_clean_frame(frame)
         if annotate:
-            session["last_annotated_frame"] = analyzer.draw_annotations(frame)   # the wheel's picture of THIS frame
+            display_frame = analyzer.draw_annotations(frame)   # the wheel's picture of THIS frame
+            session["last_annotated_frame"] = display_frame
 
     stats.update(
         status="processing",
@@ -343,7 +360,7 @@ def analyze_camera_frame(
         frames_processed=session["frames_processed"],
     )
     session["last_stats"] = stats
-    return stats, clean_frame
+    return stats, display_frame
 
 
 def set_camera_roi(session_id: Optional[str] = None, points: Any = None, frame_size: Optional[Tuple[int, int]] = None) -> None:

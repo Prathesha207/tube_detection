@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { AnomalyStatus, TubeEntity, DetectionMetrics, LogEntry } from '../types';
 import {
   ChevronLeft,
@@ -9,7 +9,6 @@ import { Badge, IconButton } from './ui';
 import { useInferenceStore } from '../store/inferenceStore';
 import { CameraImageAdjustmentsCard } from './CameraImageAdjustmentsCard';
 import { CameraConfig } from '../types';
-import { getApiBaseUrl } from '../lib/api';
 
 interface DetectionDrawerProps {
   isOpen: boolean;
@@ -45,24 +44,6 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   onUpdateCameraConfig,
 }) => {
   const mlStats = useInferenceStore((state) => state.stats);
-
-  const [tracePxInput, setTracePxInput] = useState<string>(
-    mlStats.trace_px != null ? String(mlStats.trace_px) : ''
-  );
-
-  const handleApplyTrace = async (val: number) => {
-    const px = val > 0 ? val : null;
-    useInferenceStore.getState().setStats({ trace_px: px });
-    try {
-      if (isCameraSource) {
-        await fetch(`${getApiBaseUrl()}/oak/trace_px${px ? `?trace_px=${px}` : ''}`, { method: 'POST' });
-      } else if (mlStats.session_id) {
-        await fetch(`${getApiBaseUrl()}/video/trace_px/${mlStats.session_id}${px ? `?trace_px=${px}` : ''}`, { method: 'POST' });
-      }
-    } catch (err) {
-      console.warn('Failed to update trace_px on backend:', err);
-    }
-  };
 
   // Format uptime in hh:mm:ss
   const formatTime = (seconds: number) => {
@@ -168,6 +149,69 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
     return anomalyStatus.subMessage || 'All tube ends paired & balanced';
   }, [bigger, smaller, anomalyStatus, tubes.length]);
 
+  // Group tube ends by physical tube identity (Tube 1 = Blue, Tube 2 = White)
+  const tubeTelemetry = useMemo(() => {
+    const active = tubes.filter(
+      (t) => !(t as any).held && t.status !== 'COASTED' && !t.is_coasting
+    );
+
+    const findEnd = (color: 'blue' | 'white', role: 'HEAD' | 'TAIL') => {
+      const byColor = active.find(
+        (t) => String(t.tube_color || '').toLowerCase() === color && t.role === role
+      );
+      if (byColor) return byColor;
+      const targetPairId = color === 'blue' ? 1 : 2;
+      return active.find((t) => t.pair_id === targetPairId && t.role === role);
+    };
+
+    const blueHead = findEnd('blue', 'HEAD');
+    const blueTail = findEnd('blue', 'TAIL');
+    const whiteHead = findEnd('white', 'HEAD');
+    const whiteTail = findEnd('white', 'TAIL');
+
+    const formatZ = (end?: TubeEntity) => {
+      if (!end || typeof end.z_mm !== 'number' || end.z_mm <= 0) return '-';
+      return `${end.z_mm.toFixed(0)}mm`;
+    };
+
+    const getStatus = (head?: TubeEntity, tail?: TubeEntity) => {
+      if (head?.size && tail?.size && head.size === tail.size) {
+        return head.size === 'SAME' ? 'Same' : head.size;
+      }
+      if (typeof head?.z_mm === 'number' && typeof tail?.z_mm === 'number' && head.z_mm > 0 && tail.z_mm > 0) {
+        const diff = Math.abs(head.z_mm - tail.z_mm);
+        if (diff <= 15) return 'Same';
+        return `Δ${diff.toFixed(0)}mm`;
+      }
+      return null;
+    };
+
+    return [
+      {
+        id: 1,
+        name: 'TUBE 1',
+        colorName: 'BLUE',
+        badgeColor: 'text-sky-400 bg-sky-500/15 border-sky-500/30',
+        dotColor: 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.8)]',
+        headZ: formatZ(blueHead),
+        tailZ: formatZ(blueTail),
+        hasData: Boolean(blueHead || blueTail),
+        status: getStatus(blueHead, blueTail),
+      },
+      {
+        id: 2,
+        name: 'TUBE 2',
+        colorName: 'WHITE',
+        badgeColor: 'text-slate-100 bg-white/15 border-white/30',
+        dotColor: 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]',
+        headZ: formatZ(whiteHead),
+        tailZ: formatZ(whiteTail),
+        hasData: Boolean(whiteHead || whiteTail),
+        status: getStatus(whiteHead, whiteTail),
+      },
+    ];
+  }, [tubes]);
+
   if (!isOpen) {
     return (
       <button
@@ -203,6 +247,15 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5">
+            {mlStats.wrapper && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 flex items-center gap-1 shrink-0"
+                title={mlStats.trace_px ? `Wrapper Detected • Tracing ${mlStats.trace_px}px` : 'Wrapper Detected'}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-500 dark:bg-purple-400 animate-pulse" />
+                WRAPPER{mlStats.trace_px ? ` ${mlStats.trace_px}px` : ''}
+              </span>
+            )}
             <Badge
               variant={
                 isWarming
@@ -356,23 +409,29 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                             <span className="font-bold text-[var(--text-secondary)] min-w-[20px]">
                               #{idx + 1}
                             </span>
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-black ${isHead ? 'bg-sky-500 text-white' : 'bg-indigo-500 text-white'
-                              }`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                              String(d.tube_color || '').toLowerCase() === 'blue'
+                                ? (isHead ? 'bg-sky-500 text-white' : 'bg-sky-600 text-white')
+                                : (isHead ? 'bg-white text-slate-900 border border-slate-200' : 'bg-slate-100 text-slate-900 border border-slate-300')
+                            }`}>
                               {d.role || 'END'}
                             </span>
                             {d.tube_color && (
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${d.tube_color === 'blue'
-                                ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-900 border border-slate-300'}`}>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                                String(d.tube_color || '').toLowerCase() === 'blue'
+                                  ? 'bg-sky-700 text-white'
+                                  : 'bg-white text-slate-900 border border-slate-300'
+                              }`}>
                                 {d.tube_color}
                               </span>
                             )}
-                            <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-80 whitespace-nowrap">
+                            <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-80 whitespace-nowrap ml-1">
                               ID:{d.displayId ?? d.id}
                             </span>
                           </div>
 
                           {/* Width, Size & Confidence */}
-                          <div className="flex items-center gap-2 shrink-0 text-[10px] font-mono text-[var(--text-secondary)]">
+                          <div className="flex items-center gap-2 shrink-0 text-[10px] font-mono text-[var(--text-secondary)] ml-auto">
                             <span>
                               w:{' '}
                               {typeof (d.width_mm_depth ?? d.width_mm) === 'number' && (d.width_mm_depth ?? d.width_mm)! > 0 ? (
@@ -468,64 +527,52 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                 </div>
               </div>
 
-              {/* WRAPPER & TRACE DISTANCE CONTROL */}
-              <div className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-main)]/50 flex flex-col gap-2">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-primary)]">
-                  <span className="flex items-center gap-1.5 font-bold">
-                    <span className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_6px_rgba(192,132,252,0.8)]" />
-                    <span>Wrapper Trace:</span>
-                  </span>
-                  <span className="text-[10.5px] font-mono font-bold text-purple-600 dark:text-purple-300">
-                    {mlStats.trace_px ? `${mlStats.trace_px}px` : 'Disabled (0px)'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    max={1000}
-                    step={10}
-                    placeholder="px distance"
-                    value={tracePxInput}
-                    onChange={(e) => setTracePxInput(e.target.value)}
-                    className="w-24 px-2 py-1 text-xs font-mono rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-purple-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleApplyTrace(tracePxInput ? Number(tracePxInput) : 0)}
-                    className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-purple-600 hover:bg-purple-500 text-white shadow-xs cursor-pointer transition-all"
-                  >
-                    Set
-                  </button>
-                  <div className="flex items-center gap-1 ml-auto">
-                    {[0, 100, 150, 200].map((val) => (
-                      <button
-                        key={val}
-                        type="button"
-                        onClick={() => {
-                          setTracePxInput(val === 0 ? '' : String(val));
-                          handleApplyTrace(val);
-                        }}
-                        className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded cursor-pointer transition-all ${
-                          (mlStats.trace_px ?? 0) === val
-                            ? 'bg-purple-600 text-white shadow-xs'
-                            : 'bg-[var(--bg-card)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-color)]'
-                        }`}
+              {/* TUBE 1 & TUBE 2 Z-DEPTH TELEMETRY CARD */}
+              {tubeTelemetry.some((t) => t.hasData) && (
+                <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-card)]/80 p-2 font-mono shadow-xs">
+                  <div className="flex flex-col gap-1.5">
+                    {tubeTelemetry.map((tube) => (
+                      <div
+                        key={tube.name}
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)]/70 text-xs"
                       >
-                        {val === 0 ? 'Off' : `${val}`}
-                      </button>
+                        {/* Tube Label */}
+                        <div className="flex items-center gap-1.5 shrink-0 min-w-[105px]">
+                          <span className={`w-2 h-2 rounded-full ${tube.dotColor}`} />
+                          <span className="font-extrabold text-[var(--text-primary)] text-[11px] tracking-wide">
+                            {tube.name}
+                          </span>
+                          <span className={`px-1 py-0.2 rounded text-[8px] font-black uppercase border ${tube.badgeColor}`}>
+                            {tube.colorName}
+                          </span>
+                        </div>
+
+                        {/* Head Z | Tail Z */}
+                        <div className="flex items-center gap-2 text-[11px] shrink-0 font-mono">
+                          <span className="text-[var(--text-secondary)]">
+                            Head Z: <strong className="text-cyan-600 dark:text-cyan-300 font-bold">{tube.headZ}</strong>
+                          </span>
+                          <span className="text-[var(--border-color)] opacity-70">│</span>
+                          <span className="text-[var(--text-secondary)]">
+                            Tail Z: <strong className="text-cyan-600 dark:text-cyan-300 font-bold">{tube.tailZ}</strong>
+                          </span>
+                        </div>
+
+                        {/* Match Status */}
+                        <div className="shrink-0 text-right min-w-[45px]">
+                          {tube.status ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+                              ({tube.status})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-[var(--text-secondary)] opacity-40">-</span>
+                          )}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
-                {(mlStats.wrapper || (mlStats.traces && mlStats.traces.length > 0)) && (
-                  <div className="flex items-center justify-between text-[9.5px] font-mono text-purple-700 dark:text-purple-300 pt-1 border-t border-[var(--border-color)]">
-                    <span>
-                      Wrapper: {mlStats.wrapper ? `Detected (${Math.round((mlStats.wrapper.conf ?? 0) * 100)}%)` : 'Not seen'}
-                    </span>
-                    <span>Traces: {mlStats.traces?.length ?? 0}</span>
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* VERDICT BANNER (In Yellow/Amber) */}
               {verdictText && (

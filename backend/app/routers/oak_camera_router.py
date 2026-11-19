@@ -724,9 +724,9 @@ def set_oak_trace_px(trace_px: Optional[float] = Query(None)):
 @router.post("/inference/start/{session_id}")
 async def start_inference(session_id: str, body: InferenceStartBody = InferenceStartBody()):
     try:
-        if body.trace_px is not None:
-            from app.ml.camera_inference_service import set_camera_trace_px
-            set_camera_trace_px(session_id=session_id, trace_px=body.trace_px)
+        from app.ml.camera_inference_service import set_camera_trace_px, _get_config_trace_px
+        trace_val = body.trace_px if body.trace_px is not None else _get_config_trace_px()
+        set_camera_trace_px(session_id=session_id, trace_px=trace_val)
         # If camera device is not running and offline is False, auto-start camera
         if not body.offline and not oak_camera_service._is_running:
             try:

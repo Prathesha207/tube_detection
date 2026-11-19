@@ -101,6 +101,11 @@ export const useInferenceStore = create<InferenceStoreState>((set) => ({
       stats: {
         ...state.stats,
         ...newStats,
+        // Strictly prevent ghost masks and stale overlays from persisting when objects move or leave frame
+        wrapper: newStats.wrapper !== undefined ? newStats.wrapper : null,
+        traces: newStats.traces !== undefined ? newStats.traces : [],
+        tubes: newStats.tubes !== undefined ? newStats.tubes : [],
+        detections: newStats.detections !== undefined ? newStats.detections : [],
         latency_ms,
         frame_time_ms,
       },

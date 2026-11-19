@@ -82,7 +82,7 @@ export const cameraService = {
   },
 
   async startLiveInference(sessionId: string = "live", tracePx?: number | null) {
-    const payload = tracePx != null && tracePx > 0 ? { trace_px: tracePx } : {};
+    const payload = { trace_px: tracePx != null && tracePx > 0 ? tracePx : 100 };
     const res = await api.post(`/oak/inference/start/${sessionId}`, payload);
     return res.data;
   },

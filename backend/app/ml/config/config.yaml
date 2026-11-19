@@ -22,8 +22,8 @@ class_conf:
 # 3. overlap removal inside the model (unchanged)
 iou: 0.7
 
-# 4. confirmation (unchanged)
-min_frames: 5
+# 4. confirmation (instant single-frame detection for real-time live sync, no multi-frame lag)
+min_frames: 1
 min_frames_tail: null
 
 # 5. duplicate cleanup for heads/tails (unchanged)
@@ -34,11 +34,11 @@ cross_role_contain: 0
 max_heads: 0
 max_tails: 0
 
-# 6. tubes (unchanged)
+# 6. tubes (immediate display, zero hold to strictly prevent ghost masks)
 tube_merge_any_class: true
 track_tubes: true
-tube_min_frames: 3
-tube_hold: 2
+tube_min_frames: 1
+tube_hold: 0
 tube_match_iou: 0.2
 tube_match_grow: 15
 
@@ -57,7 +57,7 @@ depth_scale: 0.001        # depth video in millimetres
 depth_smooth: 15          # XYZ = median over the last 15 frames of the same end / trace
 
 # 9. trace out of the wrapper: pixels ALONG the tube, from where it leaves the wrapper
-trace_px: null
+trace_px: 100
 trace_wrapper_gap: 4      # px: start this far outside the wrapper edge
 trace_path_step_px: 0     # e.g. 25 -> also XYZ every 25 px along the trace ("path_xyz")
 

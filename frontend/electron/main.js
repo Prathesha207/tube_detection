@@ -348,23 +348,33 @@ function createWindow() {
    KILL WHATEVER HOLDS PORT 8000 (Windows netstat method)
 ========================================================= */
 function killPortHolderSync(port) {
-  if (process.platform !== "win32") return
-  try {
-    // netstat -ano gives lines like: TCP  127.0.0.1:8000  ...  LISTENING  <pid>
-    const out = execSync(`netstat -ano -p TCP 2>nul`, { encoding: "utf8", timeout: 3000 })
-    const lines = out.split("\n")
-    for (const line of lines) {
-      if (line.includes(`:${port}`) && line.includes("LISTENING")) {
-        const parts = line.trim().split(/\s+/)
-        const pid = parseInt(parts[parts.length - 1], 10)
-        if (pid && !isNaN(pid) && pid !== process.pid) {
-          console.log(`Force-killing PID ${pid} which holds port ${port}`)
-          try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" }) } catch (e) {}
+  if (process.platform === "win32") {
+    try {
+      // netstat -ano gives lines like: TCP  127.0.0.1:8000  ...  LISTENING  <pid>
+      const out = execSync(`netstat -ano -p TCP 2>nul`, { encoding: "utf8", timeout: 3000 })
+      const lines = out.split("\n")
+      for (const line of lines) {
+        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/)
+          const pid = parseInt(parts[parts.length - 1], 10)
+          if (pid && !isNaN(pid) && pid !== process.pid) {
+            console.log(`Force-killing PID ${pid} which holds port ${port}`)
+            try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" }) } catch (e) {}
+          }
         }
       }
+    } catch (e) {
+      // netstat failed — non-fatal, continue anyway
     }
-  } catch (e) {
-    // netstat failed — non-fatal, continue anyway
+  } else {
+    // Linux / POSIX port cleanup
+    try {
+      execSync(`fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: "ignore", timeout: 3000 })
+    } catch (e) {
+      try {
+        execSync(`kill -9 $(lsof -t -i:${port}) 2>/dev/null || true`, { stdio: "ignore", timeout: 3000 })
+      } catch (e2) {}
+    }
   }
 }
 
@@ -427,8 +437,21 @@ async function startBackend() {
     shell: false,
     detached: process.platform !== "win32",
     windowsHide: true,
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   })
+
+  if (backendProcess.stdout) {
+    backendProcess.stdout.on("data", (d) => {
+      const msg = d.toString().trim()
+      if (msg) console.log(`[backend] ${msg}`)
+    })
+  }
+  if (backendProcess.stderr) {
+    backendProcess.stderr.on("data", (d) => {
+      const msg = d.toString().trim()
+      if (msg) console.error(`[backend error] ${msg}`)
+    })
+  }
 
   if (backendProcess && backendProcess.pid) {
     saveBackendPid(backendProcess.pid)

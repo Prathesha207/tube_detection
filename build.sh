@@ -12,7 +12,7 @@ else
   cd "$SCRIPT_DIR/vision-ai-backend"
 fi
 chmod +x build_linux_desktop.sh
-./build_linux_desktop.sh
+./build_linux_desktop.sh "$@"
 
 echo ""
 echo "======================================================="

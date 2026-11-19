@@ -73,31 +73,42 @@ else
   echo "Building with CPU-compatible PyTorch. Set USE_CUDA=1 to force CUDA."
 fi
 
-cd "$BACKEND_DIR"
-rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
+SKIP_PYINSTALLER="${SKIP_PYINSTALLER:-0}"
+for arg in "$@"; do
+  if [[ "$arg" == "--skip-pyinstaller" ]]; then
+    SKIP_PYINSTALLER=1
+  fi
+done
 
-pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
-  --distpath "$BACKEND_DIR/dist" \
-  --workpath "$BACKEND_DIR/build" \
-  --specpath "$BACKEND_DIR" \
-  --add-data "$BACKEND_DIR/app/ml/model:app/ml/model" \
-  --add-data "$BACKEND_DIR/app/ml/config:app/ml/config" \
-  --add-data "$BACKEND_DIR/alembic:alembic" \
-  --collect-all app \
-  --collect-all fastapi \
-  --collect-all starlette \
-  --collect-all uvicorn \
-  --collect-all sqlalchemy \
-  --collect-all cv2 \
-  --collect-all torch \
-  --collect-all torchvision \
-  --collect-all ultralytics \
-  --collect-all sympy \
-  --collect-all depthai \
-  --collect-all av \
-  --collect-all scipy \
-  --collect-all imageio_ffmpeg \
-  --collect-all head_tail_analyzer
+if [[ "$SKIP_PYINSTALLER" == "1" && -f "$BACKEND_DIR/dist/backend/backend" ]]; then
+  echo "Reusing existing backend dist/backend/backend..."
+else
+  cd "$BACKEND_DIR"
+  rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
+
+  pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
+    --distpath "$BACKEND_DIR/dist" \
+    --workpath "$BACKEND_DIR/build" \
+    --specpath "$BACKEND_DIR" \
+    --add-data "$BACKEND_DIR/app/ml/model:app/ml/model" \
+    --add-data "$BACKEND_DIR/app/ml/config:app/ml/config" \
+    --add-data "$BACKEND_DIR/alembic:alembic" \
+    --collect-all app \
+    --collect-all fastapi \
+    --collect-all starlette \
+    --collect-all uvicorn \
+    --collect-all sqlalchemy \
+    --collect-all cv2 \
+    --collect-all torch \
+    --collect-all torchvision \
+    --collect-all ultralytics \
+    --collect-all sympy \
+    --collect-all depthai \
+    --collect-all av \
+    --collect-all scipy \
+    --collect-all imageio_ffmpeg \
+    --collect-all head_tail_analyzer
+fi
 
 # Strip non-runtime development files directly in dist/backend
 chmod +x "$BACKEND_DIR/dist/backend/backend"

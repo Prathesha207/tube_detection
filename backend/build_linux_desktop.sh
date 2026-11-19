@@ -118,7 +118,6 @@ rm -rf "$BACKEND_DIR/dist/backend/_internal/triton" 2>/dev/null || true
 
 cd "$FRONTEND_DIR"
 npm ci --include=optional 2>/dev/null || npm install --include=optional
-node patch_electron_builder.js
 npm run "package:linux:$ELECTRON_ARCH"
 
 echo

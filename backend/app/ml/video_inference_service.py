@@ -59,8 +59,8 @@ from .tube_analyzer import (
 logger = setup_logger("tube-video-inference")
 
 _ML_DIR = Path(__file__).resolve().parent
-_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
-_CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
+_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
+_CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 
 _FINISHED_STATES = ("completed", "stopped", "error")
 _JPEG_QUALITY = 85
@@ -509,7 +509,7 @@ class VideoInferenceService:
                     continue
 
                 try:
-                    last_stats = analyzer.infer(frame, frame_number, annotate=writer is not None)   # <- the ONE ML call
+                    last_stats = analyzer.infer(frame, frame_number, annotate=True)   # <- always draw annotated picture
                 except Exception as frame_err:
                     raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
                 analysis = analyzer._last_analysis
@@ -544,15 +544,16 @@ class VideoInferenceService:
                     except Exception as h_write_err:
                         logger.warning(f"Session {session_id}: history write error on frame {frame_number}: {h_write_err}")
 
-                # Live stream: clean frame; the frontend draws boxes from stats["detections"].
+                # Live stream: send the annotated picture drawn by the wheel (with exact, stable
+                # blue/white tubes, boxes and callout cards identical to CLI --preview).
                 try:
-                    clean_f = analyzer.get_clean_frame(frame)
-                    h, w = clean_f.shape[:2]
+                    stream_f = annotated if annotated is not None else analyzer.get_clean_frame(frame)
+                    h, w = stream_f.shape[:2]
                     if w > 1280:
                         new_h = int(h * (1280.0 / w))
-                        preview_f = cv2.resize(clean_f, (1280, new_h), interpolation=cv2.INTER_AREA)
+                        preview_f = cv2.resize(stream_f, (1280, new_h), interpolation=cv2.INTER_AREA)
                     else:
-                        preview_f = clean_f
+                        preview_f = stream_f
                     encoded, buffer = cv2.imencode(".jpg", preview_f,
                                                    [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
                     if encoded:

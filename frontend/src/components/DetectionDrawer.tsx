@@ -295,6 +295,15 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                   <span>Detections (Index &bull; Class)</span>
                   <span>Confidence</span>
                 </div>
+                {/* {Object.entries({ ...(mlStats.class_counts || {}), ...(mlStats.tube_counts || {}) }).length > 0 && (
+                  <div className="flex flex-wrap gap-1 px-1" aria-label="Current model class counts">
+                    {Object.entries({ ...(mlStats.class_counts || {}), ...(mlStats.tube_counts || {}) }).map(([name, count]) => (
+                      <span key={name} className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-mono text-[var(--text-secondary)] border border-[var(--border-color)]">
+                        {name}: {count}
+                      </span>
+                    ))}
+                  </div>
+                )} */}
 
                 <div
                   className={`flex flex-col gap-1 justify-start pr-0.5 transition-all duration-200 ${
@@ -332,6 +341,12 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                               }`}>
                               {d.role || 'END'}
                             </span>
+                            {d.tube_color && (
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${d.tube_color === 'blue'
+                                ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-900 border border-slate-300'}`}>
+                                {d.tube_color}
+                              </span>
+                            )}
                             <span className="text-[10px] font-mono text-[var(--text-secondary)] opacity-80 whitespace-nowrap">
                               ID:{d.displayId ?? d.id}
                             </span>

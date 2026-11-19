@@ -69,6 +69,10 @@ _REQUIRED_WHEEL_FUNCS = (
     "analyze_frame", "StreamState", "configure_for_model", "load_stream_config",
     "ModelManager", "load_model", "unload_model", "open_video", "depth3d", "DEFAULTS",
 )
+_REQUIRED_WHEEL_SETTINGS = (
+    "class_conf", "color_source", "color_gate", "output_polygons", "output_tubes",
+    "polygon_epsilon", "draw_tubes",
+)
 
 logger = logging.getLogger("tube-analyzer")
 
@@ -81,6 +85,11 @@ try:
     import head_tail_analyzer as _hta
     from head_tail_analyzer import run_video_frames as _wheel_rvf
     _missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(_wheel_rvf, n)]
+    _missing.extend(
+        f"DEFAULTS.{name}"
+        for name in _REQUIRED_WHEEL_SETTINGS
+        if not hasattr(_wheel_rvf, "DEFAULTS") or name not in _wheel_rvf.DEFAULTS
+    )
     if "analyze_frame" in dir(_wheel_rvf):
         import inspect
         if "depth" not in inspect.signature(_wheel_rvf.analyze_frame).parameters:
@@ -105,8 +114,8 @@ if rvf is not None:
 
 
 _ML_DIR = Path(__file__).resolve().parent
-MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
-CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
+MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
+CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 _MODEL_MANAGER = rvf.ModelManager(verbose=False) if rvf is not None else None
 _MODEL_MTIMES: Dict[str, float] = {}
 
@@ -231,11 +240,13 @@ class FrameAnalysis:
 
 # Settings worth printing / diffing against the CLI when two runs disagree.
 _SETTINGS_TO_REPORT = (
-    "model_path", "device", "conf", "conf_head", "conf_tail", "iou", "scale", "imgsz", "tile",
+    "model_path", "device", "conf", "conf_head", "conf_tail", "class_conf", "iou", "scale", "imgsz", "tile",
     "tile_overlap", "merge_iou", "merge_contain", "merge_gap", "cross_role_contain", "gray",
     "stride", "min_frames", "min_frames_tail", "max_dist", "max_dist_tail", "max_missed",
     "max_heads", "max_tails", "width_method", "width_from", "min_ratio", "mm_per_px",
     "attach_gap", "max_disagree", "draw_masks", "draw_roi", "box_fill", "draw_scale",
+    "color_source", "color_gate", "tube_color", "output_polygons", "output_tubes",
+    "polygon_epsilon", "draw_tubes",
     "camera_matrix", "calib_width", "calib_height", "dist_coeffs", "depth_scale",
     "depth_min_mm", "depth_max_mm", "depth_smooth", "depth_video",
 )

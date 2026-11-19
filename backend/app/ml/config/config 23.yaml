@@ -1,0 +1,44 @@
+# config_compare.yaml - same detections as infer_video.py (raw model output)
+model_path: C:/Users/EmageVision/Documents/tomo_tube_phase2/priya_weights/tube_colour_from_epoch40_best.pt
+video: C:/Users/EmageVision/Documents/tomo_tube_phase2/videos/video5_clear.mp4
+device: "0"
+ 
+# 1. same model input as infer_video.py
+gray: false
+tile: 0
+imgsz: 1280
+scale: 1.0
+ 
+# 2. same thresholds as YOLO_CONF in infer_video.py
+conf: 0.3
+class_conf:
+  head_white: 0.5
+  head_blue: 0.5
+  tail_white: 0.2
+  tail_blue: 0.2
+  white_tube: 0.3
+  blue_tube: 0.3
+ 
+# 3. same overlap removal: Ultralytics' default
+iou: 0.7
+ 
+# 4. no confirmation wait: every detection is shown from its first frame
+min_frames: 5
+min_frames_tail: null
+ 
+# 5. no duplicate cleanup
+merge_iou: 0.3           # an overlap can never reach 1.01, so nothing is merged
+merge_contain: 0.6
+merge_gap: 0              # don't join split pieces
+cross_role_contain: 0     # don't drop a head box that sits on a tail box (or the reverse)
+max_heads: 0
+max_tails: 0
+ 
+tube_merge_any_class: true   # white + blue on the same tube = one tube
+track_tubes: true            # stable id + class vote
+tube_min_frames: 3           # a tube is shown after 3 sightings (drops one-frame ghosts)
+tube_hold: 5                 # keep a lost tube on screen for up to 5 frames
+tube_match_iou: 0.3          # overlap needed to be "the same tube" as last frame
+
+# 6. whole frame, no ROI
+roi_json: null

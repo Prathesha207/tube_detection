@@ -148,6 +148,7 @@ if (-not $SkipPyInstaller -or -not (Test-Path (Join-Path $BackendDir 'dist\backe
     $PyInstallerArgs += @(
       '--copy-metadata', 'torchvision',
       '--copy-metadata', 'ultralytics',
+      '--copy-metadata', 'head_tail_analyzer',
       '--collect-all', 'app', '--collect-all', 'fastapi', '--collect-all', 'starlette', '--collect-all', 'uvicorn',
       '--collect-all', 'sqlalchemy', '--collect-all', 'cv2', '--collect-all', 'torch', '--collect-all', 'torchvision',
       '--collect-all', 'ultralytics', '--collect-all', 'depthai',

@@ -140,7 +140,7 @@ def model_status():
     Returns the current status of the model on disk vs in-memory:
     shows whether a new .pt model file has been placed on disk and if reload is pending.
     """
-    from app.ml.tube_analyzer import MODEL_PATH, _MODEL_MTIMES
+    from app.ml.tube_analyzer import CONFIG_PATH, MODEL_PATH, _MODEL_MTIMES
     from app.ml.camera_inference_service import _shared_camera_analyzer
     from app.ml.video_inference_service import video_inference_service
 
@@ -159,6 +159,15 @@ def model_status():
 
     return {
         "model_path": model_path,
+        "configured_model_path": MODEL_PATH,
+        "config_path": CONFIG_PATH,
+        "active_model_path": getattr(shared_analyzer, "model_path", None),
+        "active_model_classes": getattr(getattr(shared_analyzer, "model", None), "names", None),
+        "active_analyzer_settings": (
+            shared_analyzer.describe_settings()
+            if shared_analyzer and hasattr(shared_analyzer, "describe_settings")
+            else None
+        ),
         "exists": exists,
         "size_mb": round(file_size_bytes / (1024 * 1024), 2) if exists else 0,
         "disk_mtime": disk_mtime,

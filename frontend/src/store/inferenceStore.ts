@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TubeDetection } from '../types';
+import type { TubeDetection, TubeMask } from '../types';
 
 export type { TubeDetection };
 export type Detection = TubeDetection;
@@ -27,6 +27,11 @@ export interface InferenceStats {
   heads_total?: number;
   tails_total?: number;
   detections: TubeDetection[];
+  tubes?: TubeMask[];
+  tubes_count?: number;
+  tube_counts?: Record<string, number>;
+  class_counts?: Record<string, number>;
+  class_totals?: Record<string, number>;
   bigger_tube: TubeDetection | null;
   smaller_tube: TubeDetection | null;
 
@@ -63,6 +68,11 @@ const initialStats: InferenceStats = {
   heads_count: 0,
   tails_count: 0,
   detections: [],
+  tubes: [],
+  tubes_count: 0,
+  tube_counts: {},
+  class_counts: {},
+  class_totals: {},
   bigger_tube: null,
   smaller_tube: null,
   video_width: 0,

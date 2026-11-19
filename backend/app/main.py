@@ -133,11 +133,11 @@ def _preload_model_background():
 
         ml_dir = os.path.join(os.path.dirname(__file__), "ml")
         model_candidates = [
-            resource_path("app/ml/model/best.pt"),
-            os.path.join(ml_dir, "model", "best.pt"),
+            resource_path("app/ml/model/best 33.pt"),
+            os.path.join(ml_dir, "model", "best 33.pt"),
         ]
         if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best.pt"))
+            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best 33.pt"))
 
         resolved_model = next((c for c in model_candidates if c and os.path.exists(c)), None)
 
@@ -187,7 +187,7 @@ def _preload_model_background():
                 except Exception as warm_err:
                     logger.warning(f"[STARTUP] Warm-up inference failed for {h_w}: {warm_err}")
         else:
-            logger.info("[STARTUP] TubeAnalyzer or model best.pt not found — skipping preload.")
+            logger.info("[STARTUP] TubeAnalyzer or model best 33.pt not found — skipping preload.")
     except Exception as e:
         logger.error(f"[STARTUP] Model preload failed: {e}", exc_info=True)
     finally:

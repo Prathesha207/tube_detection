@@ -32,8 +32,8 @@ from .tube_analyzer import (
 logger = setup_logger("tube-camera-inference")
 
 _ML_DIR = Path(__file__).resolve().parent
-_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best.pt")
-_CONFIG_PATH = str(_ML_DIR / "config" / "config.yaml")
+_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
+_CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 
 _SESSION_IDLE_TIMEOUT_SEC = 300     # no frame for this long -> session is closed, GPU released
 _IDLE_SWEEP_INTERVAL_SEC = 30       # how often the background thread looks for idle sessions

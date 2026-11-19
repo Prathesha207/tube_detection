@@ -291,11 +291,16 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   }, [streamError, isCameraSource, isStreaming, isRunning, videoSessionId, streamCacheBuster]);
 
   const effectiveFramesProcessed = framesProcessed || backendStats?.frames_processed || 0;
-  const hasInferenceResult = effectiveFramesProcessed > 0 && tubes.length > 0;
+  const hasInferenceResult = effectiveFramesProcessed > 0 && (
+    tubes.length > 0 ||
+    (backendStats?.detections?.length ?? 0) > 0 ||
+    (backendStats?.tubes?.length ?? 0) > 0
+  );
 
   const hasDetections = Boolean(
     tubes.length > 0 ||
     (backendStats?.detections && backendStats.detections.length > 0) ||
+    (backendStats?.tubes && backendStats.tubes.length > 0) ||
     ((backendStats?.heads_count || 0) > 0) ||
     ((backendStats?.tails_count || 0) > 0) ||
     ((backendStats?.heads_total || 0) > 0) ||
@@ -764,11 +769,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: Shown in INFERENCE and BLEND modes, and always for video files */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (isVideoSource || feedMode === 'inference' || feedMode === 'blend') && tubes.length > 0 && (
+            {/* AI Bounding Boxes: For camera, rendered via SVG/HTML overlay. For video files, the stream is already natively annotated by the ML engine (identical to CLI --preview) with stable blue/white tube contours and callout cards */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && !isVideoSource && (tubes.length > 0 || (backendStats?.tubes?.length ?? 0) > 0) && (
               <div className={`absolute inset-0 ${isRoiActive || feedMode === 'blend' ? 'pointer-events-none' : 'pointer-events-auto'} ${isRoiActive ? 'opacity-40' : ''}`.trim()}>
                 <BoundingBoxOverlay
                   tubes={tubes}
+                  tubeMasks={backendStats?.tubes || []}
+                  frameWidth={effectiveFw}
+                  frameHeight={effectiveFh}
                   selectedTubeId={selectedTubeId}
                   onSelectTube={onSelectTube}
                   labelMode={labelMode}

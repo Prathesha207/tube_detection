@@ -12,6 +12,11 @@ export interface TubeDetection {
   role: TubeRole;
   conf?: number;
   class?: string;
+  class_now?: string;
+  tube_color?: 'white' | 'blue' | string | null;
+  color_from?: string | null;
+  sat?: number | null;
+  polygon?: [number, number][] | null;
   status?: string;
   bbox?: [number, number, number, number]; // [x, y, width, height] px, top-left origin
   width_px?: number | null;
@@ -33,11 +38,26 @@ export interface TubeDetection {
   ratio?: number | null;
 }
 
+export interface TubeMask {
+  index: number;
+  class: string;
+  tube_color?: 'white' | 'blue' | string | null;
+  conf?: number;
+  bbox?: [number, number, number, number];
+  polygon?: [number, number][] | null;
+  polygons?: [number, number][][];
+}
+
 export interface TubeFrameResult {
   frame: number;
   heads_count: number;
   tails_count: number;
   detections: TubeDetection[];
+  tubes?: TubeMask[];
+  tubes_count?: number;
+  tube_counts?: Record<string, number>;
+  class_counts?: Record<string, number>;
+  class_totals?: Record<string, number>;
   bigger_tube: TubeDetection | null;
   smaller_tube: TubeDetection | null;
 }
@@ -68,6 +88,9 @@ export interface TubeEntity {
   displayId?: string | number;
   role: TubeRole; // 'HEAD' | 'TAIL'
   class?: string; // Classification category from model
+  tube_color?: 'white' | 'blue' | string | null;
+  color_from?: string | null;
+  polygon?: [number, number][] | null;
   label?: string; // Human-friendly display label (e.g. 'Head End', 'Tail End')
   species?: string; // Optional alias for backward compatibility
   status?: string;

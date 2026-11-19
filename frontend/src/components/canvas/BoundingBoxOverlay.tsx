@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { TubeEntity, LabelMode } from '../../types';
+import type { TubeEntity, TubeMask, LabelMode } from '../../types';
 
 interface BoundingBoxOverlayProps {
   tubes: TubeEntity[];
@@ -7,6 +7,9 @@ interface BoundingBoxOverlayProps {
   onSelectTube: (id: string | null) => void;
   labelMode?: LabelMode;
   boxesOnly?: boolean;
+  tubeMasks?: TubeMask[];
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 
@@ -128,6 +131,9 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
   onSelectTube,
   labelMode = 'hidden',
   boxesOnly = false,
+  tubeMasks = [],
+  frameWidth = 0,
+  frameHeight = 0,
 }) => {
   const [hoveredTubeId, setHoveredTubeId] = useState<string | null>(null);
 
@@ -236,6 +242,46 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
 
   return (
     <div className="absolute inset-0 w-full h-full pointer-events-none z-20">
+      {frameWidth > 0 && frameHeight > 0 && (
+        <svg
+          className="absolute inset-0 w-full h-full overflow-visible"
+          viewBox={`0 0 ${frameWidth} ${frameHeight}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          {tubeMasks.flatMap((mask, maskIndex) =>
+            (mask.polygons?.length ? mask.polygons : (mask.polygon ? [mask.polygon] : []))
+              .filter((polygon) => polygon.length >= 3)
+              .map((polygon, polygonIndex) => {
+                const isBlue = mask.tube_color === 'blue' || /blue/i.test(mask.class);
+                const colour = isBlue ? '#3b9eff' : '#f5f5f5';
+                return (
+                  <polygon
+                    key={`tube-mask-${mask.index ?? maskIndex}-${polygonIndex}`}
+                    points={polygon.map(([x, y]) => `${x},${y}`).join(' ')}
+                    fill={colour}
+                    fillOpacity={isBlue ? 0.13 : 0.18}
+                    stroke={colour}
+                    strokeOpacity={0.9}
+                    strokeWidth={Math.max(1.5, frameWidth / 1000)}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })
+          )}
+          {tubes.map((end) => end.polygon && end.polygon.length >= 3 && (
+            <polygon
+              key={`end-mask-${end.id}`}
+              points={end.polygon.map(([x, y]) => `${x},${y}`).join(' ')}
+              fill={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
+              fillOpacity={0.12}
+              stroke={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
+              strokeWidth={Math.max(1.5, frameWidth / 1000)}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </svg>
+      )}
       {/* High-Visibility Bounding Boxes */}
       {validTubes.map((tube, idx) => {
         const isSelected = tube.id === selectedTubeId;
@@ -259,19 +305,27 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
         const bracketColor = isHead ? 'border-cyan-200' : 'border-amber-200';
         const effectiveZIndex = isSelected || isHovered ? 50 : placement.zIndex;
         const isCoasting = tube.status === 'COASTED' || Boolean(tube.is_coasting);
+        const tooltipBelow = tube.y < 20;
 
         return (
           <div
             key={`bbox-${tube.id}`}
             role={boxesOnly ? undefined : "button"}
             tabIndex={boxesOnly ? -1 : 0}
-            aria-label={`Select tube end ${tube.id}`}
+            aria-label={`Select tube end ${tube.id}${tube.tube_color ? `, ${tube.tube_color}` : ''}${tube.class ? `, ${tube.class}` : ''}`}
             onClick={(e) => {
               e.stopPropagation();
               onSelectTube(tube.id === selectedTubeId ? null : tube.id);
             }}
             onMouseEnter={() => setHoveredTubeId(tube.id)}
-            onMouseLeave={() => setHoveredTubeId(null)}
+            onMouseLeave={(event) => {
+              // The popup is an overflowing child above the box. Keep it open while the
+              // pointer moves from the box into that child; clear hover only on a true exit.
+              const nextTarget = event.relatedTarget;
+              if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+                setHoveredTubeId(null);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.stopPropagation();
@@ -362,16 +416,21 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
             {/* 5. HOVER TOOLTIP: Rich popover when hovering or clicking a tube */}
             {!boxesOnly && (isHovered || isSelected) && (
               <div
-                className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 p-2 rounded-xl bg-slate-950/95 backdrop-blur-lg border border-white/20 text-white shadow-xl z-50 pointer-events-none min-w-[170px] flex flex-col gap-1 text-[10px] font-mono animate-in fade-in zoom-in-95 duration-100"
+                onMouseEnter={() => setHoveredTubeId(tube.id)}
+                onMouseLeave={() => setHoveredTubeId(null)}
+                className={`absolute left-1/2 -translate-x-1/2 ${tooltipBelow ? 'top-full' : 'bottom-full'} p-2 rounded-xl bg-slate-950/95 backdrop-blur-lg border border-white/20 text-white shadow-xl z-50 pointer-events-auto min-w-[170px] flex flex-col gap-1 text-[10px] font-mono animate-in fade-in zoom-in-95 duration-100`}
               >
                 <div className="flex items-center justify-between pb-1 border-b border-white/10 font-bold">
                   <span className="flex items-center gap-1">
                     <span className={`w-2 h-2 rounded-full ${isHead ? 'bg-cyan-400' : 'bg-amber-400'}`} />
-                    <span>Tube End #{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
+                    <span>{tube.role} #{tube.displayId ?? (typeof tube.id === 'string' && tube.id.includes('-') ? tube.id.split('-')[1] : tube.id)}</span>
                   </span>
-                  <span className={isHead ? 'text-cyan-300' : 'text-amber-300'}>
-                    {tube.role}
-                  </span>
+                  {tube.tube_color && (
+                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${tube.tube_color === 'blue'
+                      ? 'bg-blue-700 text-white' : 'bg-white text-slate-900'}`}>
+                      {tube.tube_color}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between text-slate-300">

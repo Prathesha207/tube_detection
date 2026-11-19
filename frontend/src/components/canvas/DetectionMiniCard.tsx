@@ -127,6 +127,12 @@ export const DetectionMiniCard: React.FC<DetectionMiniCardProps> = ({
                         >
                           {d.role || 'END'}
                         </span>
+                        {d.tube_color && (
+                          <span className={`px-1 py-0.2 rounded text-[8px] font-bold uppercase shrink-0 ${d.tube_color === 'blue'
+                            ? 'bg-blue-700 text-white' : 'bg-white text-slate-900 border border-slate-300'}`}>
+                            {d.tube_color}
+                          </span>
+                        )}
 
                         {/* Width minimized right next to it with size tag */}
                         <div className="flex items-center gap-1 ml-auto shrink-0 text-[10px] font-mono">

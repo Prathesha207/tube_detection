@@ -8,7 +8,20 @@ export const mapDetectionsToTubes = (data: any): TubeEntity[] => {
   const frameHeight = Number(data?.video_height);
   if (!Array.isArray(data?.detections) || frameWidth <= 0 || frameHeight <= 0) return [];
 
-  return data.detections.flatMap((d: any): TubeEntity[] => {
+  // Stably sort detections: HEAD first, then TAIL; within role, ascending by tracker id.
+  // This guarantees detection cards and sidebar rows never swap positions between frames.
+  const sortedDetections = [...data.detections].sort((a: any, b: any) => {
+    const roleA = String(a.role || '').toUpperCase();
+    const roleB = String(b.role || '').toUpperCase();
+    if (roleA !== roleB) {
+      return roleA === 'HEAD' ? -1 : 1;
+    }
+    const idA = Number(a.id) || 0;
+    const idB = Number(b.id) || 0;
+    return idA - idB;
+  });
+
+  return sortedDetections.flatMap((d: any): TubeEntity[] => {
     const bbox = d?.bbox;
     if (!Array.isArray(bbox) || bbox.length !== 4 || d.id == null || !d.role) return [];
     const [x, y, width, height] = bbox.map(Number);

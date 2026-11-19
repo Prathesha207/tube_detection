@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AnomalyStatus, TubeEntity, DetectionMetrics, LogEntry } from '../types';
 import {
   ChevronLeft,
@@ -9,6 +9,7 @@ import { Badge, IconButton } from './ui';
 import { useInferenceStore } from '../store/inferenceStore';
 import { CameraImageAdjustmentsCard } from './CameraImageAdjustmentsCard';
 import { CameraConfig } from '../types';
+import { getApiBaseUrl } from '../lib/api';
 
 interface DetectionDrawerProps {
   isOpen: boolean;
@@ -44,6 +45,24 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   onUpdateCameraConfig,
 }) => {
   const mlStats = useInferenceStore((state) => state.stats);
+
+  const [tracePxInput, setTracePxInput] = useState<string>(
+    mlStats.trace_px != null ? String(mlStats.trace_px) : ''
+  );
+
+  const handleApplyTrace = async (val: number) => {
+    const px = val > 0 ? val : null;
+    useInferenceStore.getState().setStats({ trace_px: px });
+    try {
+      if (isCameraSource) {
+        await fetch(`${getApiBaseUrl()}/oak/trace_px${px ? `?trace_px=${px}` : ''}`, { method: 'POST' });
+      } else if (mlStats.session_id) {
+        await fetch(`${getApiBaseUrl()}/video/trace_px/${mlStats.session_id}${px ? `?trace_px=${px}` : ''}`, { method: 'POST' });
+      }
+    } catch (err) {
+      console.warn('Failed to update trace_px on backend:', err);
+    }
+  };
 
   // Format uptime in hh:mm:ss
   const formatTime = (seconds: number) => {
@@ -447,6 +466,65 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
                     })
                   )}
                 </div>
+              </div>
+
+              {/* WRAPPER & TRACE DISTANCE CONTROL */}
+              <div className="p-2.5 rounded-xl border border-[var(--border-color)] bg-[var(--bg-main)]/50 flex flex-col gap-2">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-primary)]">
+                  <span className="flex items-center gap-1.5 font-bold">
+                    <span className="w-2 h-2 rounded-full bg-purple-400 shadow-[0_0_6px_rgba(192,132,252,0.8)]" />
+                    <span>Wrapper Trace:</span>
+                  </span>
+                  <span className="text-[10.5px] font-mono font-bold text-purple-600 dark:text-purple-300">
+                    {mlStats.trace_px ? `${mlStats.trace_px}px` : 'Disabled (0px)'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    step={10}
+                    placeholder="px distance"
+                    value={tracePxInput}
+                    onChange={(e) => setTracePxInput(e.target.value)}
+                    className="w-24 px-2 py-1 text-xs font-mono rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-purple-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleApplyTrace(tracePxInput ? Number(tracePxInput) : 0)}
+                    className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-purple-600 hover:bg-purple-500 text-white shadow-xs cursor-pointer transition-all"
+                  >
+                    Set
+                  </button>
+                  <div className="flex items-center gap-1 ml-auto">
+                    {[0, 100, 150, 200].map((val) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => {
+                          setTracePxInput(val === 0 ? '' : String(val));
+                          handleApplyTrace(val);
+                        }}
+                        className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded cursor-pointer transition-all ${
+                          (mlStats.trace_px ?? 0) === val
+                            ? 'bg-purple-600 text-white shadow-xs'
+                            : 'bg-[var(--bg-card)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-color)]'
+                        }`}
+                      >
+                        {val === 0 ? 'Off' : `${val}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {(mlStats.wrapper || (mlStats.traces && mlStats.traces.length > 0)) && (
+                  <div className="flex items-center justify-between text-[9.5px] font-mono text-purple-700 dark:text-purple-300 pt-1 border-t border-[var(--border-color)]">
+                    <span>
+                      Wrapper: {mlStats.wrapper ? `Detected (${Math.round((mlStats.wrapper.conf ?? 0) * 100)}%)` : 'Not seen'}
+                    </span>
+                    <span>Traces: {mlStats.traces?.length ?? 0}</span>
+                  </div>
+                )}
               </div>
 
               {/* VERDICT BANNER (In Yellow/Amber) */}

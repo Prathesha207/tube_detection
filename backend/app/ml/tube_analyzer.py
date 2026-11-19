@@ -57,6 +57,7 @@ import cv2
 import numpy as np
 
 from app.utils.roi_utils import roi_from_points
+from .ml_paths import CONFIG_PATH, MODEL_PATH
 
 try:
     import torch
@@ -68,10 +69,6 @@ _CUDA_KERNELS_USABLE: Optional[bool] = None
 _REQUIRED_WHEEL_FUNCS = (
     "analyze_frame", "StreamState", "configure_for_model", "load_stream_config",
     "ModelManager", "load_model", "unload_model", "open_video", "depth3d", "DEFAULTS",
-)
-_REQUIRED_WHEEL_SETTINGS = (
-    "class_conf", "color_source", "color_gate", "output_polygons", "output_tubes",
-    "polygon_epsilon", "draw_tubes",
 )
 
 logger = logging.getLogger("tube-analyzer")
@@ -85,11 +82,6 @@ try:
     import head_tail_analyzer as _hta
     from head_tail_analyzer import run_video_frames as _wheel_rvf
     _missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(_wheel_rvf, n)]
-    _missing.extend(
-        f"DEFAULTS.{name}"
-        for name in _REQUIRED_WHEEL_SETTINGS
-        if not hasattr(_wheel_rvf, "DEFAULTS") or name not in _wheel_rvf.DEFAULTS
-    )
     if "analyze_frame" in dir(_wheel_rvf):
         import inspect
         if "depth" not in inspect.signature(_wheel_rvf.analyze_frame).parameters:
@@ -113,9 +105,6 @@ if rvf is not None:
                 WHEEL_INFO.get("version"), WHEEL_INFO.get("file"))
 
 
-_ML_DIR = Path(__file__).resolve().parent
-MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
-CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 _MODEL_MANAGER = rvf.ModelManager(verbose=False) if rvf is not None else None
 _MODEL_MTIMES: Dict[str, float] = {}
 
@@ -222,6 +211,66 @@ def new_stats(**fields: Any) -> Dict[str, Any]:
     stats.update(fields)
     return stats
 
+
+#################### 3b. Shared Utilities (used by both inference services) ####################
+
+def _parse_trace_px(px: Any) -> Optional[float]:
+    """Validate and normalise a user-supplied trace_px value.
+
+    Returns the positive finite float, or None when the value is absent,
+    zero, negative or non-numeric.  Single source of truth — the same logic
+    was previously copy-pasted three times across the two inference services.
+    """
+    if px is None:
+        return None
+    try:
+        v = float(px)
+        return v if (v > 0 and np.isfinite(v)) else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Shared-analyzer singleton ──────────────────────────────────────────────────
+# Both camera_inference_service and video_inference_service share ONE loaded
+# TubeAnalyzer so the model stays in VRAM only once.  Putting the singleton
+# here (a module that both services already import) breaks the circular import
+# that previously existed between the two services.
+_SHARED_ANALYZER: Optional["TubeAnalyzer"] = None
+
+
+def get_shared_analyzer() -> Optional["TubeAnalyzer"]:
+    """Return the process-wide shared TubeAnalyzer (None until first load)."""
+    return _SHARED_ANALYZER
+
+
+def set_shared_analyzer(analyzer: Optional["TubeAnalyzer"]) -> None:
+    """Register the shared TubeAnalyzer.  Called at startup and after hot-reload."""
+    global _SHARED_ANALYZER
+    _SHARED_ANALYZER = analyzer
+
+
+def make_analyzer(
+    model_path: Optional[str] = None,
+    config_path: Optional[str] = None,
+    device: Optional[str] = None,
+    draw_overlay: bool = False,
+    **kwargs: Any,
+) -> "TubeAnalyzer":
+    """Factory with safe defaults.
+
+    Callers only supply what differs from the global paths / device, so the
+    constructor call is never duplicated across prewarm, sync-load and hot-reload
+    code paths.
+    """
+    return TubeAnalyzer(
+        model_path=model_path or MODEL_PATH,
+        config_path=str(config_path or CONFIG_PATH),
+        device=device if device is not None else default_device(),
+        draw_overlay=draw_overlay,
+        **kwargs,
+    )
+
+
 #################### 5.The TubeAnalyzer Class & Frame Analysis ####################
 @dataclass
 class FrameAnalysis:
@@ -247,6 +296,10 @@ _SETTINGS_TO_REPORT = (
     "attach_gap", "max_disagree", "draw_masks", "draw_roi", "box_fill", "draw_scale",
     "color_source", "color_gate", "tube_color", "output_polygons", "output_tubes",
     "polygon_epsilon", "draw_tubes",
+    "tube_merge_any_class", "track_tubes", "tube_min_frames", "tube_hold", "tube_match_iou", "tube_match_grow",
+    "trace_px", "trace_wrapper_gap", "trace_min_area", "trace_center_weight", "trace_smooth",
+    "trace_depth_radius", "trace_path_step_px", "draw_trace", "draw_wrapper",
+    "half", "prefetch", "profile",
     "camera_matrix", "calib_width", "calib_height", "dist_coeffs", "depth_scale",
     "depth_min_mm", "depth_max_mm", "depth_smooth", "depth_video",
 )
@@ -310,6 +363,8 @@ class TubeAnalyzer:
         draw_unconfirmed: Optional[bool] = None,
         draw_overlay: bool = False,
         draw_roi: bool = False,
+        trace_px: Optional[float] = None,
+        show_cards: Optional[bool] = None,
         **extra: Any,
     ):
         """Settings left as None use config.yaml or the wheel's DEFAULTS. ``extra`` may carry any
@@ -336,7 +391,8 @@ class TubeAnalyzer:
                       width_method=width_method, width_from=width_from,
                       min_ratio=min_ratio, mm_per_px=mm_per_px,
                       draw_scale=draw_scale, box_fill=box_fill,
-                      draw_masks=draw_masks, draw_unconfirmed=draw_unconfirmed)
+                      draw_masks=draw_masks, draw_unconfirmed=draw_unconfirmed,
+                      trace_px=trace_px, show_cards=show_cards)
         cfg_path = config_path or CONFIG_PATH
         self.cfg = _build_settings(cfg_path, path, target_device, draw_roi, chosen, extra)
         self._warn_if_config_has_roi(cfg_path)
@@ -423,6 +479,15 @@ class TubeAnalyzer:
                 raise ValueError("mm_per_px must be a positive number")
         self.cfg.mm_per_px = mm_per_px
 
+    def set_trace_px(self, px: Optional[float]) -> Optional[float]:
+        """Dynamically update wrapper trace pixel distance (e.g. from UI). None or <=0 disables tracing."""
+        parsed = _parse_trace_px(px)
+        if getattr(self.cfg, "trace_px", None) != parsed:
+            if hasattr(self.state, "trace_hist") and isinstance(self.state.trace_hist, dict):
+                self.state.trace_hist.clear()
+            self.cfg.trace_px = parsed
+        return self.cfg.trace_px
+
     def set_camera_matrix(self, matrix: Any, calib_width: int, calib_height: int, dist_coeffs: Optional[Any] = None) -> None:
         """Dynamically update camera intrinsics (e.g. from OAK EEPROM) for the active resolution."""
         if matrix is not None:
@@ -473,7 +538,15 @@ class TubeAnalyzer:
         return True
 
     # ------------------------------------------------------------ per frame
-    def analyze_frame(self, frame: np.ndarray, frame_number: Optional[int] = None, annotate: bool = False, depth: Optional[np.ndarray] = None) -> FrameAnalysis:
+    def analyze_frame(
+        self,
+        frame: np.ndarray,
+        frame_number: Optional[int] = None,
+        annotate: bool = False,
+        depth: Optional[np.ndarray] = None,
+        trace_px: Optional[float] = None,
+        show_cards: Optional[bool] = None,
+    ) -> FrameAnalysis:
         """ONE BGR frame (and optional aligned uint16 mm depth frame) -> the wheel's result
         (and, with annotate=True, the wheel's drawn picture).
 
@@ -483,6 +556,9 @@ class TubeAnalyzer:
         is measured in it)."""
         if frame is None or getattr(frame, "size", 0) == 0:
             return FrameAnalysis(result={}, frame=frame)
+
+        if trace_px is not None:
+            self.set_trace_px(trace_px)
 
         # Apply queued ROI swap at the start of frame processing
         if self._pending_roi is not None:
@@ -499,8 +575,10 @@ class TubeAnalyzer:
                 t.in_roi_ever = False
 
         def _run():
-            return rvf.analyze_frame(self.entry, frame, self.state, self.roi, self.cfg, frame_number,
-                                     annotate=annotate, masks=self._masks_ok, depth=depth)
+            return rvf.analyze_frame(
+                self.entry, frame, self.state, self.roi, self.cfg, frame_number,
+                annotate=annotate, masks=self._masks_ok, depth=depth, show_cards=show_cards,
+            )
         try:
             result, vis = _run()
         except Exception as error:
@@ -513,7 +591,15 @@ class TubeAnalyzer:
         self._last_analysis = analysis
         return analysis
 
-    def infer(self, frame: np.ndarray, frame_number: Optional[int] = None, annotate: bool = False, depth: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    def infer(
+        self,
+        frame: np.ndarray,
+        frame_number: Optional[int] = None,
+        annotate: bool = False,
+        depth: Optional[np.ndarray] = None,
+        trace_px: Optional[float] = None,
+        show_cards: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         """ONE call: BGR frame (+ optional depth) in -> the complete dict for the frontend out.
 
         In order:  analyze_frame()           the wheel's pipeline                (timed)
@@ -530,13 +616,24 @@ class TubeAnalyzer:
 
         with inference_context():
             t_start = time.perf_counter()
-            analysis = self.analyze_frame(frame, frame_number, annotate=annotate, depth=depth)
+            analysis = self.analyze_frame(
+                frame, frame_number, annotate=annotate, depth=depth, trace_px=trace_px, show_cards=show_cards
+            )
             if cuda_is_available():
                 torch.cuda.synchronize()
             frame_time_ms = (time.perf_counter() - t_start) * 1000.0
 
+        res = dict(analysis.result)
+        if "detections" in res and isinstance(res["detections"], list):
+            # Stably sort detections: HEAD first, then TAIL; within role, ascending by tracker id.
+            # This prevents UI lists/cards from jittering and swapping rows between blue and white across frames.
+            res["detections"] = sorted(
+                res["detections"],
+                key=lambda d: (0 if str(d.get("role", "")).upper() == "HEAD" else 1, int(d.get("id") or 0))
+            )
+
         return {
-            **analysis.result,
+            **res,
             "model_fps": round(1000.0 / frame_time_ms, 1) if frame_time_ms > 0 else 0.0,
             "frame_time_ms": round(frame_time_ms, 2),
             "latency_ms": round(frame_time_ms, 2),     # legacy key, same value
@@ -570,14 +667,24 @@ class TubeAnalyzer:
         return frame
 
     # ------------------------------------------------- old API, same behaviour
-    def process_frame(self, frame: np.ndarray, frame_idx: int = 0, return_clean: bool = False, depth: Optional[np.ndarray] = None):
+    def process_frame(
+        self,
+        frame: np.ndarray,
+        frame_idx: int = 0,
+        return_clean: bool = False,
+        depth: Optional[np.ndarray] = None,
+        trace_px: Optional[float] = None,
+        show_cards: Optional[bool] = None,
+    ):
         """Old combined call, kept so existing callers keep working.
 
         return_clean=True -> (result, annotated_frame, clean_frame)
         otherwise         -> (result, annotated_frame if draw_overlay else clean_frame)
         New code should use infer() / analyze_frame()."""
         want_drawn = return_clean or self.draw_overlay
-        analysis = self.analyze_frame(frame, frame_idx, annotate=want_drawn, depth=depth)
+        analysis = self.analyze_frame(
+            frame, frame_idx, annotate=want_drawn, depth=depth, trace_px=trace_px, show_cards=show_cards
+        )
         clean_frame = self.get_clean_frame(frame)
         annotated = analysis.annotated if want_drawn else None
         if return_clean:

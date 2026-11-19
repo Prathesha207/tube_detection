@@ -17,6 +17,6 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo =======================================================
 echo Build completed successfully!
-echo You can find the installer (.exe) in: vision-ai-frontend\dist_app
+echo You can find the installer (.exe) in: frontend\dist_app
 echo =======================================================
 pause

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { TubeEntity, TubeMask, LabelMode } from '../../types';
+import type { TubeEntity, TubeMask, TubeWrapper, TubeTrace, LabelMode } from '../../types';
 
 interface BoundingBoxOverlayProps {
   tubes: TubeEntity[];
@@ -8,6 +8,8 @@ interface BoundingBoxOverlayProps {
   labelMode?: LabelMode;
   boxesOnly?: boolean;
   tubeMasks?: TubeMask[];
+  wrapper?: TubeWrapper | null;
+  traces?: TubeTrace[] | null;
   frameWidth?: number;
   frameHeight?: number;
 }
@@ -132,6 +134,8 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
   labelMode = 'hidden',
   boxesOnly = false,
   tubeMasks = [],
+  wrapper,
+  traces,
   frameWidth = 0,
   frameHeight = 0,
 }) => {
@@ -240,6 +244,48 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
     return result;
   }, [validTubes]);
 
+  // Stable multi-polygon SVG path compilation for tube segmentation masks.
+  // Grouping by tube color into two permanent layers prevents React key recycling
+  // and eliminates color-flipping flickers between frames.
+  const { whiteTubePath, blueTubePath } = useMemo(() => {
+    const whitePolys: number[][][] = [];
+    const bluePolys: number[][][] = [];
+
+    for (const mask of tubeMasks) {
+      const color = String(mask.tube_color || '').toLowerCase();
+      if (color !== 'blue' && color !== 'white') continue;
+      const polys = (mask.polygons && mask.polygons.length > 0)
+        ? mask.polygons
+        : (mask.polygon && mask.polygon.length >= 3 ? [mask.polygon] : []);
+
+      for (const p of polys) {
+        if (p && p.length >= 3) {
+          if (color === 'blue') {
+            bluePolys.push(p);
+          } else {
+            whitePolys.push(p);
+          }
+        }
+      }
+    }
+
+    const toPathD = (polys: number[][][]): string => {
+      if (!polys.length) return '';
+      return polys
+        .map((poly) => {
+          const start = poly[0];
+          const lines = poly.slice(1).map(([x, y]) => `L ${x} ${y}`).join(' ');
+          return `M ${start[0]} ${start[1]} ${lines} Z`;
+        })
+        .join(' ');
+    };
+
+    return {
+      whiteTubePath: toPathD(whitePolys),
+      blueTubePath: toPathD(bluePolys),
+    };
+  }, [tubeMasks]);
+
   return (
     <div className="absolute inset-0 w-full h-full pointer-events-none z-20">
       {frameWidth > 0 && frameHeight > 0 && (
@@ -249,30 +295,148 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          {tubeMasks.flatMap((mask, maskIndex) =>
-            (mask.polygons?.length ? mask.polygons : (mask.polygon ? [mask.polygon] : []))
-              .filter((polygon) => polygon.length >= 3)
-              .map((polygon, polygonIndex) => {
-                const isBlue = mask.tube_color === 'blue' || /blue/i.test(mask.class);
-                const colour = isBlue ? '#3b9eff' : '#f5f5f5';
-                return (
-                  <polygon
-                    key={`tube-mask-${mask.index ?? maskIndex}-${polygonIndex}`}
-                    points={polygon.map(([x, y]) => `${x},${y}`).join(' ')}
-                    fill={colour}
-                    fillOpacity={isBlue ? 0.13 : 0.18}
-                    stroke={colour}
-                    strokeOpacity={0.9}
-                    strokeWidth={Math.max(1.5, frameWidth / 1000)}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                );
-              })
+          {/* WHITE TUBES: Stable dual-stroke + translucent fill (never flips color) */}
+          {whiteTubePath && (
+            <g key="layer-white-tubes">
+              <path
+                d={whiteTubePath}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.75)"
+                strokeWidth={Math.max(3, frameWidth / 450)}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              <path
+                d={whiteTubePath}
+                fill="rgba(255, 255, 255, 0.20)"
+                stroke="#f8fafc"
+                strokeOpacity={0.95}
+                strokeWidth={Math.max(1.5, frameWidth / 900)}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
           )}
+
+          {/* BLUE TUBES: Stable dual-stroke + translucent fill (never flips color) */}
+          {blueTubePath && (
+            <g key="layer-blue-tubes">
+              <path
+                d={blueTubePath}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.75)"
+                strokeWidth={Math.max(3, frameWidth / 450)}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              <path
+                d={blueTubePath}
+                fill="rgba(56, 189, 248, 0.20)"
+                stroke="#38bdf8"
+                strokeOpacity={0.95}
+                strokeWidth={Math.max(1.5, frameWidth / 900)}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          )}
+          {/* WRAPPER BAND: Distinct polygon overlay when detected */}
+          {wrapper?.polygon && wrapper.polygon.length >= 3 && (
+            <g key="layer-wrapper">
+              <polygon
+                points={wrapper.polygon.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')}
+                fill="rgba(168, 85, 247, 0.20)"
+                stroke="#c084fc"
+                strokeWidth={Math.max(2, frameWidth / 700)}
+                strokeDasharray="5 3"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              {wrapper.center && (
+                <text
+                  x={wrapper.center[0]}
+                  y={wrapper.center[1]}
+                  fill="#f3e8ff"
+                  fontSize={Math.max(10, frameWidth / 140)}
+                  fontWeight="bold"
+                  fontFamily="monospace"
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}
+                >
+                  WRAPPER
+                </text>
+              )}
+            </g>
+          )}
+
+          {/* TRACE PATHS: Dynamic centerline traces out of wrapper */}
+          {traces && traces.length > 0 && (
+            <g key="layer-traces">
+              {traces.map((tr: TubeTrace, trIdx: number) => {
+                if (!tr.path || tr.path.length < 2) return null;
+                const pathD = tr.path.reduce((acc: string, pt: [number, number], i: number) => `${acc} ${i === 0 ? 'M' : 'L'} ${pt[0]} ${pt[1]}`, '');
+                const isBlue = String(tr.tube_color || '').toLowerCase() === 'blue';
+                const traceColor = isBlue ? '#38bdf8' : '#f8fafc';
+                const endPt = tr.path[tr.path.length - 1];
+                return (
+                  <g key={`trace-${tr.tube_id ?? trIdx}-${tr.side ?? trIdx}`}>
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke="rgba(0, 0, 0, 0.8)"
+                      strokeWidth={Math.max(3, frameWidth / 500)}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke={traceColor}
+                      strokeWidth={Math.max(2, frameWidth / 800)}
+                      strokeDasharray="5 3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {endPt && (
+                      <circle
+                        cx={endPt[0]}
+                        cy={endPt[1]}
+                        r={Math.max(3.5, frameWidth / 500)}
+                        fill={traceColor}
+                        stroke="#0f172a"
+                        strokeWidth="1.5"
+                      />
+                    )}
+                    {endPt && tr.end_xyz_m && (
+                      <text
+                        x={endPt[0] + 6}
+                        y={endPt[1] - 4}
+                        fill={traceColor}
+                        fontSize={Math.max(9, frameWidth / 180)}
+                        fontWeight="bold"
+                        fontFamily="monospace"
+                        style={{ textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}
+                      >
+                        Z:{(tr.end_xyz_m[2] * 1000).toFixed(0)}mm
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          )}
+
           {tubes.map((end) => end.polygon && end.polygon.length >= 3 && (
             <polygon
               key={`end-mask-${end.id}`}
-              points={end.polygon.map(([x, y]) => `${x},${y}`).join(' ')}
+              points={end.polygon.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')}
               fill={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
               fillOpacity={0.12}
               stroke={end.role === 'HEAD' ? '#22d3ee' : '#fbbf24'}
@@ -390,6 +554,12 @@ export const BoundingBoxOverlay: React.FC<BoundingBoxOverlayProps> = ({
                   <span className={isHead ? 'text-cyan-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
                     {tube.role}
                   </span>
+                  {tube.tube_color && (
+                    <span className={`px-1 py-0.2 rounded text-[8px] font-black uppercase ${tube.tube_color === 'blue'
+                      ? 'bg-blue-600 text-white' : 'bg-white text-slate-900'}`}>
+                      {tube.tube_color}
+                    </span>
+                  )}
                   {(tube.width_mm_depth != null || tube.width_mm != null || tube.width_px != null) && (
                     <span className="text-white font-mono opacity-90 font-bold">
                       {tube.width_mm_depth != null

@@ -707,11 +707,26 @@ class InferenceStartBody(BaseModel):
     videoPath: Optional[str] = None   # absolute path to a single video file
     folderPath: Optional[str] = None  # absolute path to a folder of videos
     videoId: Optional[str] = None     # legacy field — treated as videoPath if videoPath is absent
+    trace_px: Optional[float] = None
+
+
+@router.post("/trace_px")
+def set_oak_trace_px(trace_px: Optional[float] = Query(None)):
+    try:
+        from app.ml.camera_inference_service import set_camera_trace_px
+        val = set_camera_trace_px(trace_px=trace_px)
+        return {"trace_px": val}
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /oak/trace_px: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update camera trace distance: {e}")
 
 
 @router.post("/inference/start/{session_id}")
 async def start_inference(session_id: str, body: InferenceStartBody = InferenceStartBody()):
     try:
+        if body.trace_px is not None:
+            from app.ml.camera_inference_service import set_camera_trace_px
+            set_camera_trace_px(session_id=session_id, trace_px=body.trace_px)
         # If camera device is not running and offline is False, auto-start camera
         if not body.offline and not oak_camera_service._is_running:
             try:

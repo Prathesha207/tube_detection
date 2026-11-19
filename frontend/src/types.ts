@@ -38,9 +38,32 @@ export interface TubeDetection {
   ratio?: number | null;
 }
 
+export interface TubeWrapper {
+  conf?: number | null;
+  bbox?: [number, number, number, number];
+  center?: [number, number];
+  polygon?: [number, number][];
+}
+
+export interface TubeTrace {
+  tube_id?: number | null;
+  tube_index?: number;
+  tube_class?: string;
+  tube_color?: string;
+  side?: 'left' | 'right' | 'top' | 'bottom' | string;
+  path?: [number, number][];
+  path_xyz?: ([number, number, number] | null)[];
+  end_xyz_m?: [number, number, number] | null;
+  end_xyz_now_m?: [number, number, number] | null;
+}
+
 export interface TubeMask {
   index: number;
+  id?: number;
   class: string;
+  class_now?: string;
+  class_share?: number;
+  held?: boolean;
   tube_color?: 'white' | 'blue' | string | null;
   conf?: number;
   bbox?: [number, number, number, number];
@@ -56,10 +79,16 @@ export interface TubeFrameResult {
   tubes?: TubeMask[];
   tubes_count?: number;
   tube_counts?: Record<string, number>;
+  tubes_total?: number;
+  tube_totals?: Record<string, number>;
   class_counts?: Record<string, number>;
   class_totals?: Record<string, number>;
   bigger_tube: TubeDetection | null;
   smaller_tube: TubeDetection | null;
+  wrapper?: TubeWrapper | null;
+  traces?: TubeTrace[] | null;
+  trace_px?: number | null;
+  time_s?: number | null;
 }
 
 export interface MLFrameDetection {

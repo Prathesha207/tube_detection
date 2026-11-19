@@ -4,22 +4,19 @@ Each installer includes Electron, the Python backend, model weights, Python
 libraries, and native video/ML dependencies. An end user does **not** need to
 install Python, Node.js, PyTorch, or the project source code.
 
-Release staging uses `vision-ai-frontend/release-backend`; it deliberately
-does not use `vision-ai-frontend/backend`, which may contain local logs and
-database data.
-
 Build each target on its own native OS and CPU architecture. PyInstaller and
 PyTorch cannot safely cross-compile these artifacts.
 
 | Target | Build command | Output |
 | --- | --- | --- |
-| Windows x64 CPU | `./build_windows_desktop.ps1 -Acceleration cpu` | NSIS `.exe` |
-| Windows x64 NVIDIA | `./build_windows_desktop.ps1 -Acceleration cuda` | NSIS `.exe` |
+| Windows x64 CPU | `.\build_windows_desktop.ps1 -Acceleration cpu` | NSIS `.exe` |
+| Windows x64 NVIDIA | `.\build_windows_desktop.ps1 -Acceleration cuda` | NSIS `.exe` |
 | Linux x64 | `./build_linux_desktop.sh` on x86_64 Linux | AppImage and `.deb` |
 | Linux ARM64 | `./build_linux_desktop.sh` on aarch64 Linux | AppImage and `.deb` |
 
-Run Windows commands from `vision-ai-backend` in PowerShell. Run Linux commands
-from that same directory after `chmod +x build_linux_desktop.sh`.
+Run the Windows command from the repository's `backend` directory in
+PowerShell. Run the Linux command from `backend` after
+`chmod +x build_linux_desktop.sh`. Artifacts are written to `frontend/dist_app`.
 
 The GitHub workflows build the same artifacts: `windows-desktop.yml` produces
 the x64 NSIS installer and `linux-desktop.yml` produces x64 and ARM64 Linux

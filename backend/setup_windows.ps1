@@ -192,7 +192,7 @@ if (-not (Test-Path $VenvPython)) {
 $BackendCheck = try {
     & $VenvPython -c "
 import importlib.util as u
-pkgs = ['fastapi', 'uvicorn', 'ultralytics', 'cv2', 'yaml', 'torchvision']
+pkgs = ['fastapi', 'uvicorn', 'ultralytics', 'cv2', 'yaml', 'torchvision', 'sympy']
 if all(u.find_spec(p) is not None for p in pkgs):
     print('INSTALLED')
 else:

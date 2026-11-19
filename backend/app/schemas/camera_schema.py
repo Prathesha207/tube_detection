@@ -8,7 +8,7 @@ class CameraBase(BaseModel):
     ip_address: Optional[str] = None
 
     resolution: Optional[str] = None
-    fps: int = Field(default=30, ge=5, le=30)
+    fps: int = Field(default=30, ge=5, le=60)
     rotation_angle: int = Field(default=0, ge=0, le=360)
 
     # Mode

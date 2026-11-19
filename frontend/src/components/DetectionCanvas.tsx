@@ -769,12 +769,14 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
 
             <canvas ref={canvasRef} className="absolute inset-0 z-10 h-full w-full pointer-events-none rounded" />
 
-            {/* AI Bounding Boxes: For camera, rendered via SVG/HTML overlay. For video files, the stream is already natively annotated by the ML engine (identical to CLI --preview) with stable blue/white tube contours and callout cards */}
-            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && !isVideoSource && (tubes.length > 0 || (backendStats?.tubes?.length ?? 0) > 0) && (
+            {/* AI Bounding Boxes & Stable Tube Segmentations: Rendered via modern SVG/HTML overlay for both video and camera */}
+            {!isOverlayShowing && (isRunning || hasInferenceResult) && (feedMode === 'inference' || feedMode === 'blend') && (tubes.length > 0 || (backendStats?.tubes?.length ?? 0) > 0 || backendStats?.wrapper || (backendStats?.traces?.length ?? 0) > 0) && (
               <div className={`absolute inset-0 ${isRoiActive || feedMode === 'blend' ? 'pointer-events-none' : 'pointer-events-auto'} ${isRoiActive ? 'opacity-40' : ''}`.trim()}>
                 <BoundingBoxOverlay
                   tubes={tubes}
                   tubeMasks={backendStats?.tubes || []}
+                  wrapper={backendStats?.wrapper}
+                  traces={backendStats?.traces}
                   frameWidth={effectiveFw}
                   frameHeight={effectiveFh}
                   selectedTubeId={selectedTubeId}

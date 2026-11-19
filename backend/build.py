@@ -90,6 +90,7 @@ ALWAYS_HIDDEN = [
     "skimage.morphology",
     "imageio",
     "imageio_ffmpeg",
+    "sympy",
     "depthai",
     "av",
     "ultralytics",
@@ -151,7 +152,7 @@ def write_spec(
 
     COLLECT_PACKAGES = [
         "app", "fastapi", "starlette", "uvicorn", "sqlalchemy", "cv2",
-        "torch", "torchvision", "ultralytics", "depthai", "av",
+        "torch", "torchvision", "torch.fx.experimental.symbolic_shapes", "sympy", "ultralytics", "depthai", "av",
         "scipy", "imageio_ffmpeg", "head_tail_analyzer",
     ]
 

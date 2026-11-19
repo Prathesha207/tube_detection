@@ -1,64 +1,68 @@
-# config.yaml - settings for run_video_frames.py / head_tail_analyzer
-# Relative paths are relative to THIS file's folder. Absolute paths are used as-is.
-# Any setting can be overridden on the command line or from TubeAnalyzer.
-
+# config.yaml - tube head/tail + wrapper trace with depth (XYZ)
 model_path: ../model/best.pt
 video: null
-device: "0"                    # "0" = first GPU, "cpu" = CPU
+device: "0"
 
-# ---------------------------------------------------------------- detection
-conf: 0.15
-conf_head: 0.4
-conf_tail: 0.2
-max_heads: 0                   # 0 = no limit
-max_tails: 0
-iou: 0.5
-scale: 1.0                     # shrink frames first; 1.0 = native
-tile: 1280                     # the model was trained at imgsz 1280
-tile_overlap: 0.3
+# 1. model input (unchanged)
+gray: false
+tile: 0
+imgsz: 1280
+scale: 1.0
+
+# 2. confidence per class (unchanged; wrapper uses conf)
+conf: 0.3
+class_conf:
+  head_white: 0.5
+  head_blue: 0.5
+  tail_white: 0.2
+  tail_blue: 0.2
+  white_tube: 0.3
+  blue_tube: 0.3
+  wrapper: 0.15
+# 3. overlap removal inside the model (unchanged)
+iou: 0.7
+
+# 4. confirmation (unchanged)
+min_frames: 5
+min_frames_tail: null
+
+# 5. duplicate cleanup for heads/tails (unchanged)
 merge_iou: 0.3
 merge_contain: 0.6
 merge_gap: 0
-cross_role_contain: 0.5
-gray: false
-stride: 1
+cross_role_contain: 0
+max_heads: 0
+max_tails: 0
 
-# ----------------------------------------------------------------- tracking
-min_frames: 3
-max_dist: 80
-max_missed: 30
+# 6. tubes (unchanged)
+tube_merge_any_class: true
+track_tubes: true
+tube_min_frames: 3
+tube_hold: 2
+tube_match_iou: 0.2
+tube_match_grow: 15
 
-# ------------------------------------------------------ width / bigger tube
-width_method: auto             # auto = tube walls if model has tubing class, else mask thickness
-width_from: tail               # tail = bigger tube decided by tails (fair)
-min_ratio: 1.15                # 15 % wider needed to call one BIGGER
-mm_per_px: null                # not needed with depth: see width_mm_depth in the result
-attach_gap: 3
-max_disagree: 0.2
+# 7. whole frame, no ROI (unchanged)
+roi_json: null
 
-# ------------------------------------------------------------ depth / 3D
-# camera_matrix is REQUIRED for 3D. Belonging to OAK RGB camera (CAM_A) intrinsics
+# 8. depth / 3D  (X right, Y down, Z forward, metres, origin = RGB camera)
+depth_video: auto
 camera_matrix:
-  - [1425.300049, 0.000000, 941.881592]
-  - [0.000000, 1424.556274, 554.257324]
-  - [0.000000, 0.000000, 1.000000]
-calib_width: 1920              # image size the camera_matrix belongs to
-calib_height: 1080             # (frames of another size are rescaled automatically)
-dist_coeffs: [-6.940605, 13.714851, 0.000245, -0.000148, 14.200346, -6.970135, 13.919160, 13.643177, 0.000000, 0.000000, 0.000000, 0.000000, 0.007326, 0.012413]
-depth_scale: 0.001             # OAK depth = millimetres -> metres
-depth_min_mm: 100              # depth outside this range = "no depth"
-depth_max_mm: 3000
-depth_smooth: 15               # frames in each track's median X/Y/Z
-depth_video: null              # null for live stream / pairs auto-detected
+  - [1070.789795, 0.0, 962.309387]
+  - [0.0, 1070.526978, 550.0]
+  - [0.0, 0.0, 1.0]
+calib_width: 1920
+calib_height: 1080
+depth_scale: 0.001        # depth video in millimetres
+depth_smooth: 15          # XYZ = median over the last 15 frames of the same end / trace
 
-# ---------------------------------------------------------------- ROI
-roi_json: null                 # null = whole frame
-draw_roi: false
+# 9. trace out of the wrapper: pixels ALONG the tube, from where it leaves the wrapper
+trace_px: null
+trace_wrapper_gap: 4      # px: start this far outside the wrapper edge
+trace_path_step_px: 0     # e.g. 25 -> also XYZ every 25 px along the trace ("path_xyz")
 
-# ------------------------------------------------------------ outputs
-output_video: null
-latest_json: null
-history_jsonl: null
-print_frames: false            # true = print every frame to the console
-show_preview: false
-
+# 10. speed (none of these change what the model sees)
+half: true                # FP16 on the GPU. Set false once and compare counts if in doubt
+prefetch: true            # decode the next RGB + depth frame while the GPU works
+print_frames: false       # per-frame printing to the console is slow on Windows (JSON still written)
+profile: false            # true = print ms per stage every 30 frames

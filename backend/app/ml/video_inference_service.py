@@ -30,6 +30,7 @@ How a run works
 import asyncio
 import base64
 import json
+import math
 import os
 import queue
 import tempfile
@@ -49,18 +50,20 @@ except Exception:
 from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import (
+    CONFIG_PATH,
+    MODEL_PATH,
     TubeAnalyzer,
     default_device,
     new_stats,
     release_gpu_memory,
     rvf,                      # the wheel's run_video_frames module (same one TubeAnalyzer uses)
+    make_analyzer,
+    get_shared_analyzer,
+    set_shared_analyzer,
+    _parse_trace_px,
 )
 
 logger = setup_logger("tube-video-inference")
-
-_ML_DIR = Path(__file__).resolve().parent
-_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
-_CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 
 _FINISHED_STATES = ("completed", "stopped", "error")
 _JPEG_QUALITY = 85
@@ -157,46 +160,27 @@ class VideoInferenceService:
         """(analyzer, owned). An analyzer injected with _set_shared_analyzer() is reused and never
         freed by us; otherwise a fresh one is created and the job frees it when it ends."""
         if self._shared_analyzer is None:
-            try:
-                from app.ml.camera_inference_service import _shared_camera_analyzer
-                if _shared_camera_analyzer is not None:
-                    self._shared_analyzer = _shared_camera_analyzer
-            except Exception:
-                pass
+            # Check the neutral singleton first — avoids circular import with camera service.
+            shared = get_shared_analyzer()
+            if shared is not None:
+                self._shared_analyzer = shared
 
         if self._shared_analyzer is not None:
             if getattr(self._shared_analyzer, "has_weights_changed", lambda: False)():
                 logger.info(f"[HOT-RELOAD] Detected updated weights at {self._shared_analyzer.model_path}. Reloading TubeAnalyzer for video...")
                 try:
-                    new_analyzer = TubeAnalyzer(
-                        model_path=self._shared_analyzer.model_path,
-                        config_path=_CONFIG_PATH,
-                        device=default_device(),
-                        draw_overlay=False,
-                    )
+                    new_analyzer = make_analyzer(model_path=self._shared_analyzer.model_path)
                     self._shared_analyzer = new_analyzer
-                    try:
-                        from app.ml.camera_inference_service import _set_camera_analyzer
-                        _set_camera_analyzer(new_analyzer)
-                    except Exception:
-                        pass
+                    set_shared_analyzer(new_analyzer)
                     logger.info("[HOT-RELOAD] TubeAnalyzer successfully hot-reloaded for video.")
                 except Exception as reload_err:
                     logger.error(f"[HOT-RELOAD] Failed to reload model weights for video: {reload_err}", exc_info=True)
             return self._shared_analyzer, False
-        logger.info(f"Loading TubeAnalyzer for video job (model={_DEFAULT_MODEL_PATH})")
-        analyzer = TubeAnalyzer(
-            model_path=_DEFAULT_MODEL_PATH,
-            config_path=_CONFIG_PATH,
-            device=default_device(),
-            draw_overlay=False,
-        )
+
+        logger.info(f"Loading TubeAnalyzer for video job (model={MODEL_PATH})")
+        analyzer = make_analyzer()
         self._shared_analyzer = analyzer
-        try:
-            from app.ml.camera_inference_service import _set_camera_analyzer
-            _set_camera_analyzer(analyzer)
-        except Exception:
-            pass
+        set_shared_analyzer(analyzer)
         return analyzer, False
 
     def _get_or_create_analyzer(self) -> TubeAnalyzer:
@@ -256,6 +240,7 @@ class VideoInferenceService:
             "stop_event": threading.Event(),
             "run_seq": 0,
             "temp_file": None,
+            "trace_px": None,
         }
         with self._sessions_lock:
             self.sessions[session_id] = session
@@ -333,10 +318,24 @@ class VideoInferenceService:
             self._remove_temp_files(session)
 
     # ----------------------------------------------------------------- runs
-    def start_run(self, session_id: str) -> int:
+    def set_session_trace_px(self, session_id: str, trace_px: Optional[float]) -> Optional[float]:
+        """Dynamically update wrapper trace pixel distance for a session and its active analyzer."""
+        parsed = _parse_trace_px(trace_px)
+        with self._sessions_lock:
+            session = self.sessions.get(session_id)
+            if session:
+                session["trace_px"] = parsed
+                analyzer = session.get("analyzer")
+                if analyzer and hasattr(analyzer, "set_trace_px"):
+                    return analyzer.set_trace_px(parsed)
+        return parsed
+
+    def start_run(self, session_id: str, trace_px: Optional[float] = None) -> int:
         """Begin a new run of this session: stops the previous run, resets stats, new queue."""
         session = self.sessions[session_id]
         session["run_seq"] += 1
+        if trace_px is not None:
+            session["trace_px"] = _parse_trace_px(trace_px)
         session["stop_event"].set()                       # ends the previous run's loop
         _put_latest(session["queue"], None)               # ends the previous run's stream
         session["queue"] = asyncio.Queue(maxsize=2)
@@ -432,6 +431,8 @@ class VideoInferenceService:
                     logger.info(f"Re-applied {len(session['roi_points'])}-point ROI to session {session_id}")
                 except Exception as e:
                     logger.warning(f"Failed to re-apply ROI for session {session_id}: {e}")
+            if session.get("trace_px") is not None:
+                analyzer.set_trace_px(session.get("trace_px"))
             session["analyzer"] = analyzer
 
             # Open the video exactly like the wheel's own CLI does (rvf.open_video), so frames are decoded
@@ -509,7 +510,9 @@ class VideoInferenceService:
                     continue
 
                 try:
-                    last_stats = analyzer.infer(frame, frame_number, annotate=True)   # <- always draw annotated picture
+                    last_stats = analyzer.infer(
+                        frame, frame_number, annotate=writer is not None, trace_px=session.get("trace_px")
+                    )   # <- the ONE ML call
                 except Exception as frame_err:
                     raise RuntimeError(f"Inference failed on frame {frame_number}: {frame_err}") from frame_err
                 analysis = analyzer._last_analysis
@@ -544,16 +547,15 @@ class VideoInferenceService:
                     except Exception as h_write_err:
                         logger.warning(f"Session {session_id}: history write error on frame {frame_number}: {h_write_err}")
 
-                # Live stream: send the annotated picture drawn by the wheel (with exact, stable
-                # blue/white tubes, boxes and callout cards identical to CLI --preview).
+                # Live stream: clean frame; the frontend draws boxes from stats["detections"].
                 try:
-                    stream_f = annotated if annotated is not None else analyzer.get_clean_frame(frame)
-                    h, w = stream_f.shape[:2]
+                    clean_f = analyzer.get_clean_frame(frame)
+                    h, w = clean_f.shape[:2]
                     if w > 1280:
                         new_h = int(h * (1280.0 / w))
-                        preview_f = cv2.resize(stream_f, (1280, new_h), interpolation=cv2.INTER_AREA)
+                        preview_f = cv2.resize(clean_f, (1280, new_h), interpolation=cv2.INTER_AREA)
                     else:
-                        preview_f = stream_f
+                        preview_f = clean_f
                     encoded, buffer = cv2.imencode(".jpg", preview_f,
                                                    [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY])
                     if encoded:
@@ -666,3 +668,4 @@ def _set_shared_analyzer(analyzer):
     """Optional: pre-loaded analyzer that video jobs reuse instead of loading one per job.
     NOTE: it stays in VRAM permanently, which defeats the video/camera exclusion in app_state."""
     video_inference_service._shared_analyzer = analyzer
+    set_shared_analyzer(analyzer)

@@ -24,16 +24,15 @@ from app.ml import app_state
 from app.core.logger import setup_logger
 from .tube_analyzer import (
     TubeAnalyzer,
-    default_device,
     new_stats,
     release_gpu_memory,
+    make_analyzer,
+    get_shared_analyzer,
+    set_shared_analyzer,
+    _parse_trace_px,
 )
 
 logger = setup_logger("tube-camera-inference")
-
-_ML_DIR = Path(__file__).resolve().parent
-_DEFAULT_MODEL_PATH = str(_ML_DIR / "model" / "best 33.pt")
-_CONFIG_PATH = str(_ML_DIR / "config" / "config 23.yaml")
 
 _SESSION_IDLE_TIMEOUT_SEC = 300     # no frame for this long -> session is closed, GPU released
 _IDLE_SWEEP_INTERVAL_SEC = 30       # how often the background thread looks for idle sessions
@@ -51,8 +50,9 @@ _model_ready_event = threading.Event()
 ############### Setup & Lifecycle Functions ###############
 def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
     """Preloaded TubeAnalyzer from backend startup lifespan for instant zero-delay camera inference."""
-    global _shared_camera_analyzer, _model_prewarmed, _global_camera_calib
+    global _shared_camera_analyzer, _model_prewarmed, _global_camera_calib, _global_trace_px
     _shared_camera_analyzer = analyzer
+    set_shared_analyzer(analyzer)          # keep the neutral singleton in sync
     if _global_camera_calib and hasattr(analyzer, "set_camera_matrix"):
         analyzer.set_camera_matrix(
             _global_camera_calib["matrix"],
@@ -60,6 +60,8 @@ def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
             _global_camera_calib["height"],
             _global_camera_calib.get("dist_coeffs"),
         )
+    if _global_trace_px is not None and hasattr(analyzer, "set_trace_px"):
+        analyzer.set_trace_px(_global_trace_px)
     _model_prewarmed = True
     _model_ready_event.set()
     logger.info("Preloaded TubeAnalyzer registered into camera_inference_service — ready for instant inference")
@@ -67,6 +69,7 @@ def _set_camera_analyzer(analyzer: TubeAnalyzer) -> None:
 
 _prewarm_lock = threading.Lock()
 _model_prewarmed: bool = False
+_global_trace_px: Optional[float] = None
 
 
 def prewarm_camera_model() -> None:
@@ -78,29 +81,26 @@ def prewarm_camera_model() -> None:
         if _model_prewarmed and _shared_camera_analyzer is not None:
             return
         try:
+            # Re-use an already-loaded analyzer from the neutral singleton (avoids
+            # loading the model twice and removes the circular import with video service).
             if _shared_camera_analyzer is None:
-                try:
-                    from app.ml.video_inference_service import video_inference_service
-                    if video_inference_service._shared_analyzer is not None:
-                        _shared_camera_analyzer = video_inference_service._shared_analyzer
-                        _model_prewarmed = True
-                        _model_ready_event.set()
-                except Exception:
-                    pass
+                shared = get_shared_analyzer()
+                if shared is not None:
+                    _shared_camera_analyzer = shared
+                    _model_prewarmed = True
+                    _model_ready_event.set()
 
             if _shared_camera_analyzer is None:
+                # Quick check (max 0.2 s) in case startup thread is just about to finish
                 if _model_ready_event.wait(timeout=0.2) and _shared_camera_analyzer is not None:
                     _model_prewarmed = True
                     return
 
             if _shared_camera_analyzer is None:
                 logger.info("[PREWARM] Preloading TubeAnalyzer for camera in background...")
-                _shared_camera_analyzer = TubeAnalyzer(
-                    model_path=_DEFAULT_MODEL_PATH,
-                    config_path=_CONFIG_PATH,
-                    device=default_device(),
-                    draw_overlay=False,
-                )
+                analyzer = make_analyzer()
+                _shared_camera_analyzer = analyzer
+                set_shared_analyzer(analyzer)
             _model_prewarmed = True
             _model_ready_event.set()
             logger.info("[PREWARM] TubeAnalyzer fully pre-warmed on GPU — ready for instant 0.0s camera inference.")
@@ -150,14 +150,12 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
         # Fast path: Ensure preloaded shared analyzer is ready
         global _shared_camera_analyzer, _model_prewarmed
         if _shared_camera_analyzer is None:
-            try:
-                from app.ml.video_inference_service import video_inference_service
-                if video_inference_service._shared_analyzer is not None:
-                    _shared_camera_analyzer = video_inference_service._shared_analyzer
-                    _model_prewarmed = True
-                    _model_ready_event.set()
-            except Exception:
-                pass
+            # Check the neutral singleton — avoids circular import with video service
+            shared = get_shared_analyzer()
+            if shared is not None:
+                _shared_camera_analyzer = shared
+                _model_prewarmed = True
+                _model_ready_event.set()
 
         if _shared_camera_analyzer is None:
             # Quick check (max 0.2s) in case startup thread is just about to finish setting the analyzer
@@ -168,19 +166,11 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             # Synchronously load the model immediately so the session starts in ~1.5s instead of hanging for 10-12s
             logger.info("Shared analyzer not preloaded — loading TubeAnalyzer synchronously for instant camera start")
             try:
-                _shared_camera_analyzer = TubeAnalyzer(
-                    model_path=model_path or _DEFAULT_MODEL_PATH,
-                    config_path=_CONFIG_PATH,
-                    device=default_device(),
-                    draw_overlay=False,
-                )
+                analyzer = make_analyzer(model_path=model_path or None)
+                _shared_camera_analyzer = analyzer
+                set_shared_analyzer(analyzer)
                 _model_prewarmed = True
                 _model_ready_event.set()
-                try:
-                    from app.ml.video_inference_service import _set_shared_analyzer
-                    _set_shared_analyzer(_shared_camera_analyzer)
-                except Exception:
-                    pass
             except Exception as load_err:
                 logger.error(f"Failed to load camera analyzer synchronously: {load_err}", exc_info=True)
                 if app_state.get_active_inference_kind() == "camera":
@@ -191,18 +181,9 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             if getattr(_shared_camera_analyzer, "has_weights_changed", lambda: False)():
                 logger.info(f"[HOT-RELOAD] Detected updated weights at {_shared_camera_analyzer.model_path}. Hot-reloading TubeAnalyzer...")
                 try:
-                    new_analyzer = TubeAnalyzer(
-                        model_path=_shared_camera_analyzer.model_path,
-                        config_path=_CONFIG_PATH,
-                        device=default_device(),
-                        draw_overlay=False,
-                    )
+                    new_analyzer = make_analyzer(model_path=_shared_camera_analyzer.model_path)
                     _shared_camera_analyzer = new_analyzer
-                    try:
-                        from app.ml.video_inference_service import _set_shared_analyzer
-                        _set_shared_analyzer(new_analyzer)
-                    except Exception:
-                        pass
+                    set_shared_analyzer(new_analyzer)
                     logger.info("[HOT-RELOAD] TubeAnalyzer successfully hot-reloaded with new model weights.")
                 except Exception as reload_err:
                     logger.error(f"[HOT-RELOAD] Failed to hot-reload updated model: {reload_err}", exc_info=True)
@@ -220,6 +201,8 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
                 _shared_camera_analyzer.set_roi(_global_roi_points, _global_roi_frame_size)
             except Exception as e:
                 logger.warning(f"Stored ROI invalid: {e}")
+        if _global_trace_px is not None and hasattr(_shared_camera_analyzer, "set_trace_px"):
+            _shared_camera_analyzer.set_trace_px(_global_trace_px)
 
         session = {
             "analyzer": _shared_camera_analyzer,
@@ -231,6 +214,7 @@ def _get_or_create_camera_session(session_id: str, model_path: Optional[str] = N
             "last_annotated_frame": None,
             "roi_points": list(_global_roi_points),
             "roi_frame_size": _global_roi_frame_size,
+            "trace_px": _global_trace_px,
             "load_error": None,
         }
         _sessions[session_id] = session
@@ -339,8 +323,11 @@ def analyze_camera_frame(
             return _error_stats(session_id, "Camera session was closed", session["frames_processed"]), frame
 
         frame_number = frame_seq if frame_seq is not None else (session["frames_processed"] + 1)
+        trace_px = kwargs.get("trace_px") if kwargs.get("trace_px") is not None else session.get("trace_px", _global_trace_px)
         try:
-            stats = analyzer.infer(frame, frame_number, annotate=annotate, depth=depth_frame)      # <- the ONE ML call
+            stats = analyzer.infer(
+                frame, frame_number, annotate=annotate, depth=depth_frame, trace_px=trace_px
+            )      # <- the ONE ML call
             session["frames_processed"] += 1
         except Exception as e:
             logger.error(f"Error in TubeAnalyzer for session {session_id}: {e}", exc_info=True)
@@ -428,6 +415,27 @@ def update_camera_calibration(camera_matrix: Any, calib_width: int, calib_height
             analyzer = session.get("analyzer")
             if analyzer and hasattr(analyzer, "set_camera_matrix"):
                 analyzer.set_camera_matrix(camera_matrix, calib_width, calib_height, dist_coeffs)
+
+
+def set_camera_trace_px(session_id: Optional[str] = None, trace_px: Optional[float] = None) -> Optional[float]:
+    """Dynamically update wrapper trace pixel distance for live camera sessions."""
+    global _global_trace_px
+    # Parsing and validation is owned by _parse_trace_px (single source of truth).
+    parsed = _parse_trace_px(trace_px)
+    _global_trace_px = parsed
+    with _sessions_lock:
+        if session_id and session_id in _sessions:
+            targets = [_sessions[session_id]]
+        else:
+            targets = list(_sessions.values())
+    for s in targets:
+        s["trace_px"] = parsed
+        analyzer = s.get("analyzer")
+        if isinstance(analyzer, TubeAnalyzer):
+            analyzer.set_trace_px(parsed)
+    if _shared_camera_analyzer is not None and hasattr(_shared_camera_analyzer, "set_trace_px"):
+        _shared_camera_analyzer.set_trace_px(parsed)
+    return parsed
 
 
 # Backward compatibility aliases

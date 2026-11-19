@@ -1,0 +1,14 @@
+head_tail_analyzer/__init__.py,sha256=bd6iS7hfIL4BhdUl6hIBYfYpK9IAeRpwWVVtHMUiPOE,523
+head_tail_analyzer/__main__.py,sha256=6q4tWOq3PWBkxW21S4vCOI__I82IeB84KsuB6LdJElw,1203
+head_tail_analyzer/depth3d.py,sha256=4qOFtc6vBxvCJXGF4rMR3eJ6HECFzOB597V4CR7swdM,11376
+head_tail_analyzer/main.py,sha256=ML0Sbde6w-MF0dkkHUuh9ZuUdeVS1MNUxJCK2UvC8XY,23516
+head_tail_analyzer/measure_from_masks.py,sha256=ay7TCSizm0kPDCXy50QDHrxGGHiMxwEgYs2o4X7XxCw,18873
+head_tail_analyzer/run_video_frames.py,sha256=EEY0kbhlxZHDz5fZ_kZ8rsiHbXqYWhEYp1m_qyZJHO0,132342
+head_tail_analyzer/tube_ends.py,sha256=CB0uK62hz0QIB28N3DSxMUcxTBUIwiXhNXZooAH_CWY,20294
+head_tail_analyzer/video_ends.py,sha256=U00ZcRm_2XjZl6yZSJXJ-u5LvWjstcZh7L3dDcJ9Jxw,31657
+head_tail_analyzer/wrapper_trace.py,sha256=xqxyqhk-PW2KU0j9XKPeujGDl9r2XWOPx_V9lIxIFUc,13532
+head_tail_analyzer-4.0.1.dist-info/METADATA,sha256=OX-gf9UB_kN886vTtxnM78WdfW7KxRwKrVQd5ZRUipU,1534
+head_tail_analyzer-4.0.1.dist-info/WHEEL,sha256=mOdXR9C3wMVov7cSY8PY-XCzo3SmmWCHvGQr5csJoao,91
+head_tail_analyzer-4.0.1.dist-info/entry_points.txt,sha256=c3TDXoxUWgt4FS4ReDPevv3_LtPq754aXPARyQ1QqZA,161
+head_tail_analyzer-4.0.1.dist-info/top_level.txt,sha256=PV7UkBNjoNtNY3DcWqwyw2bm_xWTO5xoQKiAuqbuNXg,19
+head_tail_analyzer-4.0.1.dist-info/RECORD,,

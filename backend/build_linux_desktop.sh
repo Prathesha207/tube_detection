@@ -92,6 +92,7 @@ pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
   --collect-all torch \
   --collect-all torchvision \
   --collect-all ultralytics \
+  --collect-all sympy \
   --collect-all depthai \
   --collect-all av \
   --collect-all scipy \

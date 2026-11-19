@@ -1,0 +1,38 @@
+Metadata-Version: 2.4
+Name: head_tail_analyzer
+Version: 4.0.1
+Summary: Tube head/tail detection, width, bigger tube, depth XYZ and trace out of the wrapper (YOLO11-seg)
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: scikit-image
+Requires-Dist: pyyaml
+Requires-Dist: ultralytics>=8.3.0
+
+# head_tail_analyzer
+
+Tube head/tail detection, width, bigger tube, depth X/Y/Z and the trace out of the wrapper.
+
+## Build the wheel
+    cd tube_pkg
+    pip install build
+    Remove-Item -Recurse -Force build, dist, *.egg-info -ErrorAction SilentlyContinue
+    python -m build --wheel
+    python -m zipfile -l dist\head_tail_analyzer-4.0.1-py3-none-any.whl
+
+## Install (GPU machine: CUDA torch first)
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    pip install dist\head_tail_analyzer-4.0.1-py3-none-any.whl
+ffmpeg must be on PATH (reads the 16-bit depth video).
+
+## Run
+    python -m head_tail_analyzer config.yaml video.mp4 150 out.mp4
+    hta --config config.yaml --video video.mp4 --trace-px 150 --output out.mp4
+
+## Backend
+    from head_tail_analyzer import HeadTailAnalyzer, AnalyzerError
+    analyzer = HeadTailAnalyzer("config.yaml", preload=True)
+    for result in analyzer.process_video(video_path, trace_px=value_from_frontend):
+        ...                      # result["traces"][i]["end_xyz_m"]
+    analyzer.set_trace_px(new_value)   # user changed it while the video runs

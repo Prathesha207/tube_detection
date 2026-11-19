@@ -98,7 +98,7 @@
     ],
     "extraResources": [
       {
-        "from": "../vision-ai-backend/dist/backend",
+        "from": "../backend/dist/backend",
         "to": "backend"
       }
     ],

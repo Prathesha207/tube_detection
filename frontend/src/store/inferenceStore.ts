@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import type { TubeDetection, TubeMask } from '../types';
+import type { TubeDetection, TubeMask, TubeWrapper, TubeTrace } from '../types';
 
-export type { TubeDetection };
+export type { TubeDetection, TubeWrapper, TubeTrace };
 export type Detection = TubeDetection;
 
 export type SessionLifecycleStatus =
@@ -30,10 +30,16 @@ export interface InferenceStats {
   tubes?: TubeMask[];
   tubes_count?: number;
   tube_counts?: Record<string, number>;
+  tubes_total?: number;
+  tube_totals?: Record<string, number>;
   class_counts?: Record<string, number>;
   class_totals?: Record<string, number>;
   bigger_tube: TubeDetection | null;
   smaller_tube: TubeDetection | null;
+  wrapper?: TubeWrapper | null;
+  traces?: TubeTrace[] | null;
+  trace_px?: number | null;
+  time_s?: number | null;
 
   video_width: number;
   video_height: number;

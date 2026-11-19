@@ -2,7 +2,7 @@ from typing import Optional
 import logging
 import tempfile
 import asyncio
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Request, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Request, Form, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 
 from app.ml.video_inference_service import video_inference_service, ml_inference_service
@@ -467,7 +467,11 @@ async def _ensure_session_exists(session_id: str):
     return None
 
 @router.post("/start/{session_id}")
-async def start_video_inference(session_id: str, background_tasks: BackgroundTasks):
+async def start_video_inference(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    trace_px: Optional[float] = Query(None),
+):
     try:
         session = await _ensure_session_exists(session_id)
         if not session:
@@ -490,7 +494,7 @@ async def start_video_inference(session_id: str, background_tasks: BackgroundTas
         # only `status != processing` used to let a quick Stop -> Start silently
         # keep the old run alive. start_run invalidates that old task and clears
         # its queued MJPEG frames before the new task begins.
-        run_seq = ml_inference_service.start_run(session_id)
+        run_seq = ml_inference_service.start_run(session_id, trace_px=trace_px)
         
         # Explicitly create the task and store it so stop_session can await its termination
         task = asyncio.create_task(
@@ -503,13 +507,26 @@ async def start_video_inference(session_id: str, background_tasks: BackgroundTas
         )
         session["task"] = task
             
-        return {"status": "started", "session_id": session_id}
+        return {"status": "started", "session_id": session_id, "trace_px": session.get("trace_px")}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[API ERROR] POST /video/start/{session_id}: {e}", exc_info=True)
         realtime_log_service.add_log("video", "CRASH", f"Start video inference failed: {e}", "error")
         raise HTTPException(status_code=500, detail=f"Failed to start video inference: {e}")
+
+
+@router.post("/trace_px/{session_id}")
+async def set_video_trace_px(session_id: str, trace_px: Optional[float] = Query(None)):
+    try:
+        session = await _ensure_session_exists(session_id)
+        if not session:
+            return JSONResponse(status_code=404, content={"message": "Session not found."})
+        val = ml_inference_service.set_session_trace_px(session_id, trace_px)
+        return {"session_id": session_id, "trace_px": val}
+    except Exception as e:
+        logger.error(f"[API ERROR] POST /video/trace_px/{session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update trace distance: {e}")
 
 @router.get("/stream/{session_id}")
 async def stream_video(session_id: str, request: Request):

@@ -123,23 +123,14 @@ def _preload_model_background():
     Sets _backend_ready=True when done so /health flips to 'ready'."""
     global _backend_ready
     try:
-        from app.utils.resource_path import resource_path
-
+        MODEL_PATH = None
+        TubeAnalyzer = None
         try:
-            from app.ml.tube_analyzer import TubeAnalyzer
-        except ImportError as e:
-            logger.error(f"[STARTUP] Could not import TubeAnalyzer: {e}")
-            TubeAnalyzer = None
+            from app.ml.tube_analyzer import MODEL_PATH, TubeAnalyzer
+        except Exception as e:
+            logger.error(f"[STARTUP] Could not load TubeAnalyzer or its configured model path: {e}")
 
-        ml_dir = os.path.join(os.path.dirname(__file__), "ml")
-        model_candidates = [
-            resource_path("app/ml/model/best 33.pt"),
-            os.path.join(ml_dir, "model", "best 33.pt"),
-        ]
-        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            model_candidates.insert(0, os.path.join(sys._MEIPASS, "app", "ml", "model", "best 33.pt"))
-
-        resolved_model = next((c for c in model_candidates if c and os.path.exists(c)), None)
+        resolved_model = MODEL_PATH if MODEL_PATH and os.path.isfile(MODEL_PATH) else None
 
         if TubeAnalyzer is not None and resolved_model:
             logger.info(f"[STARTUP] Preloading TubeAnalyzer model from {resolved_model} into memory (GPU if available)...")
@@ -164,7 +155,7 @@ def _preload_model_background():
                 device_val = "cpu"
 
             # Instantiating TubeAnalyzer loads YOLO weights + optionally CUDA
-            _analyzer = TubeAnalyzer(model_path=resolved_model, device=device_val)
+            _analyzer = TubeAnalyzer(device=device_val)
 
             # Store it as the shared analyzer IMMEDIATELY so Video & Camera inference can start in 0.0s
             try:
@@ -187,7 +178,7 @@ def _preload_model_background():
                 except Exception as warm_err:
                     logger.warning(f"[STARTUP] Warm-up inference failed for {h_w}: {warm_err}")
         else:
-            logger.info("[STARTUP] TubeAnalyzer or model best 33.pt not found — skipping preload.")
+            logger.info(f"[STARTUP] TubeAnalyzer or configured model not found ({MODEL_PATH}) — skipping preload.")
     except Exception as e:
         logger.error(f"[STARTUP] Model preload failed: {e}", exc_info=True)
     finally:

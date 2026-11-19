@@ -141,6 +141,7 @@
     }
   },
   "overrides": {
-    "@electron/get": "2.0.3"
+    "@electron/get": "2.0.3",
+    "@noble/hashes": "1.8.0"
   }
 }

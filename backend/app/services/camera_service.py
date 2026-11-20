@@ -216,8 +216,59 @@ def delete_camera(db: Session, camera_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def ensure_default_camera(db: Session) -> Camera:
+    """Ensures that at least one Camera record exists in the database.
+    If no camera exists in DB, it auto-detects connected OAK hardware (MXID/USB)
+    and registers it with standard production settings so the frontend always has a valid camera."""
+    cam = (
+        db.query(Camera)
+        .filter(Camera.is_enabled == True)
+        .order_by(Camera.id.desc())
+        .first()
+    ) or db.query(Camera).order_by(Camera.id.desc()).first()
+    if cam:
+        return cam
+
+    mxid = "usb"
+    cam_name = "OAK-D Camera"
+    try:
+        from app.services.oak_camera_service import _depthai_device_enum_lock
+        import depthai as dai
+        with _depthai_device_enum_lock:
+            devs = dai.Device.getAllAvailableDevices()
+            if devs:
+                dev = devs[0]
+                mxid = str(getattr(dev, "mxid", "") or "") or "usb"
+                desc = dev.getXLinkDeviceDesc() if hasattr(dev, "getXLinkDeviceDesc") else None
+                desc_name = str(getattr(desc, "name", "") or "") if desc else ""
+                cam_name = desc_name or (f"OAK-D ({mxid[:8]})" if mxid != "usb" else "OAK-D Camera")
+    except Exception as e:
+        logger.debug(f"[CAMERA AUTO-REGISTER] Hardware scan note: {e}")
+
+    new_cam_data = CameraCreate(
+        name=cam_name,
+        ip_address=mxid,
+        resolution="1920x1080",
+        fps=30,
+        control_mode="manual",
+        exposure=8.0,
+        gain=400,
+        focus=120,
+        brightness=0,
+        contrast=50,
+        is_enabled=True,
+    )
+    cam = create_camera(db, new_cam_data)
+    logger.info(f"[CAMERA AUTO-REGISTER] Automatically registered camera ID {cam.id} ({cam.name}, {cam.ip_address}) in DB")
+    return cam
+
+
 def get_cameras(db: Session):
-    return db.query(Camera).all()
+    cams = db.query(Camera).all()
+    if not cams:
+        default_cam = ensure_default_camera(db)
+        return [default_cam]
+    return cams
 
 
 def get_camera_config(db: Session):
@@ -246,7 +297,12 @@ def get_camera_config(db: Session):
         return enabled_cam
 
     # 3. Fallback to newest camera
-    return db.query(Camera).order_by(Camera.id.desc()).first()
+    cam = db.query(Camera).order_by(Camera.id.desc()).first()
+    if cam:
+        return cam
+
+    # 4. If table is empty, auto-register default camera
+    return ensure_default_camera(db)
 
 
 import json

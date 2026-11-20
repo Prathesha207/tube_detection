@@ -241,38 +241,62 @@ export const CameraImageAdjustmentsCard: React.FC<CameraImageAdjustmentsCardProp
     });
   };
 
-  // Reset to Calibrated Default Values
-  const handleResetDefaults = () => {
+  // Reset to Calibrated Default Values from Database
+  const handleResetDefaults = async () => {
     if (isRecording) return;
-    const { exposure: defaultExp, gain: defaultGain, focus: defaultFocus, brightness: defaultB, contrast: defaultC } = presetRef.current;
+    try {
+      // 1. Fetch latest saved settings from database
+      const cameras = await cameraService.checkCamera().catch(() => []);
+      const activeCam = Array.isArray(cameras) && cameras.length > 0
+        ? (cameras.find((c: any) => c.id === config?.id) || cameras.find((c: any) => c.is_enabled) || cameras[0])
+        : null;
 
-    setExposure(defaultExp);
-    setGain(defaultGain);
-    setFocus(defaultFocus);
-    setBrightness(defaultB);
-    setContrast(defaultC);
+      const resetExp = activeCam?.exposure ?? presetRef.current.exposure ?? 8;
+      const resetGain = activeCam?.gain ?? presetRef.current.gain ?? 400;
+      const resetFocus = (activeCam?.focus !== null && activeCam?.focus !== undefined && activeCam?.focus !== 0)
+        ? activeCam.focus
+        : (presetRef.current.focus && presetRef.current.focus !== 0 ? presetRef.current.focus : 120);
+      const resetB = activeCam?.brightness ?? presetRef.current.brightness ?? 0;
+      const resetC = activeCam?.contrast ?? presetRef.current.contrast ?? 50;
 
-    onUpdateConfig?.({
-      controlMode: 'manual',
-      exposure: defaultExp,
-      gain: defaultGain,
-      focus: defaultFocus,
-      brightness: defaultB,
-      contrast: defaultC,
-      autoExposure: false,
-      autoFocus: false,
-    });
+      setExposure(resetExp);
+      setGain(resetGain);
+      setFocus(resetFocus);
+      setBrightness(resetB);
+      setContrast(resetC);
 
-    scheduleDispatch({
-      control_mode: 'manual',
-      exposure: defaultExp,
-      gain: defaultGain,
-      focus: defaultFocus,
-      brightness: defaultB,
-      contrast: defaultC,
-      auto_exposure: false,
-      auto_focus: false,
-    });
+      presetRef.current = {
+        exposure: resetExp,
+        gain: resetGain,
+        focus: resetFocus,
+        brightness: resetB,
+        contrast: resetC,
+      };
+
+      onUpdateConfig?.({
+        controlMode: 'manual',
+        exposure: resetExp,
+        gain: resetGain,
+        focus: resetFocus,
+        brightness: resetB,
+        contrast: resetC,
+        autoExposure: false,
+        autoFocus: false,
+      });
+
+      scheduleDispatch({
+        control_mode: 'manual',
+        exposure: resetExp,
+        gain: resetGain,
+        focus: resetFocus,
+        brightness: resetB,
+        contrast: resetC,
+        auto_exposure: false,
+        auto_focus: false,
+      });
+    } catch (err) {
+      console.warn('Reset to database defaults failed:', err);
+    }
   };
 
   // Save current manual settings to database as permanent defaults

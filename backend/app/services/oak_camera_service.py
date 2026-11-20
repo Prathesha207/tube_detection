@@ -835,7 +835,7 @@ class OakCameraService:
                     continue
                 pkt = q.tryGet()
                 if pkt is None:
-                    time.sleep(0.005)
+                    time.sleep(0.001)
                     continue
 
                 depth = pkt.getFrame()           # uint16, millimetres
@@ -1331,7 +1331,7 @@ class OakCameraService:
                         logger.warning("[MJPEG] Watchdog: No MJPEG frames from camera for 15.0s during active stream — device connection frozen")
                         self._on_device_lost("No MJPEG frames from camera for 15.0s")
                         break
-                    time.sleep(0.005)
+                    time.sleep(0.001)
                     continue
 
                 last_frame_ts = time.time()
@@ -1517,12 +1517,12 @@ class OakCameraService:
                         rec._capture_packets_pending = max(0, getattr(rec, "_capture_packets_pending", 1) - 1)
                         logger.exception("[RECORD] Could not queue captured camera packet")
 
-                # Preview / inference queue always keeps only the newest packet for minimal latency
-                while not self._hires_packet_queue.empty():
+                # Preview / inference queue with 4-frame jitter buffer for smooth continuous playback
+                if self._hires_packet_queue.full():
                     try:
                         self._hires_packet_queue.get_nowait()
                     except Empty:
-                        break
+                        pass
                 try:
                     self._hires_packet_queue.put_nowait(pkt)
                 except Full:
@@ -1598,18 +1598,10 @@ class OakCameraService:
 
         try:
             while not self._convert_stop.is_set() or not self._hires_packet_queue.empty():
-                # Drain queue to only process the newest available packet
-                pkt = None
-                while not self._hires_packet_queue.empty():
-                    try:
-                        pkt = self._hires_packet_queue.get_nowait()
-                    except Empty:
-                        break
-                if pkt is None:
-                    try:
-                        pkt = self._hires_packet_queue.get(timeout=0.05)
-                    except Empty:
-                        continue
+                try:
+                    pkt = self._hires_packet_queue.get(timeout=0.05)
+                except Empty:
+                    continue
 
                 try:
                     raw_bgr = pkt.getCvFrame()
@@ -3076,6 +3068,19 @@ class OakCameraService:
 
             try:
                 self._active_camera_id = getattr(config, "id", None)
+                if not self._active_camera_id:
+                    try:
+                        from app.core.database import SessionLocal
+                        from app.services.camera_service import get_camera_config
+                        db = SessionLocal()
+                        try:
+                            db_cam = get_camera_config(db)
+                            if db_cam:
+                                self._active_camera_id = db_cam.id
+                        finally:
+                            db.close()
+                    except Exception as e:
+                        logger.debug(f"[START] DB camera lookup: {e}")
                 if not self.is_connected:
                     if not await self.connect(config.ip_address):
                         # If device is already in use by another process, do NOT attempt USB fallback

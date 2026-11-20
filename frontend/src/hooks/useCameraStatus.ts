@@ -121,13 +121,28 @@ export function useCameraStatus(
             } else if (isOnline) {
               setCameraError(null);
             }
-            // Force offline states if the hardware is not connected
-            if (!isOnline) {
+            // Update online / offline states
+            if (isOnline) {
+              setCameraStartingState('ready');
+              if (data.streaming) {
+                setIsStreaming(true);
+              } else {
+                // Auto-start stream on refresh / reconnect if in camera mode
+                const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
+                if (isCameraMode && !autoConnectAttemptedRef.current) {
+                  autoConnectAttemptedRef.current = true;
+                  cameraService.startStream().then(() => {
+                    setIsStreaming(true);
+                  }).catch((err) => {
+                    console.warn('Auto-stream on refresh failed:', err);
+                  });
+                }
+              }
+            } else {
               setIsStreaming(false);
               setCameraStartingState((prev) => prev !== 'idle' ? 'idle' : prev);
 
               // Auto-connect when hardware is detected in camera mode and no error occurred
-              // Auto-connect and start stream when hardware is detected in camera mode and no error occurred
               const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
               if (isDetected && isCameraMode && !autoConnectAttemptedRef.current && !data.last_error) {
                 autoConnectAttemptedRef.current = true;

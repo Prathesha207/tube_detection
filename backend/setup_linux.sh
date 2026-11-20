@@ -53,8 +53,17 @@ fi
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 
-# The base requirements remain portable. Install dependencies WITHOUT generic CPU torch
-grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+# If the venv currently has a CPU-only PyTorch that shadows the host's CUDA PyTorch, remove it immediately
+if python -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
+  if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    echo "✓ Removing local venv CPU PyTorch to uncover host CUDA PyTorch ($PYTHON_EXEC)..."
+    python -m pip uninstall -y torch torchvision 2>/dev/null || true
+  fi
+fi
+
+# The base requirements remain portable. Install dependencies WITHOUT generic CPU torch or ultralytics pulling it
+grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+python -m pip install --no-deps "ultralytics>=8.3.0"
 
 # Automatically install latest head_tail_analyzer wheel
 WHL_DIR="$BACKEND_DIR/app/ml/whl"
@@ -95,6 +104,14 @@ if [[ "$HAS_NVIDIA_GPU" == "1" ]]; then
       }
     else
       echo "⚠️ Note: On ARM64/Jetson/Blackwell, ensure system PyTorch with CUDA is installed."
+    fi
+  fi
+
+  # Final safeguard: verify host CUDA torch is not shadowed
+  if python -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
+    if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Cleaning shadowed CPU PyTorch in venv..."
+      python -m pip uninstall -y torch torchvision 2>/dev/null || true
     fi
   fi
 else

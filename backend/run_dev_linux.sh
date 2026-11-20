@@ -17,7 +17,14 @@ fi
 # Fast pre-flight check (<0.05s): installs backend requirements if anything is missing
 if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, yaml" 2>/dev/null; then
   echo "Configuring backend environment (one-time silent setup)..."
-  grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r /dev/stdin
+  grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r /dev/stdin
+  "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet --no-deps "ultralytics>=8.3.0"
+fi
+
+# Clean up any local CPU torch inside the venv that may shadow the host CUDA torch
+if "$BACKEND_DIR/.venv/bin/python" -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
+  echo "Detected CPU torch in .venv. Removing to uncover host CUDA PyTorch..."
+  "$BACKEND_DIR/.venv/bin/python" -m pip uninstall -y torch torchvision 2>/dev/null || true
 fi
 
 WHL_DIR="$BACKEND_DIR/app/ml/whl"

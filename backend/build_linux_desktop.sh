@@ -75,8 +75,12 @@ if [[ "$CLEAN_BUILD" == "1" ]]; then
 fi
 
 # Detect the best Python interpreter with active CUDA PyTorch
-PYTHON_EXEC="python3"
-if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+PYTHON_EXEC=""
+if [[ -x "$BACKEND_DIR/.venv/bin/python" ]] && "$BACKEND_DIR/.venv/bin/python" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  echo "✓ Detected operational CUDA PyTorch in $BACKEND_DIR/.venv"
+  PYTHON_EXEC="$BACKEND_DIR/.venv/bin/python"
+  VENV_DIR="$BACKEND_DIR/.venv"
+elif python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
   PYTHON_EXEC="python"
 elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
   PYTHON_EXEC="python3"
@@ -92,14 +96,23 @@ else
   fi
 fi
 
+if [[ -z "$PYTHON_EXEC" ]]; then
+  PYTHON_EXEC="python3"
+fi
+
 # Always create venv with --system-site-packages so host CUDA PyTorch is directly accessible
-if [[ ! -d "$VENV_DIR" ]]; then
+if [[ "$VENV_DIR" != "$BACKEND_DIR/.venv" && ! -d "$VENV_DIR" ]]; then
   echo "Creating build virtual environment with --system-site-packages using $PYTHON_EXEC..."
   "$PYTHON_EXEC" -m venv --system-site-packages "$VENV_DIR"
 fi
 
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
+
+# Ensure pyinstaller is available in the environment
+if ! command -v pyinstaller >/dev/null 2>&1; then
+  python -m pip install "pyinstaller>=6.5.0"
+fi
 
 USE_CUDA="${USE_CUDA:-1}"
 
@@ -172,6 +185,17 @@ echo "          Active ML Environment Verification"
 echo "========================================================"
 python -c "import torch; print('PyTorch Version :', torch.__version__); print('CUDA Available  :', torch.cuda.is_available()); print('Inference Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU (WARNING: 1 FPS on CPU!)')"
 echo "========================================================"
+
+if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
+  if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    echo "=========================================================================="
+    echo "❌ FATAL: NVIDIA GPU detected, but active PyTorch cannot access CUDA!"
+    echo "   Aborting build to prevent bundling a 1 FPS CPU binary into the app."
+    echo "   Please run first: bash $BACKEND_DIR/setup_linux.sh"
+    echo "=========================================================================="
+    exit 1
+  fi
+fi
 
 if [[ "$SKIP_PYINSTALLER" == "1" && -f "$BACKEND_DIR/dist/backend/backend" ]]; then
   echo "Reusing existing backend dist/backend/backend..."

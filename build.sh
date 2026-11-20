@@ -32,16 +32,36 @@ echo "======================================================="
 
 if [[ "$AUTO_INSTALL" == "1" ]]; then
   echo ""
-  echo "--> Installing and launching new .deb package automatically..."
+  echo "--> Stopping running instances and cleanly reinstalling application..."
   pkill -9 -f vision-monitor 2>/dev/null || true
   pkill -9 -f backend 2>/dev/null || true
+  sleep 1
+
+  echo "--> Removing previous /opt/vision-monitor package..."
+  sudo dpkg -r vision-monitor 2>/dev/null || true
+  sudo rm -rf /opt/vision-monitor /opt/Vision-Monitor 2>/dev/null || true
+
   DEB_FILE=$(find "$SCRIPT_DIR/frontend/dist_app" -name "*.deb" 2>/dev/null | sort -V | tail -n 1)
   if [[ -n "$DEB_FILE" && -f "$DEB_FILE" ]]; then
-    sudo dpkg -r vision-monitor 2>/dev/null || true
+    echo "--> Installing: $(basename "$DEB_FILE")..."
     sudo dpkg -i "$DEB_FILE"
-    echo "✓ Installation complete! Launching vision-monitor..."
-    vision-monitor &
+    echo ""
+    echo "======================================================="
+    echo "✓ Clean installation complete!"
+    echo "Launching new Vision Monitor desktop application..."
+    echo "======================================================="
+    vision-monitor >/dev/null 2>&1 &
   else
-    echo "Error: Could not find generated .deb in $SCRIPT_DIR/frontend/dist_app"
+    echo "Error: Could not locate generated .deb in $SCRIPT_DIR/frontend/dist_app"
+    exit 1
   fi
+else
+  echo ""
+  echo "To install the newly built clean package, run:"
+  echo "  sudo dpkg -r vision-monitor 2>/dev/null || true"
+  echo "  sudo rm -rf /opt/vision-monitor"
+  echo "  sudo dpkg -i frontend/dist_app/*.deb"
+  echo ""
+  echo "Or run with auto-install:"
+  echo "  ./build.sh --clean --install"
 fi

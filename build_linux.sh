@@ -36,7 +36,7 @@ fi
 # Run build script inside backend
 cd "$BACKEND_DIR"
 echo "Starting desktop application build..."
-USE_CUDA="${USE_CUDA:-auto}" "$BACKEND_DIR/build_linux_desktop.sh"
+USE_CUDA="${USE_CUDA:-1}" "$BACKEND_DIR/build_linux_desktop.sh" "$@"
 
 echo
 echo "========================================================"

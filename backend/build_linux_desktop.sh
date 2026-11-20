@@ -74,10 +74,28 @@ if [[ "$CLEAN_BUILD" == "1" ]]; then
   rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app" "$FRONTEND_DIR/node_modules/.vite" "$VENV_DIR" ~/.cache/pyinstaller
 fi
 
-# Always create venv with --system-site-packages so JetPack system CUDA PyTorch is accessible
+# Detect the best Python interpreter with active CUDA PyTorch
+PYTHON_EXEC="python3"
+if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  PYTHON_EXEC="python"
+elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  PYTHON_EXEC="python3"
+else
+  # Check if a running GPU process (such as VLLM) has a CUDA-enabled Python
+  VLLM_PID=$(pgrep -f "VLLM::EngineCore" 2>/dev/null | head -n 1 || true)
+  if [[ -n "$VLLM_PID" && -e "/proc/$VLLM_PID/exe" ]]; then
+    CANDIDATE_PY="$(readlink -f "/proc/$VLLM_PID/exe" 2>/dev/null || true)"
+    if [[ -x "$CANDIDATE_PY" ]] && "$CANDIDATE_PY" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Detected CUDA-capable Python from running VLLM service: $CANDIDATE_PY"
+      PYTHON_EXEC="$CANDIDATE_PY"
+    fi
+  fi
+fi
+
+# Always create venv with --system-site-packages so host CUDA PyTorch is directly accessible
 if [[ ! -d "$VENV_DIR" ]]; then
-  echo "Creating build virtual environment with --system-site-packages..."
-  python3 -m venv --system-site-packages "$VENV_DIR"
+  echo "Creating build virtual environment with --system-site-packages using $PYTHON_EXEC..."
+  "$PYTHON_EXEC" -m venv --system-site-packages "$VENV_DIR"
 fi
 
 source "$VENV_DIR/bin/activate"
@@ -85,7 +103,7 @@ python -m pip install --upgrade pip
 
 USE_CUDA="${USE_CUDA:-1}"
 
-# Check if CUDA PyTorch is already available (from JetPack system site-packages or venv)
+# Check if CUDA PyTorch is active inside the environment
 if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
   if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     echo "=========================================================================="
@@ -95,10 +113,18 @@ if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
     echo "=========================================================================="
     grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
   else
-    if [[ "$MACHINE_ARCH" == "x86_64" ]]; then
-      echo "NVIDIA GPU detected on x86_64; installing official CUDA PyTorch..."
-      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu121}"
-      python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision
+    # Check if host system python had CUDA PyTorch but the venv site-packages has a conflicting CPU torch
+    if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Host Python ($PYTHON_EXEC) has CUDA PyTorch. Removing shadowed venv torch..."
+      python -m pip uninstall -y torch torchvision 2>/dev/null || true
+      grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+    elif [[ "$MACHINE_ARCH" == "x86_64" ]]; then
+      echo "NVIDIA GPU detected on x86_64; installing official CUDA PyTorch (cu126/cu124 for Blackwell/Ada/Ampere)..."
+      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
+      python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision || {
+        echo "cu126 wheel fallback; trying cu124..."
+        python -m pip install --force-reinstall --index-url "https://download.pytorch.org/whl/cu124" torch torchvision
+      }
       grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
     elif [[ "$MACHINE_ARCH" == "aarch64" || "$MACHINE_ARCH" == "arm64" ]]; then
       if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
@@ -106,27 +132,25 @@ if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
         grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
       else
         echo "=========================================================================="
-        echo "⚠️  ARM64/Jetson platform detected, but CUDA PyTorch was not found!"
-        echo "    Standard PyPI torch on ARM64 is CPU-only, which runs at ~1 FPS."
-        echo "    Attempting to install JetPack-compatible PyTorch..."
+        echo "⚠️  ARM64/Blackwell platform detected, but CUDA PyTorch was not found!"
+        echo "    Attempting to install JetPack/NVIDIA compatible PyTorch..."
         echo "=========================================================================="
         PY_VER="$(python3 -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")' 2>/dev/null || echo "cp310")"
         if [[ "$PY_VER" == "cp310" ]]; then
           JETSON_WHEEL="https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf41be.nv24.08.16594639-cp310-cp310-linux_aarch64.whl"
-          echo "Installing NVIDIA JetPack 6 PyTorch: $JETSON_WHEEL ..."
+          echo "Installing NVIDIA PyTorch: $JETSON_WHEEL ..."
           python -m pip install --no-cache "$JETSON_WHEEL" 2>/dev/null || true
         fi
         if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
           echo "✓ Successfully configured CUDA PyTorch!"
           grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
         else
-          echo "⚠️ Note: Could not auto-install JetPack wheel. Installing standard requirements."
-          echo "   If FPS is 1.0, install JetPack CUDA PyTorch into your system Python."
-          python -m pip install -r "$BACKEND_DIR/requirements.txt"
+          echo "⚠️ Note: Could not auto-install NVIDIA wheel. Installing standard requirements without overwriting."
+          grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
         fi
       fi
     else
-      python -m pip install -r "$BACKEND_DIR/requirements.txt"
+      grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
     fi
   fi
 else

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { CameraConfig } from '../types';
 import {
   Camera,
@@ -253,8 +253,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       setSavedCameras((prev) => prev.filter((c) => c.id !== row.id));
       if (activeCameraId === row.id || localConfig.id === row.id) {
         setActiveCameraId(null);
-        setLocalConfig((prev) => ({ ...prev, id: undefined, connected: false }));
-        onUpdateConfig?.({ id: undefined, connected: false });
+        const resetConfig: CameraConfig = { ...localConfig, id: undefined, connected: false };
+        setLocalConfig(resetConfig);
+        onSaveConfig(resetConfig);
         // Stop stream and disconnect in frontend
         cameraService.stopStream().catch(() => {});
         cameraService.stop().catch(() => {});
@@ -294,7 +295,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         return savedIp === detectedMxid || savedIp === 'usb';
       });
       if (existing) {
-        handleSelectCamera(existing);
+        handleConnectSaved(existing);
         return;
       }
     }

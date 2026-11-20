@@ -95,6 +95,12 @@ if [[ "$PORT" != "$TARGET_PORT" ]]; then
   echo "Note: Port $TARGET_PORT was busy. Using available port $PORT for backend."
 fi
 
+# Save active port marker for frontend/electron auto-detection
+PORT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/vision-monitor"
+mkdir -p "$PORT_DIR" 2>/dev/null || true
+echo -n "$PORT" > "$PORT_DIR/backend.port" 2>/dev/null || true
+echo -n "$PORT" > "$BACKEND_DIR/backend.port" 2>/dev/null || true
+
 cleanup() {
   echo ""
   echo "Stopping development servers..."

@@ -9,8 +9,9 @@ import uuid
 import subprocess
 from pathlib import Path
 
-# --- PyInstaller PyTorch CUDA DLL Fix ---
+# --- PyInstaller PyTorch CUDA DLL & Pybind11 Type Collision Fix ---
 if getattr(sys, 'frozen', False):
+    sys.modules.setdefault("torch._C._distributed_c10d", None)
     bundle_dir = sys._MEIPASS
     torch_lib = os.path.join(bundle_dir, 'torch', 'lib')
     if os.path.exists(torch_lib):
@@ -404,13 +405,14 @@ origins = [
     "http://localhost",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "app://localhost"
+    "app://localhost",
+    "file://",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_origin_regex=r"^https?://.*$",
+    allow_origins=["*"],
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -433,7 +435,7 @@ if os.path.exists(storage_dir):
 # ---------------------------------------------------
 @app.get("/")
 def health_check():
-    return {"status": "ready", "message": "Vision AI Backend Running", "data": None}
+    return {"status": "ready", "app": "vision-monitor", "message": "Vision AI Backend Running", "data": None}
 
 
 @app.get("/health")
@@ -442,12 +444,12 @@ async def get_health():
     Returns 'starting' while the ML model is loading, 'ready' once it is done.
     Electron's waitForBackend() polls this until it sees 'ready'."""
     if not _backend_ready:
-        # FastAPI is up but model is still loading — tell Electron to keep waiting
+        # FastAPI is up but model is still loading — tell Electron / frontend to keep waiting
         return JSONResponse(
             status_code=200,
-            content={"status": "starting", "message": "Backend is loading ML model...", "data": None}
+            content={"status": "starting", "app": "vision-monitor", "message": "Backend is loading ML model...", "data": None}
         )
-    return {"status": "ready", "message": "Backend is healthy", "data": None}
+    return {"status": "ready", "app": "vision-monitor", "message": "Backend is healthy", "data": None}
 
 
 @app.post("/api/system/shutdown")

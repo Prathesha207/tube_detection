@@ -16,4 +16,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   writeLog: (message) => ipcRenderer.invoke("write-log", message),
   // Notify main process about inference state for the close guard dialog
   setInferenceRunning: (running) => ipcRenderer.send("set-inference-running", running),
+  // Direct IPC backend url discovery
+  getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
+  onBackendUrlUpdated: (callback) => {
+    const handler = (_event, url) => callback(url)
+    ipcRenderer.on("backend-url-updated", handler)
+    return () => ipcRenderer.removeListener("backend-url-updated", handler)
+  },
 })

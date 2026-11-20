@@ -265,6 +265,7 @@ else
     --exclude-module IPython \
     --exclude-module tensorboard \
     --exclude-module sqlalchemy.ext.asyncio \
+    --exclude-module torch.distributed.rpc \
     --collect-all app \
     --collect-all fastapi \
     --collect-all starlette \
@@ -285,6 +286,7 @@ fi
 # Strip non-runtime development files directly in dist/backend
 chmod +x "$BACKEND_DIR/dist/backend/backend"
 find "$BACKEND_DIR/dist/backend" -name "*.a" -delete 2>/dev/null || true
+find "$BACKEND_DIR/dist/backend" -name "*_distributed_c10d*.so" -delete 2>/dev/null || true
 rm -rf "$BACKEND_DIR/dist/backend/_internal/torch/include" 2>/dev/null || true
 rm -rf "$BACKEND_DIR/dist/backend/_internal/triton" 2>/dev/null || true
 

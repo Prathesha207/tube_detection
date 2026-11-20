@@ -2,6 +2,15 @@
 import os
 import shutil
 import sys
+import multiprocessing
+
+multiprocessing.freeze_support()
+
+# Fix PyTorch pybind11 type double-registration collision in frozen PyInstaller bundles:
+# "generic_type: cannot initialize type 'GradBucket': an object with that name is already defined"
+if getattr(sys, "frozen", False):
+    sys.modules.setdefault("torch._C._distributed_c10d", None)
+
 import uvicorn
 from pathlib import Path
 
@@ -95,6 +104,7 @@ def setup_db():
     print(f"[BOOTSTRAP] Fresh user database initialized at {dst_db}")
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     setup_db()
 
     target_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
@@ -121,6 +131,14 @@ if __name__ == "__main__":
     try:
         port_file = DATA_DIR / "backend.port"
         port_file.write_text(str(port), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        (Path.cwd() / "backend.port").write_text(str(port), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        (Path(__file__).parent / "backend.port").write_text(str(port), encoding="utf-8")
     except Exception:
         pass
 

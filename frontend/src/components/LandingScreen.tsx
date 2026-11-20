@@ -17,8 +17,9 @@ interface LandingScreenProps {
   cameraConnected?: boolean | null;
 }
 
-const MAX_WAIT_MS = 30_000;
-const POLL_INTERVAL_MS = 1000;
+const MAX_WAIT_MS = 60_000;
+const FAST_POLL_INTERVAL_MS = 600;
+const SLOW_POLL_INTERVAL_MS = 1000;
 
 export const LandingScreen: React.FC<LandingScreenProps> = ({
   onInitialize,
@@ -28,13 +29,20 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
   const [healthStatus, setHealthStatus] = useState<'connecting' | 'starting' | 'ready' | 'error'>('connecting');
   const [healthMessage, setHealthMessage] = useState('Connecting to AI engine...');
   const [detailsVisible, setDetailsVisible] = useState(false);
+  const [discoveredPort, setDiscoveredPort] = useState<string>('');
   const [retryCount, setRetryCount] = useState(0);
   const startTimeRef = useRef(Date.now());
   const mountedRef = useRef(true);
+  const healthStatusRef = useRef<'connecting' | 'starting' | 'ready' | 'error'>('connecting');
+
+  useEffect(() => {
+    healthStatusRef.current = healthStatus;
+  }, [healthStatus]);
 
   useEffect(() => {
     mountedRef.current = true;
     startTimeRef.current = Date.now();
+    healthStatusRef.current = 'connecting';
     setHealthStatus('connecting');
     setHealthMessage('Connecting to AI engine...');
 
@@ -43,38 +51,66 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
 
       try {
         let currentUrl = getApiBaseUrl();
-        let res: Response | null = null;
+        let validStatus: { status: 'ready' | 'starting'; stage?: string } | null = null;
+
+        // 1. First probe current active URL
         try {
           const controller = new AbortController();
-          const t = setTimeout(() => controller.abort(), 1500);
-          res = await fetch(`${currentUrl}/health`, { signal: controller.signal, cache: 'no-store' });
+          const t = setTimeout(() => controller.abort(), 1000);
+          const res = await fetch(`${currentUrl}/health`, { signal: controller.signal, cache: 'no-store' });
           clearTimeout(t);
+          if (res && (res.ok || res.status === 503)) {
+            const data = await res.json().catch(() => null);
+            if (data && (data.status === 'ready' || data.status === 'starting')) {
+              validStatus = data;
+              try {
+                const u = new URL(currentUrl);
+                if (u.port) setDiscoveredPort(u.port);
+              } catch { }
+            }
+          }
         } catch {
-          res = null;
+          // currentUrl unreachable
         }
 
-        if (!res || (!res.ok && res.status !== 503)) {
-          // Current URL not responding or wrong service (e.g. vLLM) — probe candidate ports
+        // 2. If current URL didn't return a valid Vision Monitor status, probe candidate ports immediately in parallel!
+        if (!validStatus) {
           const discovered = await probeBackendHealth();
           if (discovered) {
             currentUrl = discovered;
-            res = await fetch(`${currentUrl}/health`, { cache: 'no-store' }).catch(() => null);
+            try {
+              const u = new URL(discovered);
+              if (u.port) setDiscoveredPort(u.port);
+            } catch { }
+            try {
+              const res = await fetch(`${currentUrl}/health`, { cache: 'no-store' });
+              if (res && (res.ok || res.status === 503)) {
+                const data = await res.json().catch(() => null);
+                if (data && (data.status === 'ready' || data.status === 'starting')) {
+                  validStatus = data;
+                }
+              }
+            } catch { }
           }
         }
 
-        if (res && (res.ok || res.status === 503)) {
-          const data = await res.json().catch(() => null);
-          if (data?.status === 'ready') {
+        // 3. Process backend status
+        if (validStatus) {
+          if (validStatus.status === 'ready') {
             if (mountedRef.current) {
+              healthStatusRef.current = 'ready';
               setHealthStatus('ready');
               setHealthMessage('AI Engine ready');
             }
             return;
-          } else if (data?.status === 'starting') {
+          } else if (validStatus.status === 'starting') {
             if (mountedRef.current) {
+              healthStatusRef.current = 'starting';
               setHealthStatus('starting');
               setHealthMessage(
-                data.stage === 'loading_models' ? 'Loading AI models...' : 'Initializing inference engine...'
+                validStatus.stage === 'loading_models'
+                  ? 'Loading AI models into GPU/CPU...'
+                  : 'Initializing inference engine...'
               );
             }
           }
@@ -84,25 +120,34 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
       }
 
       const elapsed = Date.now() - startTimeRef.current;
-      if (elapsed > 15000) {
-        if (mountedRef.current && healthStatus !== 'starting') {
+      const currentHealth = healthStatusRef.current;
+
+      if (elapsed > 15000 && currentHealth !== 'starting' && currentHealth !== 'ready') {
+        if (mountedRef.current) {
           setHealthMessage('AI engine is taking longer than expected...');
         }
-      } else if (elapsed > 5000) {
-        if (mountedRef.current && healthStatus === 'connecting') {
+      } else if (elapsed > 4000 && currentHealth === 'connecting') {
+        if (mountedRef.current) {
           setHealthMessage('Starting local backend...');
         }
       }
 
-      if (elapsed > MAX_WAIT_MS) {
+      // Only enter error state if we never connected to backend at all after MAX_WAIT_MS
+      if (elapsed > MAX_WAIT_MS && currentHealth !== 'starting' && currentHealth !== 'ready') {
         if (mountedRef.current) {
+          healthStatusRef.current = 'error';
           setHealthStatus('error');
+        }
+        // Keep background polling every 3s so when backend comes up, it reconnects automatically
+        if (mountedRef.current) {
+          setTimeout(pollHealth, 3000);
         }
         return;
       }
 
       if (mountedRef.current) {
-        setTimeout(pollHealth, POLL_INTERVAL_MS);
+        const nextInterval = currentHealth === 'starting' ? FAST_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
+        setTimeout(pollHealth, nextInterval);
       }
     };
 
@@ -217,8 +262,11 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
             </button>
             {detailsVisible && (
               <div className="mt-2 p-3 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl text-left text-xs text-[var(--text-secondary)] w-full space-y-1">
-                <p className="font-semibold text-[var(--text-primary)]">Backend did not respond on local port.</p>
-                <p>Ensure backend is started: <code className="bg-[var(--bg-page)] px-1 rounded font-mono">uvicorn app.main:app --reload --port 8000</code></p>
+                <p className="font-semibold text-[var(--text-primary)]">Backend Connection Diagnostics:</p>
+                <p>Target URL: <code className="bg-[var(--bg-page)] px-1 rounded font-mono">{getApiBaseUrl()}</code></p>
+                {discoveredPort && <p>Discovered port: <code className="bg-[var(--bg-page)] px-1 rounded font-mono">{discoveredPort}</code></p>}
+                <p>Checked ports: 8000, 8001, 8002, 8003, 8004, 8005, 8080</p>
+                <p>Ensure backend process is running: <code className="bg-[var(--bg-page)] px-1 rounded font-mono">uvicorn app.main:app --port 8000</code></p>
               </div>
             )}
           </div>

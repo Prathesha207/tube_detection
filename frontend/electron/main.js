@@ -324,12 +324,18 @@ function createWindow() {
   })
 
   if (!app.isPackaged) {
-    mainWindow.loadURL("http://localhost:5173")
+    const devUrl = new URL("http://localhost:5173")
+    if (API_BASE) devUrl.searchParams.set("backendUrl", API_BASE)
+    mainWindow.loadURL(devUrl.toString())
     mainWindow.webContents.openDevTools()
   } else {
     const indexPath = path.join(__dirname, "..", "dist", "index.html")
-    console.log("Loading packaged index.html from:", indexPath)
-    mainWindow.loadFile(indexPath)
+    console.log("Loading packaged index.html from:", indexPath, "with backendUrl:", API_BASE)
+    mainWindow.loadFile(indexPath, {
+      query: {
+        backendUrl: API_BASE,
+      },
+    })
   }
 
   mainWindow.once("ready-to-show", () => {
@@ -390,32 +396,17 @@ async function startBackend() {
   // 1. Clean up stale backend recorded in PID marker (waits for port release)
   await cleanupStaleBackend()
 
-  // 2. Pre-flight check on port 8000
-  let portFree = await checkPortAvailable(8000)
-  if (!portFree) {
-    // Port still occupied — try to reuse if the existing backend is healthy
+  // 2. Pre-flight check on candidate ports: if an existing instance is already healthy, reuse it!
+  const candidatePorts = [8000, 8002, 8001, 8003]
+  for (const port of candidatePorts) {
     try {
-      const res = await axios.get(`${API_BASE}/health`, { timeout: 2000 })
-      if (res.data && res.data.status === "ready") {
-        console.log("Existing backend is already healthy and responsive. Reusing instance.")
+      const res = await axios.get(`http://127.0.0.1:${port}/health`, { timeout: 400 })
+      if (res.data && (res.data.status === "ready" || res.data.status === "starting")) {
+        API_BASE = `http://127.0.0.1:${port}`
+        console.log(`Existing backend is already responsive on ${API_BASE}. Reusing instance.`)
         return
       }
     } catch (e) {}
-
-    // Health check failed — the old process is dying but still holds the port.
-    // Force-kill whatever is listening on 8000, then wait for it to free up.
-    console.warn("Port 8000 occupied and unhealthy — force-clearing it...")
-    killPortHolderSync(8000)
-    // Wait up to 5 seconds for the port to become free
-    const deadline = Date.now() + 5000
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      portFree = await checkPortAvailable(8000)
-      if (portFree) break
-    }
-    if (!portFree) {
-      console.error("Port 8000 still occupied after forced cleanup — backend may fail to start.")
-    }
   }
 
   const backendExecutable = process.platform === "win32" ? "backend.exe" : "backend"
@@ -473,52 +464,60 @@ async function startBackend() {
    WAIT FOR BACKEND
 ========================================================= */
 async function waitForBackend() {
-  let backendReady = false
   const startTime = Date.now()
-  const HARD_CAP_MS = 180000
+  // Maximum time to hold splash window before opening main window.
+  // We transition quickly so user sees LandingScreen within 1-3 seconds.
+  const SPLASH_MAX_MS = 10000
 
-  const portFile = path.join(DATA_DIR, "backend.port")
+  const portFileCandidates = [
+    path.join(DATA_DIR, "backend.port"),
+    path.join(process.resourcesPath, "backend", "backend.port"),
+    path.join(__dirname, "..", "..", "backend", "backend.port"),
+    path.join(process.cwd(), "backend.port"),
+  ]
 
-  while (!backendReady) {
-    const candidatePorts = [8000, 8002, 8001, 8003]
-    if (fs.existsSync(portFile)) {
-      try {
-        const filePort = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10)
-        if (filePort && !candidatePorts.includes(filePort)) {
-          candidatePorts.unshift(filePort)
-        }
-      } catch (e) {}
+  while (Date.now() - startTime < SPLASH_MAX_MS) {
+    const candidatePorts = [8000, 8002, 8001, 8003, 8004, 8005]
+
+    for (const pf of portFileCandidates) {
+      if (fs.existsSync(pf)) {
+        try {
+          const filePort = parseInt(fs.readFileSync(pf, "utf8").trim(), 10)
+          if (filePort && !candidatePorts.includes(filePort)) {
+            candidatePorts.unshift(filePort)
+          } else if (filePort) {
+            const idx = candidatePorts.indexOf(filePort)
+            if (idx > 0) {
+              candidatePorts.splice(idx, 1)
+              candidatePorts.unshift(filePort)
+            }
+          }
+        } catch (e) {}
+      }
     }
 
     for (const port of candidatePorts) {
       try {
         const testBase = `http://127.0.0.1:${port}`
         const res = await axios.get(`${testBase}/health`, {
-          timeout: 1000,
+          timeout: 600,
           validateStatus: (status) => status === 200 || status === 503,
         })
 
-        if (res.data && res.data.status === "ready") {
+        if (res.data && (res.data.status === "ready" || res.data.status === "starting")) {
           API_BASE = testBase
-          backendReady = true
-          console.log(`Backend ready confirmed on ${API_BASE} — ML model fully loaded.`)
+          console.log(`Backend connected on ${API_BASE} (status: ${res.data.status})`)
           return
-        } else if (res.data && res.data.status === "starting") {
-          API_BASE = testBase
-          console.log(`Backend starting on ${API_BASE}: ${res.data && res.data.message || 'loading...'}`)
-          break
         }
       } catch (err) {
         // Connection refused or not Vision Monitor backend
       }
     }
 
-    if (Date.now() - startTime > HARD_CAP_MS) {
-      console.warn(`Backend hard cap (${HARD_CAP_MS / 1000}s) reached; proceeding anyway.`)
-      break
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await new Promise((resolve) => setTimeout(resolve, 300))
   }
+
+  console.warn(`Proceeding to main window with ${API_BASE} (LandingScreen will complete connection handshake).`)
 }
 
 
@@ -609,6 +608,10 @@ ipcMain.handle("write-log", (_event, message) => {
   const timestamp = new Date().toISOString()
   const line = `[${timestamp}] ${message}\n`
   fs.appendFileSync(logFilePath, line, "utf8")
+})
+
+ipcMain.handle("get-backend-url", () => {
+  return API_BASE
 })
 
 // Renderer calls this to keep the main process aware of inference state

@@ -17,7 +17,7 @@ fi
 # Fast pre-flight check (<0.05s): installs backend requirements if anything is missing
 if ! "$BACKEND_DIR/.venv/bin/python" -c "import fastapi, uvicorn, cv2, torch, yaml" 2>/dev/null; then
   echo "Configuring backend environment (one-time silent setup)..."
-  "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r "$BACKEND_DIR/requirements.txt"
+  grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | "$BACKEND_DIR/.venv/bin/python" -m pip install --quiet -r /dev/stdin
 fi
 
 WHL_DIR="$BACKEND_DIR/app/ml/whl"
@@ -103,6 +103,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$BACKEND_DIR"
+echo "=================================================="
+.venv/bin/python -c "import torch; print(f'Active ML Hardware: {\"GPU (cuda:0 - \" + torch.cuda.get_device_name(0) + \")\" if torch.cuda.is_available() else \"CPU (WARNING: 1 FPS!)\"} | PyTorch: {torch.__version__}')" 2>/dev/null || true
+echo "=================================================="
 .venv/bin/python -m uvicorn app.main:app --reload --reload-dir app --reload-exclude ".venv*" --reload-exclude "data*" --reload-exclude "recordings*" --port "$PORT" &
 BACKEND_PID=$!
 

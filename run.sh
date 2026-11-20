@@ -9,5 +9,5 @@ if [[ -d "$SCRIPT_DIR/backend" ]]; then
 else
   cd "$SCRIPT_DIR/vision-ai-backend"
 fi
-chmod +x run_dev_linux.sh
-./run_dev_linux.sh
+chmod +x run_dev_linux.sh setup_linux.sh 2>/dev/null || true
+./run_dev_linux.sh "$@"

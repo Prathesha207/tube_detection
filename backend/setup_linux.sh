@@ -17,13 +17,32 @@ if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
   exit 1
 fi
 
+# Detect the best Python interpreter with active CUDA PyTorch
+PYTHON_EXEC="${PYTHON_BIN:-python3}"
+if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  PYTHON_EXEC="python"
+elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  PYTHON_EXEC="python3"
+else
+  # Check if a running GPU process (such as VLLM) has a CUDA-enabled Python
+  VLLM_PID=$(pgrep -f "VLLM::EngineCore" 2>/dev/null | head -n 1 || true)
+  if [[ -n "$VLLM_PID" && -e "/proc/$VLLM_PID/exe" ]]; then
+    CANDIDATE_PY="$(readlink -f "/proc/$VLLM_PID/exe" 2>/dev/null || true)"
+    if [[ -x "$CANDIDATE_PY" ]] && "$CANDIDATE_PY" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Detected CUDA-capable Python from running VLLM service: $CANDIDATE_PY"
+      PYTHON_EXEC="$CANDIDATE_PY"
+    fi
+  fi
+fi
+
 if [[ "${1:-}" == "--clean" || "${1:-}" == "-c" ]]; then
   echo "Clean setup requested. Removing existing .venv..."
   rm -rf "$VENV_DIR"
 fi
 
 if [[ ! -d "$VENV_DIR" ]]; then
-  "$PYTHON_BIN" -m venv "$VENV_DIR" || {
+  echo "Creating virtual environment with --system-site-packages using $PYTHON_EXEC..."
+  "$PYTHON_EXEC" -m venv --system-site-packages "$VENV_DIR" || {
     echo "ERROR: Failed to create Python virtual environment."
     echo "On Ubuntu/Debian, install the required packages:"
     echo "  sudo apt update && sudo apt install -y python3-venv python3-pip python3-dev"
@@ -33,7 +52,9 @@ fi
 
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install -r "$BACKEND_DIR/requirements.txt"
+
+# The base requirements remain portable. Install dependencies WITHOUT generic CPU torch
+grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
 
 # Automatically install latest head_tail_analyzer wheel
 WHL_DIR="$BACKEND_DIR/app/ml/whl"
@@ -45,42 +66,40 @@ if [[ -d "$WHL_DIR" ]]; then
   fi
 fi
 
-# The base requirements remain portable. Replace generic torch with CUDA torch
-# only when this Linux machine has an NVIDIA driver and GPU.
-if command -v nvidia-smi >/dev/null 2>&1; then
-  echo "NVIDIA GPU detected; verifying CUDA-enabled PyTorch..."
-  if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
-    if python -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
-      echo "ARM64 vendor PyTorch with CUDA is already installed; keeping it."
-    else
-      echo "ARM64 detected, but vendor CUDA PyTorch is not installed. Continuing with CPU PyTorch."
-      echo "Install the NVIDIA/platform ARM64 PyTorch package later for GPU inference."
-    fi
+# Detect whether this machine has an NVIDIA GPU (Desktop PCIe, DGX Spark, or Jetson Tegra)
+HAS_NVIDIA_GPU=0
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  HAS_NVIDIA_GPU=1
+elif [[ -f /etc/nv_tegra_release ]] || command -v tegrastats >/dev/null 2>&1 || [[ -d /usr/local/cuda ]]; then
+  HAS_NVIDIA_GPU=1
+elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  HAS_NVIDIA_GPU=1
+fi
+
+if [[ "$HAS_NVIDIA_GPU" == "1" ]]; then
+  echo "NVIDIA GPU detected; configuring CUDA-enabled PyTorch..."
+  if python -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
+    echo "✓ CUDA-enabled PyTorch is already operational:"
+    python -c "import torch; print(f'  PyTorch: {torch.__version__} | GPU: {torch.cuda.get_device_name(0)}')"
   else
-    if ! python -c "import torch; x=torch.ones((1,), device='cuda:0'); assert (x+1).item()==2; torch.cuda.synchronize(0)" 2>/dev/null; then
-      echo "Installing CUDA-enabled PyTorch compatible with this GPU..."
-      GPU_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '[:space:]')"
-      if awk -v cc="${GPU_CC:-0}" 'BEGIN {exit !(cc >= 12.0)}'; then
-        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu130"
-      elif awk -v cc="${GPU_CC:-0}" 'BEGIN {exit !(cc >= 8.9)}'; then
-        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu128"
-      else
-        DEFAULT_CUDA_INDEX="https://download.pytorch.org/whl/cu121"
-      fi
-      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-$DEFAULT_CUDA_INDEX}"
-      if ! python -m pip install --force-reinstall \
-        --index-url "$PYTORCH_CUDA_INDEX" \
-        torch torchvision; then
-        echo "CUDA wheel index $PYTORCH_CUDA_INDEX is unavailable for this Python/platform."
-        echo "Retry with another supported index using PYTORCH_CUDA_INDEX=... ./setup_linux.sh"
-        exit 1
-      fi
+    # Check if host system python had CUDA PyTorch but the venv has a shadowed CPU torch
+    if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Host Python ($PYTHON_EXEC) has CUDA PyTorch. Removing shadowed venv torch..."
+      python -m pip uninstall -y torch torchvision 2>/dev/null || true
+    elif [[ "$(uname -m)" == "x86_64" ]]; then
+      echo "Installing official CUDA PyTorch for NVIDIA GPU (cu126/cu124)..."
+      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
+      python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision || {
+        echo "cu126 wheel fallback; trying cu124..."
+        python -m pip install --force-reinstall --index-url "https://download.pytorch.org/whl/cu124" torch torchvision
+      }
     else
-      echo "CUDA kernels ran successfully; GPU inference is available."
+      echo "⚠️ Note: On ARM64/Jetson/Blackwell, ensure system PyTorch with CUDA is installed."
     fi
   fi
 else
-  echo "No NVIDIA GPU detected; keeping CPU-compatible PyTorch."
+  echo "No NVIDIA GPU detected; using standard PyTorch."
+  python -m pip install torch torchvision
 fi
 
 # Check Luxonis OAK camera udev rules on Linux

@@ -46,7 +46,7 @@ process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED REJECTION:", err)
 })
 
-const API_BASE = "http://127.0.0.1:8000"
+let API_BASE = "http://127.0.0.1:8000"
 const isDev = !app.isPackaged
 
 /* =========================================================
@@ -475,30 +475,44 @@ async function startBackend() {
 async function waitForBackend() {
   let backendReady = false
   const startTime = Date.now()
-  // Keep polling until /health returns {status: "ready"}.
-  // The backend returns 503 {status: "starting"} while the ML model is loading.
-  // Hard cap of 3 minutes only to detect a crashed backend — not used in normal operation.
   const HARD_CAP_MS = 180000
 
-  while (!backendReady) {
-    try {
-      const res = await axios.get(`${API_BASE}/health`, {
-        timeout: 2000,
-        // Accept 503 as a valid response (model still loading) — don't throw
-        validateStatus: (status) => status === 200 || status === 503,
-      })
+  const portFile = path.join(DATA_DIR, "backend.port")
 
-      if (res.data && res.data.status === "ready") {
-        backendReady = true
-        console.log("Backend ready confirmed — ML model fully loaded.")
-        break
-      } else {
-        // status === "starting" — model is still loading, keep polling silently
-        console.log(`Backend starting: ${res.data && res.data.message || 'loading...'}`)
-      }
-    } catch (err) {
-      // Connection refused — process still booting
+  while (!backendReady) {
+    const candidatePorts = [8000, 8002, 8001, 8003]
+    if (fs.existsSync(portFile)) {
+      try {
+        const filePort = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10)
+        if (filePort && !candidatePorts.includes(filePort)) {
+          candidatePorts.unshift(filePort)
+        }
+      } catch (e) {}
     }
+
+    for (const port of candidatePorts) {
+      try {
+        const testBase = `http://127.0.0.1:${port}`
+        const res = await axios.get(`${testBase}/health`, {
+          timeout: 1000,
+          validateStatus: (status) => status === 200 || status === 503,
+        })
+
+        if (res.data && res.data.status === "ready") {
+          API_BASE = testBase
+          backendReady = true
+          console.log(`Backend ready confirmed on ${API_BASE} — ML model fully loaded.`)
+          return
+        } else if (res.data && res.data.status === "starting") {
+          API_BASE = testBase
+          console.log(`Backend starting on ${API_BASE}: ${res.data && res.data.message || 'loading...'}`)
+          break
+        }
+      } catch (err) {
+        // Connection refused or not Vision Monitor backend
+      }
+    }
+
     if (Date.now() - startTime > HARD_CAP_MS) {
       console.warn(`Backend hard cap (${HARD_CAP_MS / 1000}s) reached; proceeding anyway.`)
       break

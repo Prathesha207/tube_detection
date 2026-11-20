@@ -95,12 +95,39 @@ def setup_db():
     print(f"[BOOTSTRAP] Fresh user database initialized at {dst_db}")
 
 if __name__ == "__main__":
-
     setup_db()
+
+    target_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
+
+    import socket
+    def is_port_available(p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('127.0.0.1', p))
+                return True
+            except OSError:
+                return False
+
+    port = target_port
+    while not is_port_available(port) and port < target_port + 20:
+        port += 1
+
+    if port != target_port:
+        print(f"[STARTUP] Target port {target_port} was occupied. Auto-shifted backend to port {port}.")
+    else:
+        print(f"[STARTUP] Starting backend on port {port}.")
+
+    # Save active port marker for frontend/electron auto-detection
+    try:
+        port_file = DATA_DIR / "backend.port"
+        port_file.write_text(str(port), encoding="utf-8")
+    except Exception:
+        pass
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=8000,
+        host="0.0.0.0",
+        port=port,
         reload=False
     )
+

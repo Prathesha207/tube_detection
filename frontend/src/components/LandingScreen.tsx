@@ -10,7 +10,7 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react';
-import { getApiBaseUrl } from '../lib/api';
+import { getApiBaseUrl, probeBackendHealth } from '../lib/api';
 
 interface LandingScreenProps {
   onInitialize: () => void;
@@ -42,16 +42,35 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
       if (!mountedRef.current) return;
 
       try {
-        const res = await fetch(`${getApiBaseUrl()}/health`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'ready') {
+        let currentUrl = getApiBaseUrl();
+        let res: Response | null = null;
+        try {
+          const controller = new AbortController();
+          const t = setTimeout(() => controller.abort(), 1500);
+          res = await fetch(`${currentUrl}/health`, { signal: controller.signal, cache: 'no-store' });
+          clearTimeout(t);
+        } catch {
+          res = null;
+        }
+
+        if (!res || (!res.ok && res.status !== 503)) {
+          // Current URL not responding or wrong service (e.g. vLLM) — probe candidate ports
+          const discovered = await probeBackendHealth();
+          if (discovered) {
+            currentUrl = discovered;
+            res = await fetch(`${currentUrl}/health`, { cache: 'no-store' }).catch(() => null);
+          }
+        }
+
+        if (res && (res.ok || res.status === 503)) {
+          const data = await res.json().catch(() => null);
+          if (data?.status === 'ready') {
             if (mountedRef.current) {
               setHealthStatus('ready');
               setHealthMessage('AI Engine ready');
             }
             return;
-          } else if (data.status === 'starting') {
+          } else if (data?.status === 'starting') {
             if (mountedRef.current) {
               setHealthStatus('starting');
               setHealthMessage(

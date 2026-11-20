@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getApiBaseUrl } from '../lib/api';
+import { getApiBaseUrl, probeBackendHealth } from '../lib/api';
 import { HEALTH_POLL_INTERVAL_MS } from '../utils/constants';
 
 export const INITIALIZED_STORAGE_KEY = 'vision_monitor_initialized';
@@ -39,12 +39,28 @@ export function useBackendHealth() {
     let isMounted = true;
     const checkBackend = async () => {
       try {
-        const res = await fetch(`${getApiBaseUrl()}/health`, { method: 'GET', cache: 'no-store' });
-        if (isMounted) {
-          setIsBackendConnected(res.ok);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`${getApiBaseUrl()}/health`, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok || res.status === 503) {
+          const data = await res.json().catch(() => null);
+          if (data && (data.status === 'ready' || data.status === 'starting')) {
+            if (isMounted) setIsBackendConnected(true);
+            return;
+          }
         }
-      } catch {
-        if (isMounted) setIsBackendConnected(false);
+      } catch { }
+
+      // If current default/saved URL is unreachable, probe candidate ports (8000, 8002, 8001, etc.)
+      const discoveredUrl = await probeBackendHealth();
+      if (isMounted) {
+        setIsBackendConnected(Boolean(discoveredUrl));
       }
     };
 

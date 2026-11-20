@@ -63,8 +63,8 @@ for arg in "$@"; do
 done
 
 if [[ "$CLEAN_BUILD" == "1" ]]; then
-  echo "Clean build requested. Removing $VENV_DIR and dist/build..."
-  rm -rf "$VENV_DIR" "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
+  echo "Clean build requested. Removing build/dist artifacts..."
+  rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app"
 fi
 
 # Always create venv with --system-site-packages so JetPack system CUDA PyTorch is accessible

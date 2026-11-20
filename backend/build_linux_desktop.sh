@@ -74,34 +74,63 @@ if [[ "$CLEAN_BUILD" == "1" ]]; then
   rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app" "$FRONTEND_DIR/node_modules/.vite" "$VENV_DIR" ~/.cache/pyinstaller
 fi
 
+# Function to purge any local torch/torchvision wheels installed directly in the venv
+# so the host's CUDA PyTorch (from --system-site-packages) is exposed:
+clean_venv_torch() {
+  local site_dir
+  site_dir=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
+  if [[ -n "$site_dir" && -d "$site_dir" ]]; then
+    rm -rf "$site_dir"/torch* "$site_dir"/torchvision* 2>/dev/null || true
+  fi
+}
+
 # Detect the best Python interpreter with active CUDA PyTorch
 PYTHON_EXEC=""
-if [[ -x "$BACKEND_DIR/.venv/bin/python" ]] && "$BACKEND_DIR/.venv/bin/python" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  echo "✓ Detected operational CUDA PyTorch in $BACKEND_DIR/.venv"
-  PYTHON_EXEC="$BACKEND_DIR/.venv/bin/python"
-  VENV_DIR="$BACKEND_DIR/.venv"
-elif python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  PYTHON_EXEC="python"
-elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-  PYTHON_EXEC="python3"
-else
-  # Check if a running GPU process (such as VLLM) has a CUDA-enabled Python
-  VLLM_PID=$(pgrep -f "VLLM::EngineCore" 2>/dev/null | head -n 1 || true)
-  if [[ -n "$VLLM_PID" && -e "/proc/$VLLM_PID/exe" ]]; then
-    CANDIDATE_PY="$(readlink -f "/proc/$VLLM_PID/exe" 2>/dev/null || true)"
-    if [[ -x "$CANDIDATE_PY" ]] && "$CANDIDATE_PY" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-      echo "✓ Detected CUDA-capable Python from running VLLM service: $CANDIDATE_PY"
-      PYTHON_EXEC="$CANDIDATE_PY"
-    fi
+
+# 1. Active VLLM service on GB10 / DGX Spark (NVIDIA Blackwell)
+VLLM_PID=$(pgrep -f "VLLM::EngineCore" 2>/dev/null | head -n 1 || true)
+if [[ -n "$VLLM_PID" && -e "/proc/$VLLM_PID/exe" ]]; then
+  CANDIDATE_PY="$(readlink -f "/proc/$VLLM_PID/exe" 2>/dev/null || true)"
+  if [[ -x "$CANDIDATE_PY" ]] && "$CANDIDATE_PY" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    echo "✓ Detected CUDA-capable Python from active VLLM service: $CANDIDATE_PY"
+    PYTHON_EXEC="$CANDIDATE_PY"
   fi
 fi
 
+# 2. Check conda environments (such as ~/miniconda3/envs/vllm/bin/python)
 if [[ -z "$PYTHON_EXEC" ]]; then
-  PYTHON_EXEC="python3"
+  for candidate in "$HOME/miniconda3/envs/vllm/bin/python" "$HOME/anaconda3/envs/vllm/bin/python" "${CONDA_PREFIX:-}/bin/python"; do
+    if [[ -x "$candidate" ]] && "$candidate" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+      echo "✓ Detected CUDA-capable Python in conda env: $candidate"
+      PYTHON_EXEC="$candidate"
+      break
+    fi
+  done
+fi
+
+# 3. Check existing .venv
+if [[ -z "$PYTHON_EXEC" && -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+  VENV_PYSITE=$("$BACKEND_DIR/.venv/bin/python" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
+  if [[ -n "$VENV_PYSITE" && -d "$VENV_PYSITE" ]]; then rm -rf "$VENV_PYSITE"/torch* "$VENV_PYSITE"/torchvision* 2>/dev/null || true; fi
+  if "$BACKEND_DIR/.venv/bin/python" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    echo "✓ Detected operational CUDA PyTorch in $BACKEND_DIR/.venv"
+    PYTHON_EXEC="$BACKEND_DIR/.venv/bin/python"
+  fi
+fi
+
+# 4. Fallback to python / python3
+if [[ -z "$PYTHON_EXEC" ]]; then
+  if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    PYTHON_EXEC="python"
+  elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    PYTHON_EXEC="python3"
+  else
+    PYTHON_EXEC="python3"
+  fi
 fi
 
 # Always create venv with --system-site-packages so host CUDA PyTorch is directly accessible
-if [[ "$VENV_DIR" != "$BACKEND_DIR/.venv" && ! -d "$VENV_DIR" ]]; then
+if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating build virtual environment with --system-site-packages using $PYTHON_EXEC..."
   "$PYTHON_EXEC" -m venv --system-site-packages "$VENV_DIR"
 fi
@@ -114,47 +143,43 @@ if ! command -v pyinstaller >/dev/null 2>&1; then
   python -m pip install "pyinstaller>=6.5.0"
 fi
 
-# If the venv currently has a CPU-only PyTorch that shadows the host's CUDA PyTorch, remove it immediately
-if python -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
-  if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-    echo "✓ Removing local venv CPU PyTorch to uncover host CUDA PyTorch ($PYTHON_EXEC)..."
-    python -m pip uninstall -y torch torchvision 2>/dev/null || true
-  fi
-fi
+# Purge any local CPU torch in the venv so host CUDA PyTorch is used
+clean_venv_torch
 
 USE_CUDA="${USE_CUDA:-1}"
 
 # Check if CUDA PyTorch is active inside the environment
-if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
+if [[ ("$USE_CUDA" == "1" || "$USE_CUDA" == "auto") && "$HAS_NVIDIA_GPU" == "1" ]]; then
   if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     echo "=========================================================================="
-    echo "✓ CUDA-enabled PyTorch is already active:"
+    echo "✓ CUDA-enabled PyTorch is active from host environment:"
     python -c "import torch; print(f'  PyTorch: {torch.__version__} | GPU: {torch.cuda.get_device_name(0)}')"
     echo "  Installing dependencies without overwriting CUDA PyTorch..."
     echo "=========================================================================="
-    # Exclude torch, torchvision, and ultralytics so pip does not fetch CPU torch from PyPI
-    grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+    grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
     python -m pip install --no-deps "ultralytics>=8.3.0"
+    clean_venv_torch
   else
-    # Check if host system python had CUDA PyTorch but the venv site-packages has a conflicting CPU torch
+    # Check if host Python has CUDA PyTorch
     if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-      echo "✓ Host Python ($PYTHON_EXEC) has CUDA PyTorch. Removing shadowed venv torch..."
-      python -m pip uninstall -y torch torchvision 2>/dev/null || true
-      grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+      echo "✓ Host Python ($PYTHON_EXEC) has CUDA PyTorch. Purging venv torch..."
+      clean_venv_torch
+      grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
       python -m pip install --no-deps "ultralytics>=8.3.0"
+      clean_venv_torch
     elif [[ "$MACHINE_ARCH" == "x86_64" ]]; then
-      echo "NVIDIA GPU detected on x86_64; installing official CUDA PyTorch (cu126/cu124 for Blackwell/Ada/Ampere)..."
+      echo "NVIDIA GPU detected on x86_64; installing official CUDA PyTorch (cu126/cu124)..."
       PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu126}"
       python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision || {
         echo "cu126 wheel fallback; trying cu124..."
         python -m pip install --force-reinstall --index-url "https://download.pytorch.org/whl/cu124" torch torchvision
       }
-      grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+      grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
       python -m pip install --no-deps "ultralytics>=8.3.0"
     elif [[ "$MACHINE_ARCH" == "aarch64" || "$MACHINE_ARCH" == "arm64" ]]; then
       if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         echo "✓ Found CUDA PyTorch in system Python ($(python3 -c 'import torch; print(torch.__version__)'))"
-        grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+        grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
         python -m pip install --no-deps "ultralytics>=8.3.0"
       else
         echo "=========================================================================="
@@ -169,27 +194,22 @@ if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
         fi
         if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
           echo "✓ Successfully configured CUDA PyTorch!"
-          grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+          grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
           python -m pip install --no-deps "ultralytics>=8.3.0"
         else
           echo "⚠️ Note: Could not auto-install NVIDIA wheel. Installing standard requirements without overwriting."
-          grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+          grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
           python -m pip install --no-deps "ultralytics>=8.3.0"
         fi
       fi
     else
-      grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+      grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
       python -m pip install --no-deps "ultralytics>=8.3.0"
     fi
   fi
 
-  # Final safeguard: remove any shadowed torch introduced during pip install
-  if python -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
-    if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-      echo "✓ Cleaning shadowed CPU PyTorch in venv..."
-      python -m pip uninstall -y torch torchvision 2>/dev/null || true
-    fi
-  fi
+  # Final safeguard: ensure host CUDA torch is not shadowed
+  clean_venv_torch
 else
   echo "Building with CPU-compatible PyTorch (USE_CUDA=$USE_CUDA)."
   python -m pip install -r "$BACKEND_DIR/requirements.txt"

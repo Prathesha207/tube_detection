@@ -53,17 +53,26 @@ fi
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 
+clean_venv_torch() {
+  local site_dir
+  site_dir=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
+  if [[ -n "$site_dir" && -d "$site_dir" ]]; then
+    rm -rf "$site_dir"/torch* "$site_dir"/torchvision* 2>/dev/null || true
+  fi
+}
+
 # If the venv currently has a CPU-only PyTorch that shadows the host's CUDA PyTorch, remove it immediately
 if python -c "import torch; assert not torch.cuda.is_available()" 2>/dev/null; then
   if "$PYTHON_EXEC" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     echo "✓ Removing local venv CPU PyTorch to uncover host CUDA PyTorch ($PYTHON_EXEC)..."
-    python -m pip uninstall -y torch torchvision 2>/dev/null || true
+    clean_venv_torch
   fi
 fi
 
 # The base requirements remain portable. Install dependencies WITHOUT generic CPU torch or ultralytics pulling it
-grep -v -E "^(torch|torchvision|ultralytics)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+grep -v -i -E "^(torch|torchvision|ultralytics)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
 python -m pip install --no-deps "ultralytics>=8.3.0"
+clean_venv_torch
 
 # Automatically install latest head_tail_analyzer wheel
 WHL_DIR="$BACKEND_DIR/app/ml/whl"

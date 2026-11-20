@@ -174,21 +174,14 @@ class RecordingSession:
         )
 
     def _configure_stream(self, container, codec_name: str, options: dict):
-        # AVI requires constant frame rate (CFR) matching capture rate so the container header
-        # correctly reflects true frame count and framerate. MP4/MKV support VFR with rate=1000.
-        stream_rate = int(self.fps or 30) if self.fmt == "AVI" else 1000
-        stream = container.add_stream(codec_name, rate=stream_rate)
+        # Strict Constant Frame Rate (CFR) matching configured FPS (5 to 60) across all formats
+        fps_int = max(1, int(round(self.fps or 30)))
+        stream = container.add_stream(codec_name, rate=fps_int)
         stream.width   = self.width
         stream.height  = self.height
         stream.pix_fmt = self.pix_fmt
-
-        if self.fmt == "AVI":
-            stream.time_base = Fraction(1, int(self.fps or 30))
-            stream.codec_context.time_base = Fraction(1, int(self.fps or 30))
-        else:
-            # Keep encoder and muxer on the same 1ms clock as our PTS values
-            stream.time_base = Fraction(1, 1000)
-            stream.codec_context.time_base = Fraction(1, 1000)
+        stream.time_base = Fraction(1, fps_int)
+        stream.codec_context.time_base = Fraction(1, fps_int)
 
         if options:
             stream.options = options
@@ -317,18 +310,10 @@ class RecordingSession:
                     continue
 
                 try:
-                    if self.fmt == "AVI":
-                        frame = self._build_video_frame(payload)
-                        frame.pts = self._frames_written
-                        frame.time_base = Fraction(1, int(self.fps or 30))
-                    else:
-                        if pts_ms <= self._last_encoded_pts:
-                            pts_ms = self._last_encoded_pts + 1
-                        self._last_encoded_pts = pts_ms
-
-                        frame = self._build_video_frame(payload)
-                        frame.pts = pts_ms
-                        frame.time_base = Fraction(1, 1000)
+                    fps_int = max(1, int(round(self.fps or 30)))
+                    frame = self._build_video_frame(payload)
+                    frame.pts = self._frames_written
+                    frame.time_base = Fraction(1, fps_int)
 
                     for pkt in self.stream.encode(frame):
                         self._mux_packet(pkt)
@@ -440,22 +425,6 @@ class RecordingSession:
         self.settings_history.append(event)
 
     def stop(self) -> dict:
-        # Pad final frame to actual wall-clock recording duration with monotonic PTS.
-        if self._last_frame_payload is not None:
-            pad_pts_ms = int((time.monotonic() - self._start_mono) * 1000)
-            if pad_pts_ms <= self._last_pts_ms:
-                pad_pts_ms = self._last_pts_ms + 1
-            gap_ms = pad_pts_ms - self._last_pts_ms
-            self._last_pts_ms = pad_pts_ms
-            logger.info(
-                f"[RECORD] Padding video by {gap_ms} ms "
-                f"(last frame → pad to {pad_pts_ms} ms)"
-            )
-            try:
-                self.frame_queue.put_nowait((self._last_frame_payload, pad_pts_ms))
-            except queue.Full:
-                pass
-
         logger.info(
             f"[RECORD] Stopping — {self.frame_queue.qsize()} frames still in queue"
         )
@@ -470,7 +439,8 @@ class RecordingSession:
                 f"opened successfully: {self.video_path}"
             )
         # Container is already closed by the worker's finally block
-        duration = time.monotonic() - self._start_mono
+        fps_int = max(1, int(round(self.fps or 30)))
+        duration = (self._frames_written / fps_int) if self._frames_written > 0 else (time.monotonic() - self._start_mono)
         return {
             "recording_path": self.video_path,
             "filename": self.filename,

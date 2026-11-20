@@ -63,8 +63,15 @@ for arg in "$@"; do
 done
 
 if [[ "$CLEAN_BUILD" == "1" ]]; then
-  echo "Clean build requested. Removing build/dist artifacts..."
-  rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app"
+  echo "========================================================"
+  echo "Clean build requested. Purging ALL caches & old builds:"
+  echo " - Backend build & dist directories"
+  echo " - Frontend dist & dist_app (.deb, AppImage, unpacked)"
+  echo " - Vite build cache (frontend/node_modules/.vite)"
+  echo " - PyInstaller cache (~/.cache/pyinstaller)"
+  echo " - Build virtual environment ($VENV_DIR)"
+  echo "========================================================"
+  rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app" "$FRONTEND_DIR/node_modules/.vite" "$VENV_DIR" ~/.cache/pyinstaller
 fi
 
 # Always create venv with --system-site-packages so JetPack system CUDA PyTorch is accessible
@@ -94,24 +101,29 @@ if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
       python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision
       grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
     elif [[ "$MACHINE_ARCH" == "aarch64" || "$MACHINE_ARCH" == "arm64" ]]; then
-      echo "=========================================================================="
-      echo "⚠️  ARM64/Jetson platform detected, but CUDA PyTorch was not found!"
-      echo "    Standard PyPI torch on ARM64 is CPU-only, which runs at ~1 FPS."
-      echo "    Attempting to install JetPack-compatible PyTorch..."
-      echo "=========================================================================="
-      PY_VER="$(python3 -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")' 2>/dev/null || echo "cp310")"
-      if [[ "$PY_VER" == "cp310" ]]; then
-        JETSON_WHEEL="https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf41be.nv24.08.16594639-cp310-cp310-linux_aarch64.whl"
-        echo "Installing NVIDIA JetPack 6 PyTorch: $JETSON_WHEEL ..."
-        python -m pip install --no-cache "$JETSON_WHEEL" 2>/dev/null || true
-      fi
-      if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-        echo "✓ Successfully configured CUDA PyTorch!"
+      if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        echo "✓ Found CUDA PyTorch in system Python ($(python3 -c 'import torch; print(torch.__version__)'))"
         grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
       else
-        echo "⚠️ Note: Could not auto-install JetPack wheel. Installing standard requirements."
-        echo "   If FPS is 1.0, install JetPack CUDA PyTorch into your system Python."
-        python -m pip install -r "$BACKEND_DIR/requirements.txt"
+        echo "=========================================================================="
+        echo "⚠️  ARM64/Jetson platform detected, but CUDA PyTorch was not found!"
+        echo "    Standard PyPI torch on ARM64 is CPU-only, which runs at ~1 FPS."
+        echo "    Attempting to install JetPack-compatible PyTorch..."
+        echo "=========================================================================="
+        PY_VER="$(python3 -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")' 2>/dev/null || echo "cp310")"
+        if [[ "$PY_VER" == "cp310" ]]; then
+          JETSON_WHEEL="https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf41be.nv24.08.16594639-cp310-cp310-linux_aarch64.whl"
+          echo "Installing NVIDIA JetPack 6 PyTorch: $JETSON_WHEEL ..."
+          python -m pip install --no-cache "$JETSON_WHEEL" 2>/dev/null || true
+        fi
+        if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+          echo "✓ Successfully configured CUDA PyTorch!"
+          grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+        else
+          echo "⚠️ Note: Could not auto-install JetPack wheel. Installing standard requirements."
+          echo "   If FPS is 1.0, install JetPack CUDA PyTorch into your system Python."
+          python -m pip install -r "$BACKEND_DIR/requirements.txt"
+        fi
       fi
     else
       python -m pip install -r "$BACKEND_DIR/requirements.txt"

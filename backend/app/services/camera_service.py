@@ -23,6 +23,40 @@ def create_camera(db: Session, data: CameraCreate):
     try:
         logger.info("[CREATE_CAMERA] Called")
 
+        # De-duplicate: If a camera with the same ip_address already exists, update it instead of duplicating
+        clean_ip = (data.ip_address or "").strip()
+        existing = None
+        if clean_ip and clean_ip != "127.0.0.1":
+            existing = db.query(Camera).filter(Camera.ip_address == clean_ip).first()
+        if existing:
+            logger.info(f"[CREATE_CAMERA] Camera with ip_address '{clean_ip}' already exists (ID: {existing.id}) — updating existing record")
+            if data.name:
+                existing.name = data.name
+            existing.is_enabled = True
+            if data.exposure is not None:
+                existing.exposure = data.exposure
+            if data.gain is not None:
+                existing.gain = data.gain
+            if data.focus is not None:
+                existing.focus = data.focus if data.focus > 0 else 120
+            if data.brightness is not None:
+                existing.brightness = data.brightness
+            if data.contrast is not None:
+                existing.contrast = data.contrast
+            if data.control_mode:
+                existing.control_mode = data.control_mode
+            if data.resolution:
+                existing.resolution = data.resolution
+            if data.fps:
+                existing.fps = data.fps
+            if data.recording_video_path:
+                existing.recording_video_path = data.recording_video_path
+                from app.core.app_paths import set_configured_storage_dir
+                set_configured_storage_dir(data.recording_video_path)
+            db.commit()
+            db.refresh(existing)
+            return existing
+
         camera = Camera(**data.model_dump())
 
         camera.exposure = camera.exposure if camera.exposure is not None else 8
@@ -199,6 +233,14 @@ def delete_camera(db: Session, camera_id: int):
         if not camera:
             raise HTTPException(status_code=404, detail="Camera not found")
 
+        # Stop camera hardware and stream immediately so no ghost stream persists
+        try:
+            from app.services.oak_camera_service import oak_camera_service
+            logger.info(f"[DELETE_CAMERA] Stopping camera ID {camera_id} hardware & stream")
+            oak_camera_service.stop_sync()
+        except Exception as stop_err:
+            logger.warning(f"[DELETE_CAMERA] Error stopping camera hardware: {stop_err}")
+
         db.delete(camera)
         db.commit()
         realtime_log_service.add_log(
@@ -207,7 +249,7 @@ def delete_camera(db: Session, camera_id: int):
             f"Camera deleted: ID {camera_id}",
             "success"
         )
-        return {"status": "success", "message": f"Camera {camera_id} deleted"}
+        return {"status": "success", "message": f"Camera {camera_id} deleted and stream stopped"}
     except HTTPException:
         raise
     except Exception as e:
@@ -216,59 +258,8 @@ def delete_camera(db: Session, camera_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def ensure_default_camera(db: Session) -> Camera:
-    """Ensures that at least one Camera record exists in the database.
-    If no camera exists in DB, it auto-detects connected OAK hardware (MXID/USB)
-    and registers it with standard production settings so the frontend always has a valid camera."""
-    cam = (
-        db.query(Camera)
-        .filter(Camera.is_enabled == True)
-        .order_by(Camera.id.desc())
-        .first()
-    ) or db.query(Camera).order_by(Camera.id.desc()).first()
-    if cam:
-        return cam
-
-    mxid = "usb"
-    cam_name = "OAK-D Camera"
-    try:
-        from app.services.oak_camera_service import _depthai_device_enum_lock
-        import depthai as dai
-        with _depthai_device_enum_lock:
-            devs = dai.Device.getAllAvailableDevices()
-            if devs:
-                dev = devs[0]
-                mxid = str(getattr(dev, "mxid", "") or "") or "usb"
-                desc = dev.getXLinkDeviceDesc() if hasattr(dev, "getXLinkDeviceDesc") else None
-                desc_name = str(getattr(desc, "name", "") or "") if desc else ""
-                cam_name = desc_name or (f"OAK-D ({mxid[:8]})" if mxid != "usb" else "OAK-D Camera")
-    except Exception as e:
-        logger.debug(f"[CAMERA AUTO-REGISTER] Hardware scan note: {e}")
-
-    new_cam_data = CameraCreate(
-        name=cam_name,
-        ip_address=mxid,
-        resolution="1920x1080",
-        fps=30,
-        control_mode="manual",
-        exposure=8.0,
-        gain=400,
-        focus=120,
-        brightness=0,
-        contrast=50,
-        is_enabled=True,
-    )
-    cam = create_camera(db, new_cam_data)
-    logger.info(f"[CAMERA AUTO-REGISTER] Automatically registered camera ID {cam.id} ({cam.name}, {cam.ip_address}) in DB")
-    return cam
-
-
 def get_cameras(db: Session):
-    cams = db.query(Camera).all()
-    if not cams:
-        default_cam = ensure_default_camera(db)
-        return [default_cam]
-    return cams
+    return db.query(Camera).all()
 
 
 def get_camera_config(db: Session):
@@ -297,12 +288,7 @@ def get_camera_config(db: Session):
         return enabled_cam
 
     # 3. Fallback to newest camera
-    cam = db.query(Camera).order_by(Camera.id.desc()).first()
-    if cam:
-        return cam
-
-    # 4. If table is empty, auto-register default camera
-    return ensure_default_camera(db)
+    return db.query(Camera).order_by(Camera.id.desc()).first()
 
 
 import json

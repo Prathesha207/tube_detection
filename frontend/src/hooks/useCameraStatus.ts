@@ -124,25 +124,16 @@ export function useCameraStatus(
             // Update online / offline states
             if (isOnline) {
               setCameraStartingState('ready');
+              // Only mark streaming if backend is actively streaming
               if (data.streaming) {
                 setIsStreaming(true);
-              } else {
-                // Auto-start stream on refresh / reconnect if in camera mode
-                const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
-                if (isCameraMode && !autoConnectAttemptedRef.current) {
-                  autoConnectAttemptedRef.current = true;
-                  cameraService.startStream().then(() => {
-                    setIsStreaming(true);
-                  }).catch((err) => {
-                    console.warn('Auto-stream on refresh failed:', err);
-                  });
-                }
               }
             } else {
               setIsStreaming(false);
               setCameraStartingState((prev) => prev !== 'idle' ? 'idle' : prev);
 
-              // Auto-connect when hardware is detected in camera mode and no error occurred
+              // Auto-connect hardware in background when detected, but DO NOT AUTO-STREAM.
+              // Stream will start only when the user explicitly clicks Start Stream, Record, or Inference.
               const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
               if (isDetected && isCameraMode && !autoConnectAttemptedRef.current && !data.last_error) {
                 autoConnectAttemptedRef.current = true;
@@ -151,14 +142,7 @@ export function useCameraStatus(
                     setIsCameraDeviceActive(true);
                     setCameraConnected(true);
                     setCameraError(null);
-                    // Automatically stream immediately so the user sees live video right away
-                    try {
-                      await cameraService.startStream();
-                      setIsStreaming(true);
-                      setCameraStartingState('ready');
-                    } catch (streamErr) {
-                      console.warn('Auto-stream on device detection failed:', streamErr);
-                    }
+                    setCameraStartingState('ready');
                   } else if (startRes?.status === 'error') {
                     setIsCameraDeviceActive(false);
                     setCameraConnected(false);

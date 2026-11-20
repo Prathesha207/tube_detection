@@ -143,6 +143,20 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     }
   }, []);
 
+  const isUsbAlreadyConfigured = useMemo(() => {
+    if (!detectedUsb) return false;
+    const detectedMxid = (detectedUsb.mxid || '').toLowerCase().trim();
+    const detectedIpOrId = (detectedUsb.ip_or_id || '').toLowerCase().trim();
+    return savedCameras.some((c) => {
+      const savedIp = (c.ip_address || '').toLowerCase().trim();
+      return (
+        (detectedMxid && savedIp === detectedMxid) ||
+        (detectedIpOrId && savedIp === detectedIpOrId) ||
+        (detectedUsb.is_usb && savedIp === 'usb')
+      );
+    });
+  }, [detectedUsb, savedCameras]);
+
   useEffect(() => {
     if (!isOpen) {
       setNewName('');
@@ -237,7 +251,14 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     try {
       await cameraService.deleteCamera(row.id);
       setSavedCameras((prev) => prev.filter((c) => c.id !== row.id));
-      if (activeCameraId === row.id) setActiveCameraId(null);
+      if (activeCameraId === row.id || localConfig.id === row.id) {
+        setActiveCameraId(null);
+        setLocalConfig((prev) => ({ ...prev, id: undefined, connected: false }));
+        onUpdateConfig?.({ id: undefined, connected: false });
+        // Stop stream and disconnect in frontend
+        cameraService.stopStream().catch(() => {});
+        cameraService.stop().catch(() => {});
+      }
       if (errorCameraId === row.id) {
         setErrorCameraId(null);
         setErrorMessage(null);
@@ -264,6 +285,20 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       setErrorMessage('Stop the active recording before connecting a camera.');
       return;
     }
+
+    // If USB camera is already in database, simply select it instead of creating duplicate
+    if (newType === 'usb' && isUsbAlreadyConfigured) {
+      const existing = savedCameras.find((c) => {
+        const savedIp = (c.ip_address || '').toLowerCase().trim();
+        const detectedMxid = (detectedUsb?.mxid || '').toLowerCase().trim();
+        return savedIp === detectedMxid || savedIp === 'usb';
+      });
+      if (existing) {
+        handleSelectCamera(existing);
+        return;
+      }
+    }
+
     const ipAddress = newType === 'usb' ? (detectedUsb?.ip_or_id || 'usb') : newIp.trim();
     const name = newName.trim() || (newType === 'usb' ? (detectedUsb?.name || 'USB OAK Camera') : `IP Camera (${newIp.trim()})`);
 
@@ -715,9 +750,15 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                             <span className="text-xs font-bold text-[var(--text-primary)] truncate">
                               {detectedUsb.name}
                             </span>
-                            <span className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                              READY
-                            </span>
+                            {isUsbAlreadyConfigured ? (
+                              <span className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30">
+                                CONFIGURED IN DB
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                                READY
+                              </span>
+                            )}
                           </div>
                           <span className="text-[9px] text-[var(--text-muted)] font-mono block truncate">
                             ID: {detectedUsb.mxid}
@@ -779,22 +820,24 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
               {/* Compact Small Action Button (Right-aligned / Compact) */}
               <div className="flex justify-end pt-0.5">
                 <Button
-                  variant="primary"
+                  variant={newType === 'usb' && isUsbAlreadyConfigured ? "secondary" : "primary"}
                   size="sm"
                   disabled={
                     isRecording ||
                     connectingId === 'new' ||
-                    (newType === 'usb' && !detectedUsb) ||
+                    (newType === 'usb' && (!detectedUsb || isUsbAlreadyConfigured)) ||
                     (newType === 'ip' && !newIp.trim())
                   }
                   onClick={handleAddAndConnect}
-                  className="h-7 px-3.5 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  className={`h-7 px-3.5 text-xs font-bold flex items-center gap-1.5 shadow-xs ${newType === 'usb' && isUsbAlreadyConfigured ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                 >
                   {connectingId === 'new' ? (
                     <>
                       <Loader2 className="w-3 h-3 animate-spin" />
                       Connecting...
                     </>
+                  ) : newType === 'usb' && isUsbAlreadyConfigured ? (
+                    'Already Configured (See Below)'
                   ) : (
                     'Add & Connect'
                   )}

@@ -455,10 +455,7 @@ export default function App() {
     if (isTargetCamera) {
       camera.setCameraStartingState('ready');
       addLog(`Stream source switched to: ${targetType.toUpperCase()}`, 'info');
-      showToast('info', 'Switched to OAK Camera mode');
-      if (camera.isCameraDeviceActive && !camera.isStreaming) {
-        camera.startCameraStream();
-      }
+      showToast('info', 'Switched to OAK Camera mode (Standby)');
     } else {
       camera.setCameraStartingState('ready');
       setFeedMode('inference');

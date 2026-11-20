@@ -3241,6 +3241,29 @@ class OakCameraService:
                 logger.error(f"[STOP] Failed: {e}")
                 return {"status": "error", "message": str(e)}
 
+    def stop_sync(self) -> dict:
+        """Synchronously stop capture threads, stream, and hardware pipeline."""
+        try:
+            self._is_streaming = False
+            self._close_stream_queue()
+            self._latest_jpeg = None
+            self._stop_capture_threads()
+            self._cleanup_pipeline()
+            if self.device is not None:
+                try:
+                    self.device.close()
+                except Exception:
+                    pass
+                self.device = None
+            self.is_connected = False
+            self._is_running = False
+            self._active_camera_id = None
+            logger.info("[STOP_SYNC] Camera hardware and stream stopped completely")
+            return {"status": "stopped"}
+        except Exception as e:
+            logger.warning(f"[STOP_SYNC] Failed: {e}")
+            return {"status": "error", "message": str(e)}
+
     # ==================== Fixed-control Runtime Enforcement ====================
 
     def _enforce_fixed_controls(self) -> None:

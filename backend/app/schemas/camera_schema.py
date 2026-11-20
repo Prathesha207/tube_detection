@@ -42,7 +42,7 @@ class CameraUpdate(BaseModel):
     name: Optional[str] = None
     ip_address: Optional[str] = None
     resolution: Optional[str] = None
-    fps: Optional[int] = Field(default=None, ge=5, le=30)
+    fps: Optional[int] = Field(default=None, ge=5, le=60)
     rotation_angle: Optional[int] = Field(default=None, ge=0, le=360)
 
     control_mode: Optional[Literal["auto", "manual"]] = None

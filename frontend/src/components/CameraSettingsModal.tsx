@@ -441,13 +441,13 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   <div className="h-[27px] flex items-center px-2 rounded-lg bg-[var(--bg-card)] border border-[var(--border-color)]">
                     <input
                       type="range"
-                      min={1}
+                      min={5}
                       max={60}
                       step={1}
                       value={localConfig.targetFps}
                       onChange={(e) => setLocalConfig({ ...localConfig, targetFps: parseInt(e.target.value, 10) })}
                       disabled={isRecording}
-                      style={getSliderStyle(localConfig.targetFps, 1, 60)}
+                      style={getSliderStyle(localConfig.targetFps, 5, 60)}
                       className="w-full h-1.5 rounded cursor-pointer transition-all"
                     />
                   </div>

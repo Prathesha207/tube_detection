@@ -113,10 +113,18 @@ class OakCameraService:
         self._mjpeg_thread: threading.Thread | None = None
         self._hires_thread: threading.Thread | None = None
         self._convert_thread: threading.Thread | None = None
+        self._record_thread: threading.Thread | None = None
 
         self._mjpeg_stop = threading.Event()
         self._hires_stop = threading.Event()
         self._convert_stop = threading.Event()
+        self._record_stop = threading.Event()
+
+        # Dedicated lossless recording queue so slow encoding/disk work never
+        # adds latency to live preview/inference, and preview never drops recording frames.
+        self._record_packet_queue: Queue = Queue()
+        self._completed_recordings: dict[str, dict] = {}
+        self._recording_stop_lock = threading.Lock()
 
         # ---- Latest BGR & JPEG frame caches (GIL-safe single ref assign) ----
         self._latest_bgr: np.ndarray | None = None
@@ -477,63 +485,47 @@ class OakCameraService:
             if enable_depth and self._depth_enabled:
                 stereo_node = self._build_depth(pipeline, width, height)
 
-            # --- Unified Hardware Sync (CAM_A RGB + StereoDepth) ---
-            self._sync_dai_queue = None
+            # --- Independent High-Speed Camera Queues (Zero-Drop Capture) ---
+            # Decouple raw RGB capture from Depth Sync node. Sync nodes throttle RGB to the
+            # slower stereo depth rate (~15.4 FPS), which forces 50% frame loss during recording!
+            # With decoupled queues:
+            #   1) MJPEG encoder handles live web preview via on-chip hardware encoding.
+            #   2) Raw NV12 output captures EVERY frame at full rate (up to 60 FPS) with maxSize=30.
+            #   3) Stereo depth runs independently and syncs via hardware capture timestamps.
+            encoder = pipeline.create(dai.node.VideoEncoder)
+            encoder.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.MJPEG)
+            encoder.setQuality(95)
+
+            if not is_color_camera:
+                # --- Node 1: MJPEG encoder -> stream preview ---
+                mjpeg_out = cam.requestOutput(
+                    (width, height), type=dai.ImgFrame.Type.NV12, fps=fps
+                )
+                mjpeg_out.link(encoder.input)
+                self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
+                logger.info(f"[PIPELINE] Node 1: MJPEG encoder ready (fps={fps})")
+
+                # --- Node 2: Raw NV12 -> inference / recording ---
+                raw_out = cam.requestOutput(
+                    (width, height), type=dai.ImgFrame.Type.NV12, fps=raw_fps
+                )
+                self._raw_dai_queue = raw_out.createOutputQueue(maxSize=30, blocking=False)
+                logger.info(f"[PIPELINE] Node 2: Raw NV12 ready (fps={raw_fps}, queue=30)")
+            else:
+                cam.video.link(encoder.input)
+                self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
+                self._raw_dai_queue = cam.video.createOutputQueue(maxSize=30, blocking=False)
+                logger.info(f"[PIPELINE] ColorCamera outputs wired successfully (fps={raw_fps}, queue=30)")
+
+            self._depth_dai_queue = None
             if stereo_node is not None:
                 try:
-                    sync = pipeline.create(dai.node.Sync)
-                    sync.setSyncThreshold(timedelta(milliseconds=25))
-
-                    if not is_color_camera:
-                        rgb_cam_out = cam.requestOutput((width, height), type=dai.ImgFrame.Type.NV12, fps=fps)
-                    else:
-                        rgb_cam_out = cam.video
-
-                    # Optical Alignment: Use dedicated ImageAlign node to geometrically warp depth into CAM_A
-                    depth_node_out = stereo_node.depth
-                    if self._depth_align_rgb and hasattr(dai.node, "ImageAlign"):
-                        try:
-                            align = pipeline.create(dai.node.ImageAlign)
-                            depth_node_out.link(align.input)
-                            rgb_cam_out.link(align.inputAlignTo)
-                            depth_node_out = align.outputAligned
-                            logger.info("[PIPELINE] dai.node.ImageAlign linked: depth warped directly to CAM_A optical frame")
-                        except Exception as align_err:
-                            logger.warning(f"[PIPELINE] ImageAlign linking failed ({align_err}), using direct stereo depth")
-                            depth_node_out = stereo_node.depth
-
-                    rgb_cam_out.link(sync.inputs["rgb"])
-                    depth_node_out.link(sync.inputs["depth"])
-
-                    self._sync_dai_queue = sync.out.createOutputQueue(maxSize=4, blocking=False)
-                    self._depth_dai_queue = self._sync_dai_queue
-                    logger.info(f"[PIPELINE] Unified Hardware Sync Node ready ({width}x{height} @ {fps}fps, threshold=25ms)")
-                except Exception as sync_err:
-                    logger.warning(f"[PIPELINE] Sync node wiring failed ({sync_err}), falling back to direct queues")
-                    self._sync_dai_queue = None
-
-            # Fallback direct queues if Sync node is not used (e.g. depth disabled or sync failed)
-            if self._sync_dai_queue is None:
-                encoder = pipeline.create(dai.node.VideoEncoder)
-                encoder.setDefaultProfilePreset(fps, dai.VideoEncoderProperties.Profile.MJPEG)
-                if not is_color_camera:
-                    mjpeg_out = cam.requestOutput(
-                        (width, height), type=dai.ImgFrame.Type.NV12, fps=fps
-                    )
-                    mjpeg_out.link(encoder.input)
-                    self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
-
-                    raw_out = cam.requestOutput(
-                        (width, height), type=dai.ImgFrame.Type.NV12, fps=raw_fps
-                    )
-                    self._raw_dai_queue = raw_out.createOutputQueue(maxSize=2, blocking=False)
-                    logger.info(f"[PIPELINE] Fallback direct queues wired (mjpeg + raw, fps={raw_fps})")
-                else:
-                    cam.video.link(encoder.input)
-                    self._mjpeg_dai_queue = encoder.bitstream.createOutputQueue(maxSize=4, blocking=False)
-                    self._raw_dai_queue = cam.video.createOutputQueue(maxSize=2, blocking=False)
-                if stereo_node is not None:
                     self._depth_dai_queue = stereo_node.depth.createOutputQueue(maxSize=4, blocking=False)
+                    logger.info("[PIPELINE] Depth output queue wired successfully")
+                except Exception as depth_q_err:
+                    logger.warning(f"[PIPELINE] Depth output queue creation failed: {depth_q_err}")
+
+            self._sync_dai_queue = None
 
             # --- Camera control input ---
             self._control_queue = cam.inputControl.createInputQueue(maxSize=4, blocking=False)
@@ -558,7 +550,9 @@ class OakCameraService:
 
         # 2. Input sensor mode: OV9282 physical sensors on OAK-D
         aspect = out_w / max(out_h, 1)
-        if abs(aspect - 16 / 9) < 0.15:
+        if self._configured_fps > 25:
+            mono_w, mono_h = 640, 400    # high-fps binned mode enables 30-60fps stereo calculation
+        elif abs(aspect - 16 / 9) < 0.15:
             mono_w, mono_h = 1280, 720   # 16:9 native mode matching 720p/1080p
         elif out_w <= 640 or out_h <= 400:
             mono_w, mono_h = 640, 400    # 2x2 binned mode
@@ -1048,28 +1042,17 @@ class OakCameraService:
                 logger.warning("[CAPTURE] Cannot start — pipeline or device queue not running")
                 return False
 
-            # --- Priority 1: Unified Sync Thread (RGB + Depth paired) ---
-            if self._sync_dai_queue is not None:
-                sync_alive = self._sync_thread and self._sync_thread.is_alive()
-                if not sync_alive:
-                    self._sync_stop.clear()
-                    self._sync_thread = threading.Thread(
-                        target=self._sync_capture_loop, name="oak-sync-capture", daemon=True
-                    )
-                    self._sync_thread.start()
-                    logger.info("[CAPTURE] Unified RGB+Depth Sync capture thread started")
-                return True
-
-            # --- Priority 2: Fallback separate threads (e.g. RGB only fallback) ---
-            if self._mjpeg_dai_queue is None:
+            if self._mjpeg_dai_queue is None and self._raw_dai_queue is None:
                 logger.warning("[CAPTURE] Cannot start — no queue running")
                 return False
 
             mjpeg_alive = self._mjpeg_thread and self._mjpeg_thread.is_alive()
             hires_alive = self._hires_thread and self._hires_thread.is_alive()
             convert_alive = self._convert_thread and self._convert_thread.is_alive()
+            record_alive = self._record_thread and self._record_thread.is_alive()
+            depth_alive = self._depth_thread and self._depth_thread.is_alive()
 
-            if not mjpeg_alive:
+            if not mjpeg_alive and self._mjpeg_dai_queue is not None:
                 self._mjpeg_stop.clear()
                 self._mjpeg_thread = threading.Thread(
                     target=self._mjpeg_loop, name="oak-mjpeg", daemon=True
@@ -1077,7 +1060,7 @@ class OakCameraService:
                 self._mjpeg_thread.start()
                 logger.info("[CAPTURE] MJPEG thread started")
 
-            if not hires_alive:
+            if not hires_alive and self._raw_dai_queue is not None:
                 self._hires_stop.clear()
                 self._hires_thread = threading.Thread(
                     target=self._hires_loop, name="oak-hires", daemon=True
@@ -1093,8 +1076,15 @@ class OakCameraService:
                 self._convert_thread.start()
                 logger.info("[CAPTURE] Converter thread started")
 
-            depth_alive = self._depth_thread and self._depth_thread.is_alive()
-            if self._depth_dai_queue is not None and not depth_alive and self._depth_dai_queue is not self._sync_dai_queue:
+            if not record_alive:
+                self._record_stop.clear()
+                self._record_thread = threading.Thread(
+                    target=self._record_convert_loop, name="oak-record-convert", daemon=True
+                )
+                self._record_thread.start()
+                logger.info("[CAPTURE] Recording converter thread started")
+
+            if self._depth_dai_queue is not None and not depth_alive:
                 self._depth_stop.clear()
                 self._depth_thread = threading.Thread(
                     target=self._depth_loop, name="oak-depth", daemon=True
@@ -1108,22 +1098,26 @@ class OakCameraService:
         with self._capture_lock:
             logger.info("[CAPTURE] Stopping threads...")
 
-            # Stop Sync thread
-            self._sync_stop.set()
-            if self._sync_thread and self._sync_thread.is_alive():
-                self._sync_thread.join(timeout=2.5)
-            self._sync_thread = None
-
-            # Signal legacy fallback threads
+            # Signal all capture threads
             self._mjpeg_stop.set()
             self._hires_stop.set()
             self._convert_stop.set()
+            self._record_stop.set()
+            self._depth_stop.set()
+            self._sync_stop.set()
 
-            # Join converter first — it consumes from hires_packet_queue.
-            # If we join producers first they block trying to put into a full queue.
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=2.0)
+            self._sync_thread = None
+
+            # Join converter and recording converter first — they consume from queues
             if self._convert_thread and self._convert_thread.is_alive():
                 self._convert_thread.join(timeout=3.0)
             self._convert_thread = None
+
+            if self._record_thread and self._record_thread.is_alive():
+                self._record_thread.join(timeout=5.0)
+            self._record_thread = None
 
             if self._mjpeg_thread and self._mjpeg_thread.is_alive():
                 self._mjpeg_thread.join(timeout=2.0)
@@ -1133,7 +1127,6 @@ class OakCameraService:
                 self._hires_thread.join(timeout=2.0)
             self._hires_thread = None
 
-            self._depth_stop.set()
             if self._depth_thread and self._depth_thread.is_alive():
                 self._depth_thread.join(timeout=2.0)
             self._depth_thread = None
@@ -1402,8 +1395,90 @@ class OakCameraService:
 
     # ---- Thread 2: Hi-res capture ----
 
+    @staticmethod
+    def _extract_nv12_frame(pkt) -> tuple[np.ndarray, np.ndarray] | None:
+        """Unpack NV12 Y and UV planes safely, honoring DepthAI stride/plane alignment."""
+        try:
+            if hasattr(pkt, "getType") and pkt.getType() != dai.ImgFrame.Type.NV12:
+                return None
+            w = int(pkt.getWidth())
+            h = int(pkt.getHeight())
+        except Exception:
+            return None
+
+        if w <= 0 or h <= 0 or (w & 1) or (h & 1):
+            return None
+
+        data = np.asarray(pkt.getData(), dtype=np.uint8).ravel()
+        uv_h = h // 2
+
+        stride = w
+        plane_h = h
+        uv_offset = 0
+        try:
+            s = int(pkt.getStride())
+            if s >= w:
+                stride = s
+        except Exception:
+            pass
+        try:
+            ph = int(pkt.getPlaneHeight())
+            if ph >= h:
+                plane_h = ph
+        except Exception:
+            pass
+        try:
+            uv_offset = int(pkt.getPlaneStride(0))
+        except Exception:
+            uv_offset = 0
+
+        if uv_offset >= h * stride and uv_offset + uv_h * stride <= data.size:
+            y_plane = data[:plane_h * stride].reshape(plane_h, stride)[:h, :w].copy()
+            uv_plane = data[uv_offset:uv_offset + uv_h * stride].reshape(uv_h, stride)[:, :w].copy()
+            return y_plane, uv_plane
+
+        total_rows = h + uv_h
+        if data.size < total_rows * w:
+            return None
+
+        eff_stride = data.size // total_rows if (data.size % total_rows == 0) else w
+        if eff_stride < w or total_rows * eff_stride > data.size:
+            return None
+
+        buf2d = data[:total_rows * eff_stride].reshape(total_rows, eff_stride)
+        return buf2d[:h, :w].copy(), buf2d[h:total_rows, :w].copy()
+
+    def _feed_lossless_recording(self, rec, pkt, cam_ts_sec: float | None, seq_num: int | None) -> bool:
+        """Feed raw NV12 planes directly into FFV1 recording. Returns False to fall back to BGR."""
+        extracted = self._extract_nv12_frame(pkt)
+        if extracted is None:
+            return False
+        y_plane, uv_plane = extracted
+        if y_plane.shape != (rec.height, rec.width):
+            return False
+        rec.add_nv12_frame(y_plane, uv_plane, cam_ts_sec=cam_ts_sec, seq_num=seq_num)
+        return True
+
+    def _apply_adjustments(self, frame: np.ndarray) -> np.ndarray:
+        c = self.current_contrast
+        b = self.current_brightness
+
+        if (c == 0 or c == 50) and b == 0:
+            return frame
+
+        alpha = (float(c) / 50.0) if c > 0 else 1.0
+        beta = float(b)
+
+        if abs(alpha - 1.0) < 0.01 and abs(beta) < 0.01:
+            return frame
+
+        return cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
+
     def _hires_loop(self) -> None:
-        """Drains raw NV12 DAI queue and queues packets for the converter thread."""
+        """Drains raw NV12 DAI queue.
+        - Routes EVERY captured packet to _record_packet_queue while recording is active (zero drops).
+        - Keeps only the newest packet in _hires_packet_queue for low-latency preview/inference.
+        """
         logger.info("[HIRES] Thread running")
 
         try:
@@ -1414,7 +1489,7 @@ class OakCameraService:
 
                 pkt = self._raw_dai_queue.tryGet()
                 if pkt is None:
-                    time.sleep(0.005)
+                    time.sleep(0.002)
                     continue
 
                 try:
@@ -1425,15 +1500,25 @@ class OakCameraService:
                 except Exception:
                     pass
 
-                # Zero-lag: Drop unconsumed frames so converter always converts the freshest frame
+                # Preserve every raw packet for active recording on its dedicated worker (zero drops)
+                rec = self._active_recording
+                if rec is not None and getattr(rec, "is_running", False):
+                    try:
+                        rec._capture_packets_pending = getattr(rec, "_capture_packets_pending", 0) + 1
+                        self._record_packet_queue.put_nowait((rec, pkt))
+                    except Exception:
+                        rec._capture_packets_pending = max(0, getattr(rec, "_capture_packets_pending", 1) - 1)
+                        logger.exception("[RECORD] Could not queue captured camera packet")
+
+                # Preview / inference queue always keeps only the newest packet for minimal latency
                 while not self._hires_packet_queue.empty():
                     try:
                         self._hires_packet_queue.get_nowait()
-                    except Exception:
+                    except Empty:
                         break
                 try:
                     self._hires_packet_queue.put_nowait(pkt)
-                except Exception:
+                except Full:
                     pass
 
         except Exception as e:
@@ -1447,13 +1532,60 @@ class OakCameraService:
         finally:
             logger.info("[HIRES] Thread ended")
 
-    # ---- Thread 3: Converter ----
+    # ---- Thread 3: Recording Converter (Dedicated, zero-drop queue) ----
+
+    def _record_convert_loop(self) -> None:
+        """Converts queued recording packets independently without blocking live preview/inference."""
+        logger.info("[RECORD-CONVERT] Thread running")
+        try:
+            while not self._record_stop.is_set() or not self._record_packet_queue.empty():
+                try:
+                    rec, pkt = self._record_packet_queue.get(timeout=0.05)
+                except Empty:
+                    continue
+
+                try:
+                    if not getattr(rec, "is_running", False):
+                        continue
+
+                    cam_ts_sec = None
+                    seq_num = None
+                    try:
+                        ts = pkt.getTimestamp()
+                        cam_ts_sec = ts.total_seconds() if hasattr(ts, "total_seconds") else float(ts)
+                    except Exception:
+                        pass
+                    try:
+                        seq_num = int(pkt.getSequenceNum())
+                    except Exception:
+                        pass
+
+                    is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
+                    # Fast path: feed raw sensor NV12 planes directly into FFV1 (no BGR conversion)
+                    if getattr(rec, "is_raw_nv12", False) and (is_neutral or self.control_mode != "manual"):
+                        if self._feed_lossless_recording(rec, pkt, cam_ts_sec=cam_ts_sec, seq_num=seq_num):
+                            continue
+
+                    frame = pkt.getCvFrame()
+                    if not is_neutral and self.control_mode == "manual":
+                        frame = self._apply_adjustments(frame)
+
+                    rec.add_frame(frame, cam_ts_sec=cam_ts_sec, seq_num=seq_num, copy_frame=False)
+                except Exception as e:
+                    logger.warning(f"[RECORD-CONVERT] Packet conversion failed: {e}")
+                finally:
+                    rec._capture_packets_pending = max(0, getattr(rec, "_capture_packets_pending", 1) - 1)
+        except Exception as e:
+            logger.error(f"[RECORD-CONVERT] Thread error: {e}", exc_info=True)
+        finally:
+            logger.info("[RECORD-CONVERT] Thread ended")
+
+    # ---- Thread 4: Converter (preview / inference — always newest frame) ----
 
     def _convert_loop(self) -> None:
-        """Pulls NV12 packets, converts to BGR (getCvFrame), stores latest for inference/recording."""
+        """Pulls NV12 packets, converts to BGR (getCvFrame), stores latest for inference/preview."""
         logger.info("[CONVERT] Thread running")
         frames = 0
-        record_frames = 0
         last_log = time.time()
         _first_frame_logged = False
 
@@ -1503,12 +1635,7 @@ class OakCameraService:
 
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
                 self._latest_bgr_seq = seq_num
-                self._latest_frame_data = (display_bgr, seq_num, ts_sec, hw_ts)  # Overwrites with newest camera frame
-
-                if self._active_recording is not None:
-                    # Save the same adjusted image shown in the live stream.
-                    self._active_recording.add_frame(display_bgr)
-                    record_frames += 1
+                self._latest_frame_data = (display_bgr, self._latest_depth, seq_num, ts_sec, hw_ts, None)
 
                 frames += 1
                 now = time.time()
@@ -1520,11 +1647,9 @@ class OakCameraService:
                     logger.info(
                         f"[CONVERT] FPS: {self.current_fps:.1f} [{fps_status}] | "
                         f"recording: {self._active_recording is not None} | "
-                        f"record_frames_fed: {record_frames} | "
                         f"ae_limit_us: {self._ae_limit_us}"
                     )
                     frames = 0
-                    record_frames = 0
                     last_log = now
 
         except Exception as e:
@@ -2822,9 +2947,8 @@ class OakCameraService:
 
         # Start capture threads if not already running (e.g. recording without streaming)
         capture_alive = bool(
-            (self._sync_thread and self._sync_thread.is_alive()) or
-            (self._hires_thread and self._hires_thread.is_alive()) or
-            (self._convert_thread and self._convert_thread.is_alive())
+            (self._hires_thread and self._hires_thread.is_alive()) and
+            (self._record_thread and self._record_thread.is_alive())
         )
         if not capture_alive:
             logger.info("[RECORD] Step 1 — capture threads not running, starting now")
@@ -2832,7 +2956,7 @@ class OakCameraService:
             self._enforce_fixed_controls()
             logger.info("[RECORD] Step 2 — fixed camera controls enforced")
         else:
-            logger.info("[RECORD] Capture threads already running (AE limit already applied at stream start)")
+            logger.info("[RECORD] Capture threads already running")
         self._is_streaming = True
 
         root_path = root_path or self._resolve_recording_path()
@@ -2842,7 +2966,7 @@ class OakCameraService:
         if self._active_recording is None:
             logger.error("[RECORD] Failed to get recording session from active_recordings!")
         else:
-            logger.info(f"[RECORD] Session active — frames will be fed from active capture loop → path: {path}")
+            logger.info(f"[RECORD] Session active — packets will be fed via dedicated _record_convert_loop → path: {path}")
 
         return path
 
@@ -2870,11 +2994,41 @@ class OakCameraService:
             f"Recording stopped: Session {session_id}",
             "success"
         )
-        if self._active_recording:
-            logger.info(f"[RECORD] Queue size before stop: {self._active_recording.frame_queue.qsize()}")
 
-        self._active_recording = None
-        result = _stop(session_id)
+        with self._recording_stop_lock:
+            rec = self._active_recording
+            if rec is None:
+                cached = self._completed_recordings.get(session_id)
+                if cached:
+                    return cached
+
+            # Clear _active_recording first so _hires_loop stops enqueueing new packets
+            # for this session, then wait for all already-captured packets to finish
+            # converting before stopping and flushing the encoder worker.
+            if rec is not None and getattr(rec, "session_id", session_id) == session_id:
+                self._active_recording = None
+                logger.info(
+                    f"[RECORD] Draining pending capture packets "
+                    f"(capture_pending={getattr(rec, '_capture_packets_pending', 0)}, "
+                    f"encoder_queue={rec.frame_queue.qsize()})"
+                )
+                drain_deadline = time.monotonic() + 5.0
+                while (
+                    getattr(rec, "_capture_packets_pending", 0) > 0
+                    and self._record_thread is not None
+                    and self._record_thread.is_alive()
+                    and time.monotonic() < drain_deadline
+                ):
+                    time.sleep(0.005)
+            else:
+                self._active_recording = None
+
+            result = _stop(session_id)
+            if not result:
+                result = self._completed_recordings.get(session_id, {})
+            if result:
+                self._completed_recordings[session_id] = result
+
         logger.info(f"[RECORD] Recording stopped and session cleared → {result}")
 
         # Stop capture threads only if streaming and inference are also not active

@@ -528,6 +528,12 @@ export default function App() {
         showToast('success', 'Recording saved successfully.');
         addLog('Camera recording saved successfully.', 'success');
       }
+      if (isCameraSource) {
+        camera.setIsStreaming(false);
+        setLastCameraFrame(undefined);
+        cameraService.stopStream().catch(() => { });
+        addLog('Camera stream stopped after recording.', 'info');
+      }
     } else {
       if (!camera.isCameraDeviceActive || !camera.effectiveCameraConfig.connected) {
         showToast('error', 'Cannot record: OAK camera is not connected. Connect a camera first.');
@@ -703,6 +709,11 @@ export default function App() {
         await startCameraPipeline();
         return;
       }
+      if (isRunning) {
+        // When running in camera mode, stopping inference must also stop stream
+        await handleStopInference();
+        return;
+      }
     }
     await inference.handleToggleRunning(video.startVideoInference);
   };
@@ -727,8 +738,12 @@ export default function App() {
     useInferenceStore.getState().resetStats();
     resetBBoxCache();
 
-    // Keep camera stream warm so preview remains active and next inference start is instant (0.0s).
-    // The user can explicitly stop streaming with the dedicated STOP STREAM button if desired.
+    // Stop camera stream & live inference if camera source
+    if (isCameraSource) {
+      camera.setIsStreaming(false);
+      cameraService.stopLiveInference().catch(() => { });
+      cameraService.stopStream().catch(() => { });
+    }
 
     const sid = video.videoSessionId;
 

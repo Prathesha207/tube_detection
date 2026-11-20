@@ -338,6 +338,8 @@ export function useInferenceLoop({
 
       if (isCameraMode) {
         try { await cameraService.stopLiveInference(); } catch (e) { }
+        try { await cameraService.stopStream?.(); } catch (e) { }
+        setCameraIsStreaming?.(false);
       }
       if (!isCameraMode && videoSessionId) {
         try {
@@ -391,6 +393,8 @@ export function useInferenceLoop({
     const isCameraMode = sourceType === 'oak-camera' || sourceType === 'webcam';
     if (isCameraMode && !videoSessionId) {
       cameraService.stopLiveInference().catch(() => { });
+      cameraService.stopStream?.().catch(() => { });
+      setCameraIsStreaming?.(false);
     }
 
     // Full reset: clear all frontend state so UI is ready for a new inference

@@ -272,8 +272,6 @@ else
     --collect-all uvicorn \
     --collect-all sqlalchemy \
     --collect-all cv2 \
-    --collect-all torch \
-    --collect-all torchvision \
     --collect-all ultralytics \
     --collect-all sympy \
     --collect-all depthai \
@@ -286,9 +284,28 @@ fi
 # Strip non-runtime development files directly in dist/backend
 chmod +x "$BACKEND_DIR/dist/backend/backend"
 find "$BACKEND_DIR/dist/backend" -name "*.a" -delete 2>/dev/null || true
-find "$BACKEND_DIR/dist/backend" -name "*_distributed_c10d*.so" -delete 2>/dev/null || true
 rm -rf "$BACKEND_DIR/dist/backend/_internal/torch/include" 2>/dev/null || true
 rm -rf "$BACKEND_DIR/dist/backend/_internal/triton" 2>/dev/null || true
+
+# CRITICAL FIX for PyTorch pybind11 "GradBucket" / duplicate symbol crash on Linux:
+# PyInstaller's binary collector can duplicate shared libraries into both _internal/ and _internal/torch/lib/.
+# On Linux, ld.so dynamically loads both copies, executing C++ static initializers twice.
+# Deduplicate: if a .so exists in torch/lib, delete the duplicate copy from root _internal.
+if [[ -d "$BACKEND_DIR/dist/backend/_internal/torch/lib" ]]; then
+  echo "Checking and deduplicating PyTorch libraries..."
+  for f in "$BACKEND_DIR/dist/backend/_internal/torch/lib"/*.so*; do
+    [[ -e "$f" ]] || continue
+    basename_f=$(basename "$f")
+    if [[ -f "$BACKEND_DIR/dist/backend/_internal/$basename_f" ]]; then
+      echo "  Deduplicating PyTorch library: $basename_f"
+      rm -f "$BACKEND_DIR/dist/backend/_internal/$basename_f"
+    fi
+    if [[ -f "$BACKEND_DIR/dist/backend/$basename_f" ]]; then
+      echo "  Deduplicating root library: $basename_f"
+      rm -f "$BACKEND_DIR/dist/backend/$basename_f"
+    fi
+  done
+fi
 
 cd "$FRONTEND_DIR"
 npm ci --include=optional 2>/dev/null || npm install --include=optional

@@ -92,6 +92,21 @@ def _ensure_tables():
                     "ALTER TABLE cameras "
                     "ADD COLUMN recording_format VARCHAR(20) DEFAULT 'MP4'"
                 )
+            if "is_inference_enabled" not in existing_camera_columns:
+                camera_migrations.append(
+                    "ALTER TABLE cameras "
+                    "ADD COLUMN is_inference_enabled BOOLEAN DEFAULT 0"
+                )
+            if "roi_enabled" not in existing_camera_columns:
+                camera_migrations.append(
+                    "ALTER TABLE cameras "
+                    "ADD COLUMN roi_enabled BOOLEAN DEFAULT 0"
+                )
+            if "updated_at" not in existing_camera_columns:
+                camera_migrations.append(
+                    "ALTER TABLE cameras "
+                    "ADD COLUMN updated_at DATETIME"
+                )
 
             if camera_migrations:
                 with engine.begin() as conn:

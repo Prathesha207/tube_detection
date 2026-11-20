@@ -42,10 +42,86 @@ if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
   exit 1
 fi
 
-python3 -m venv "$VENV_DIR"
+# Detect whether this machine has an NVIDIA GPU (Desktop PCIe or Jetson Tegra)
+HAS_NVIDIA_GPU=0
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  HAS_NVIDIA_GPU=1
+elif [[ -f /etc/nv_tegra_release ]] || command -v tegrastats >/dev/null 2>&1 || [[ -d /usr/local/cuda ]]; then
+  HAS_NVIDIA_GPU=1
+elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+  HAS_NVIDIA_GPU=1
+fi
+
+SKIP_PYINSTALLER="${SKIP_PYINSTALLER:-0}"
+CLEAN_BUILD="${CLEAN_BUILD:-0}"
+for arg in "$@"; do
+  if [[ "$arg" == "--skip-pyinstaller" ]]; then
+    SKIP_PYINSTALLER=1
+  elif [[ "$arg" == "--clean" ]]; then
+    CLEAN_BUILD=1
+  fi
+done
+
+if [[ "$CLEAN_BUILD" == "1" ]]; then
+  echo "Clean build requested. Removing $VENV_DIR and dist/build..."
+  rm -rf "$VENV_DIR" "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
+fi
+
+# Always create venv with --system-site-packages so JetPack system CUDA PyTorch is accessible
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "Creating build virtual environment with --system-site-packages..."
+  python3 -m venv --system-site-packages "$VENV_DIR"
+fi
+
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install -r "$BACKEND_DIR/requirements.txt"
+
+USE_CUDA="${USE_CUDA:-1}"
+
+# Check if CUDA PyTorch is already available (from JetPack system site-packages or venv)
+if [[ "$USE_CUDA" == "1" && "$HAS_NVIDIA_GPU" == "1" ]]; then
+  if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    echo "=========================================================================="
+    echo "✓ CUDA-enabled PyTorch is already active:"
+    python -c "import torch; print(f'  PyTorch: {torch.__version__} | GPU: {torch.cuda.get_device_name(0)}')"
+    echo "  Installing dependencies without overwriting CUDA PyTorch..."
+    echo "=========================================================================="
+    grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+  else
+    if [[ "$MACHINE_ARCH" == "x86_64" ]]; then
+      echo "NVIDIA GPU detected on x86_64; installing official CUDA PyTorch..."
+      PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu121}"
+      python -m pip install --force-reinstall --index-url "$PYTORCH_CUDA_INDEX" torch torchvision
+      grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+    elif [[ "$MACHINE_ARCH" == "aarch64" || "$MACHINE_ARCH" == "arm64" ]]; then
+      echo "=========================================================================="
+      echo "⚠️  ARM64/Jetson platform detected, but CUDA PyTorch was not found!"
+      echo "    Standard PyPI torch on ARM64 is CPU-only, which runs at ~1 FPS."
+      echo "    Attempting to install JetPack-compatible PyTorch..."
+      echo "=========================================================================="
+      PY_VER="$(python3 -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")' 2>/dev/null || echo "cp310")"
+      if [[ "$PY_VER" == "cp310" ]]; then
+        JETSON_WHEEL="https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf41be.nv24.08.16594639-cp310-cp310-linux_aarch64.whl"
+        echo "Installing NVIDIA JetPack 6 PyTorch: $JETSON_WHEEL ..."
+        python -m pip install --no-cache "$JETSON_WHEEL" 2>/dev/null || true
+      fi
+      if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        echo "✓ Successfully configured CUDA PyTorch!"
+        grep -v -E "^(torch|torchvision)([><=~!]|$)" "$BACKEND_DIR/requirements.txt" | python -m pip install -r /dev/stdin
+      else
+        echo "⚠️ Note: Could not auto-install JetPack wheel. Installing standard requirements."
+        echo "   If FPS is 1.0, install JetPack CUDA PyTorch into your system Python."
+        python -m pip install -r "$BACKEND_DIR/requirements.txt"
+      fi
+    else
+      python -m pip install -r "$BACKEND_DIR/requirements.txt"
+    fi
+  fi
+else
+  echo "Building with CPU-compatible PyTorch (USE_CUDA=$USE_CUDA)."
+  python -m pip install -r "$BACKEND_DIR/requirements.txt"
+fi
+
 WHL_DIR="$BACKEND_DIR/app/ml/whl"
 if [[ -d "$WHL_DIR" ]]; then
   LATEST_WHL=$(find "$WHL_DIR" -maxdepth 1 -name "head_tail_analyzer*.whl" 2>/dev/null | sort -V | tail -n 1)
@@ -55,30 +131,11 @@ if [[ -d "$WHL_DIR" ]]; then
   fi
 fi
 
-if [[ "${USE_CUDA:-0}" == "1" || ( "${USE_CUDA:-auto}" == "auto" && -n "$(command -v nvidia-smi 2>/dev/null || true)" ) ]]; then
-  echo "NVIDIA GPU detected/requested; installing CUDA-enabled PyTorch..."
-  if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
-    if python -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-      echo "ARM64 vendor PyTorch with CUDA is already installed; keeping it."
-    else
-      echo "ARM64 detected without vendor CUDA PyTorch; building with CPU PyTorch."
-    fi
-  else
-    PYTORCH_CUDA_INDEX="${PYTORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu121}"
-    python -m pip install --force-reinstall \
-      --index-url "$PYTORCH_CUDA_INDEX" \
-      torch torchvision
-  fi
-else
-  echo "Building with CPU-compatible PyTorch. Set USE_CUDA=1 to force CUDA."
-fi
-
-SKIP_PYINSTALLER="${SKIP_PYINSTALLER:-0}"
-for arg in "$@"; do
-  if [[ "$arg" == "--skip-pyinstaller" ]]; then
-    SKIP_PYINSTALLER=1
-  fi
-done
+echo "========================================================"
+echo "          Active ML Environment Verification"
+echo "========================================================"
+python -c "import torch; print('PyTorch Version :', torch.__version__); print('CUDA Available  :', torch.cuda.is_available()); print('Inference Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU (WARNING: 1 FPS on CPU!)')"
+echo "========================================================"
 
 if [[ "$SKIP_PYINSTALLER" == "1" && -f "$BACKEND_DIR/dist/backend/backend" ]]; then
   echo "Reusing existing backend dist/backend/backend..."

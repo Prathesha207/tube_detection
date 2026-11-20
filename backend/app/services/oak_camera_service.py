@@ -1201,6 +1201,9 @@ class OakCameraService:
                     logger.error(f"[SYNC-CAPTURE] getCvFrame failed: {cv_err}")
                     continue
 
+                if (self.current_brightness != 0) or (self.current_contrast not in (0, 50)):
+                    bgr_frame = self._apply_adjustments(bgr_frame)
+
                 # 2. Depth Frame extraction & shape verification
                 depth_frame = None
                 if depth_pkt is not None:
@@ -1333,24 +1336,27 @@ class OakCameraService:
 
                 last_frame_ts = time.time()
                 jpeg = bytes(pkt.getData())
-                self._latest_jpeg = jpeg
                 frames += 1
 
-                # Push to all subscribed client queues thread-safely
-                # Keep stream/event loop errors completely isolated from camera hardware errors!
-                has_subscribers = bool(self._stream_subscribers) or (self._stream_queue is not None)
-                loop = self._server_loop
-                if has_subscribers and loop is not None and not loop.is_closed():
-                    try:
-                        loop.call_soon_threadsafe(self._push_sync, jpeg)
-                        frames_pushed += 1
-                    except RuntimeError:
-                        # Event loop closed / server reload — do NOT treat as camera device failure!
-                        pass
-                    except Exception as push_err:
-                        logger.debug(f"[MJPEG] Stream push error: {push_err}")
-                else:
-                    frames_dropped += 1
+                # If tone adjustments (brightness/contrast) are active, _convert_loop produces
+                # and pushes the adjusted JPEG to clients. _mjpeg_loop only pushes in neutral mode
+                # to provide zero-CPU hardware encoding without duplicate frame delivery.
+                is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
+                if is_neutral:
+                    self._latest_jpeg = jpeg
+                    has_subscribers = bool(self._stream_subscribers) or (self._stream_queue is not None)
+                    loop = self._server_loop
+                    if has_subscribers and loop is not None and not loop.is_closed():
+                        try:
+                            loop.call_soon_threadsafe(self._push_sync, jpeg)
+                            frames_pushed += 1
+                        except RuntimeError:
+                            # Event loop closed / server reload — do NOT treat as camera device failure!
+                            pass
+                        except Exception as push_err:
+                            logger.debug(f"[MJPEG] Stream push error: {push_err}")
+                    else:
+                        frames_dropped += 1
 
                 now = time.time()
                 if now - last_log >= 5.0:
@@ -1463,11 +1469,12 @@ class OakCameraService:
         c = self.current_contrast
         b = self.current_brightness
 
-        if (c == 0 or c == 50) and b == 0:
+        if (c <= 0 or c == 50) and b == 0:
             return frame
 
-        alpha = (float(c) / 50.0) if c > 0 else 1.0
-        beta = float(b)
+        alpha = (float(c) / 50.0) if (c > 0 and c != 50) else 1.0
+        # Formula: I' = alpha * (I - 128) + 128 + b = alpha * I + (b + 128 * (1 - alpha))
+        beta = float(b) + (128.0 * (1.0 - alpha) if alpha != 1.0 else 0.0)
 
         if abs(alpha - 1.0) < 0.01 and abs(beta) < 0.01:
             return frame
@@ -1562,12 +1569,12 @@ class OakCameraService:
 
                     is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
                     # Fast path: feed raw sensor NV12 planes directly into FFV1 (no BGR conversion)
-                    if getattr(rec, "is_raw_nv12", False) and (is_neutral or self.control_mode != "manual"):
+                    if getattr(rec, "is_raw_nv12", False) and is_neutral:
                         if self._feed_lossless_recording(rec, pkt, cam_ts_sec=cam_ts_sec, seq_num=seq_num):
                             continue
 
                     frame = pkt.getCvFrame()
-                    if not is_neutral and self.control_mode == "manual":
+                    if not is_neutral:
                         frame = self._apply_adjustments(frame)
 
                     rec.add_frame(frame, cam_ts_sec=cam_ts_sec, seq_num=seq_num, copy_frame=False)
@@ -1625,8 +1632,8 @@ class OakCameraService:
                     logger.info(f"[CONVERT] First frame received — shape={raw_bgr.shape} | ae_limit_us={self._ae_limit_us} | configured_fps={self._configured_fps}")
                     _first_frame_logged = True
 
-                # Hardware ISP applies brightness and contrast directly to both MJPEG and NV12 outputs
-                display_bgr = raw_bgr
+                is_neutral = (self.current_brightness == 0) and (self.current_contrast in (0, 50))
+                display_bgr = raw_bgr if is_neutral else self._apply_adjustments(raw_bgr)
 
                 if self.control_mode == "auto" and not self._calibrating:
                     self._run_monitor(display_bgr)
@@ -1636,6 +1643,21 @@ class OakCameraService:
                 self._latest_bgr = display_bgr  # GIL-safe single reference assignment
                 self._latest_bgr_seq = seq_num
                 self._latest_frame_data = (display_bgr, self._latest_depth, seq_num, ts_sec, hw_ts, None)
+
+                # When tone adjustments are active, push the adjusted JPEG to the live stream
+                # (When neutral, _mjpeg_loop handles zero-overhead hardware encoding directly)
+                has_subscribers = bool(self._stream_subscribers) or (self._stream_queue is not None)
+                if not is_neutral and has_subscribers:
+                    try:
+                        ok, buf = cv2.imencode(".jpg", display_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        if ok:
+                            adj_jpeg = buf.tobytes()
+                            self._latest_jpeg = adj_jpeg
+                            loop = self._server_loop
+                            if loop is not None and not loop.is_closed():
+                                loop.call_soon_threadsafe(self._push_sync, adj_jpeg)
+                    except Exception as enc_err:
+                        logger.debug(f"[CONVERT] Adjusted stream push error: {enc_err}")
 
                 frames += 1
                 now = time.time()

@@ -776,15 +776,7 @@ async def start_path_inference(data: StartPathInferenceRequest, background_tasks
                 cap = cv2.VideoCapture(video_path)
                 ret, frame0 = cap.read()
                 if ret and frame0 is not None:
-                    try:
-                        analyzer = ml_inference_service._get_or_create_analyzer()
-                        res0, vis0, clean0 = analyzer.process_frame(frame0.copy(), 0, return_clean=True)
-                        _, buf = cv2.imencode(".jpg", clean0, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        for k, v in res0.items():
-                            session["stats"][k] = v
-                        analyzer.reset_tracking()
-                    except Exception:
-                        _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    _, buf = cv2.imencode(".jpg", frame0, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     session["last_frame_bytes"] = buf.tobytes()
                     session["stats"]["video_width"] = int(frame0.shape[1])
                     session["stats"]["video_height"] = int(frame0.shape[0])

@@ -23,9 +23,18 @@ export const useVideoUpload = (
     const isRec = Boolean(isRecorded);
     const formData = new FormData();
 
-    // When running in Electron / Desktop EXE, the File object has a direct local path (.path)
+    // When running in Electron / Desktop EXE, retrieve disk path directly via webUtils or file.path
     // Passing this allows the backend to read directly from disk with 0 upload overhead and 0 temp files!
-    const localPath = (file as any).path || '';
+    const electronApi = (window as any).electronAPI;
+    let localPath = '';
+    if (electronApi && typeof electronApi.getPathForFile === 'function') {
+      try {
+        localPath = electronApi.getPathForFile(file) || '';
+      } catch {}
+    }
+    if (!localPath) {
+      localPath = (file as any).path || '';
+    }
     if (localPath && typeof localPath === 'string' && localPath.length > 3 && !isRec) {
       formData.append('file_path', localPath);
     } else {
@@ -153,6 +162,7 @@ export const useVideoUpload = (
         }
       } catch (err: any) {
         console.error('Desktop video selection error:', err);
+        showToast('error', err.message || 'Failed to open video file');
       } finally {
         setIsSelectingVideo(false);
         useInferenceStore.getState().setVideoLoading(false);

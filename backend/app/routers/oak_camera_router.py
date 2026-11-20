@@ -605,6 +605,8 @@ def get_camera_calibration_yaml():
 
 @router.post("/controls/calibrate")
 def calibrate_camera_controls():
+    if oak_camera_service._active_recording is not None:
+        raise HTTPException(status_code=409, detail="Camera controls are locked during active recording")
     try:
         return oak_camera_service.calibrate_auto_controls()
     except RuntimeError as e:
@@ -661,6 +663,8 @@ def update_controls(
     reset: bool | None = None,
     save_to_db: bool | None = None,
 ):
+    if oak_camera_service._active_recording is not None:
+        raise HTTPException(status_code=409, detail="Camera controls are locked during active recording")
     try:
         is_reset = (body.reset if body and body.reset is not None else reset)
         if is_reset:

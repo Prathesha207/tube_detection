@@ -48,12 +48,14 @@ export function useCameraStatus(
               targetFps: activeCamera.fps || prev.targetFps,
               rotationAngle: activeCamera.rotation_angle ?? prev.rotationAngle,
               controlMode: (activeCamera.control_mode as any) ?? prev.controlMode,
-              exposure: activeCamera.exposure ?? prev.exposure,
-              gain: activeCamera.gain ?? prev.gain,
-              iso: activeCamera.gain ?? prev.iso,
-              focus: activeCamera.focus ?? prev.focus,
-              brightness: activeCamera.brightness ?? prev.brightness,
-              contrast: activeCamera.contrast ?? prev.contrast,
+              exposure: activeCamera.exposure ?? prev.exposure ?? 8,
+              gain: activeCamera.gain ?? prev.gain ?? 400,
+              iso: activeCamera.gain ?? prev.iso ?? 400,
+              focus: (activeCamera.focus !== null && activeCamera.focus !== undefined && activeCamera.focus !== 0)
+                ? activeCamera.focus
+                : (prev.focus && prev.focus !== 0 ? prev.focus : 120),
+              brightness: activeCamera.brightness ?? prev.brightness ?? 0,
+              contrast: activeCamera.contrast ?? prev.contrast ?? 50,
               autoFocus: false,
               autoExposure: false,
               recordingFormat: (activeCamera.recording_format as any) || prev.recordingFormat || 'MP4',
@@ -101,7 +103,9 @@ export function useCameraStatus(
                   exposure: settings.exposure,
                   gain: settings.gain,
                   iso: settings.gain,
-                  focus: settings.focus ?? undefined,
+                  focus: (settings.focus !== null && settings.focus !== undefined && settings.focus !== 0)
+                    ? settings.focus
+                    : (prev.focus && prev.focus !== 0 ? prev.focus : 120),
                   focusAvailable: Boolean(settings.focus_available),
                   brightness: settings.brightness,
                   contrast: settings.contrast,

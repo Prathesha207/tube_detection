@@ -135,6 +135,10 @@ def update_live_controls(camera_id: int, data: CameraLiveControl):
         f"brightness={data.brightness}, contrast={data.contrast}"
     )
 
+    if oak_camera_service._active_recording is not None:
+        logger.warning("[LIVE CONTROLS] Rejected — recording in progress")
+        return {"status": "error", "message": "Camera controls are locked during active recording"}
+
     if not oak_camera_service._is_running:
         logger.warning("[LIVE CONTROLS] Rejected — pipeline not running")
         return {"status": "error", "message": "Camera is not running"}

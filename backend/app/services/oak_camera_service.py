@@ -143,8 +143,8 @@ class OakCameraService:
         self.current_exposure_us: int = 8000  # Starter preset; tune/calibrate on the installed setup.
         self._ae_limit_us = 10000
         self.current_gain: int = 400
-        self.current_focus: int | None = None
-        self.focus_available: bool = False
+        self.current_focus: int = 120
+        self.focus_available: bool = True
         # AE/AF may run only during the explicit calibration action.
         self.auto_exposure_enabled: bool = False
         self.auto_focus_enabled: bool = False
@@ -206,7 +206,7 @@ class OakCameraService:
                     if cam.gain is not None:
                         self.current_gain = int(cam.gain)
                     if cam.focus is not None:
-                        self.current_focus = int(cam.focus)
+                        self.current_focus = int(cam.focus) if int(cam.focus) > 0 else 120
                         self.focus_available = True
                     if cam.brightness is not None:
                         self.current_brightness = int(cam.brightness)
@@ -449,8 +449,8 @@ class OakCameraService:
 
             self.current_exposure_us = max(100, min(33000, exposure))
             self.current_gain = gain
-            self.current_focus = focus
-            self.focus_available = focus is not None
+            self.current_focus = focus if (focus is not None and focus > 0) else 120
+            self.focus_available = True
             self.current_brightness = int(config.brightness or 0)
             self.current_contrast = int(config.contrast if config.contrast is not None else 50)
             self.auto_exposure_enabled = self.auto_focus_enabled = False
@@ -1881,11 +1881,12 @@ class OakCameraService:
             self._active_recording.add_settings_event(self._recording_settings_snapshot())
 
     def _camera_settings(self) -> dict:
+        safe_focus = self.current_focus if (self.current_focus is not None and self.current_focus > 0) else 120
         return {
             "control_mode": self.control_mode,
             "exposure": round(self.current_exposure_us / 1000, 3),
             "gain": self.current_gain,
-            "focus": self.current_focus,
+            "focus": safe_focus,
             "focus_available": self.focus_available,
             "brightness": self.current_brightness,
             "contrast": self.current_contrast,
@@ -1993,7 +1994,7 @@ class OakCameraService:
                 camera.control_mode = control_mode
                 camera.exposure = round(self.current_exposure_us / 1000, 3)
                 camera.gain = float(self.current_gain)
-                camera.focus = self.current_focus
+                camera.focus = self.current_focus if (self.current_focus is not None and self.current_focus > 0) else 120
                 camera.brightness = self.current_brightness
                 camera.contrast = self.current_contrast
                 camera.auto_exposure = False

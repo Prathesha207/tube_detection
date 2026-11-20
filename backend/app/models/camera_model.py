@@ -27,9 +27,9 @@ class Camera(Base):
     # "auto" | "manual"
     
      # Manual Controls (ONLY used when manual mode)
-    exposure = Column(Float, nullable=True)
-    gain = Column(Float, nullable=True)
-    focus = Column(Integer, nullable=True)
+    exposure = Column(Float, default=8.0, nullable=True)
+    gain = Column(Float, default=400.0, nullable=True)
+    focus = Column(Integer, default=120, nullable=True)
 
     brightness = Column(Integer, nullable=True)
     contrast = Column(Integer, nullable=True)

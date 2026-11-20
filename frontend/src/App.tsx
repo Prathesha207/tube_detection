@@ -999,6 +999,7 @@ export default function App() {
             isRunning={isRunning}
             isCameraConnected={camera.effectiveCameraConfig.connected}
             cameraConfig={camera.effectiveCameraConfig}
+            isRecording={recording.isRecording}
             onUpdateCameraConfig={(patch) => {
               camera.setCameraConfig((prev) => ({ ...prev, ...patch }));
             }}
@@ -1040,42 +1041,56 @@ export default function App() {
             showToast('error', 'Resolution and FPS cannot be changed during a recording');
             return;
           }
-          camera.setCameraConfig(cfg);
+          const safeFocus = (cfg.focus !== null && cfg.focus !== undefined && cfg.focus !== 0) ? cfg.focus : 120;
+          const safeConfig = { ...cfg, focus: safeFocus };
+          camera.setCameraConfig(safeConfig);
           try {
-            if (cfg.connected) {
-              const liveResult = await cameraService.updateLiveControls(cfg.id, {
-                control_mode: cfg.controlMode ?? 'auto',
-                exposure: cfg.exposure,
-                gain: cfg.iso ?? cfg.gain,
-                focus: cfg.focus,
-                brightness: cfg.brightness,
-                contrast: cfg.contrast,
-                auto_focus: false,
-                auto_exposure: false,
-              });
-              if (liveResult?.status === 'error') {
-                throw new Error(liveResult.message || 'Failed to apply camera controls');
-              }
-            }
             const payload = {
-              name: cfg.sourceName || 'OAK Camera', ip_address: cfg.ipAddress || undefined,
-              resolution: cfg.resolution, fps: cfg.targetFps,
-              rotation_angle: cfg.rotationAngle ?? 0, control_mode: cfg.controlMode ?? 'auto',
-              exposure: cfg.exposure, gain: cfg.iso ?? cfg.gain, focus: cfg.focus,
-              brightness: cfg.brightness, contrast: cfg.contrast,
-              auto_focus: false, auto_exposure: false,
+              name: cfg.sourceName || 'OAK Camera',
+              ip_address: cfg.ipAddress || undefined,
+              resolution: cfg.resolution,
+              fps: cfg.targetFps,
+              rotation_angle: cfg.rotationAngle ?? 0,
+              control_mode: cfg.controlMode ?? 'manual',
+              exposure: cfg.exposure ?? 8,
+              gain: cfg.iso ?? cfg.gain ?? 400,
+              focus: safeFocus,
+              brightness: cfg.brightness ?? 0,
+              contrast: cfg.contrast ?? 50,
+              auto_focus: false,
+              auto_exposure: false,
               recording_format: cfg.recordingFormat || 'MP4',
               recording_video_path: cfg.recordingVideoPath,
             };
             if (cfg.recordingVideoPath !== undefined) {
               await cameraService.setStoragePath(cfg.recordingVideoPath).catch(() => {});
             }
+
+            // 1. Save to database first so persistence is guaranteed
             const savedCamera = cfg.id
               ? await cameraService.updateCamera(cfg.id, payload)
               : await cameraService.createCamera(payload);
             if (savedCamera && savedCamera.id) {
-              camera.setCameraConfig((prev) => ({ ...prev, ...cfg, id: savedCamera.id }));
+              camera.setCameraConfig((prev) => ({ ...prev, ...safeConfig, id: savedCamera.id }));
             }
+
+            // 2. Only apply hardware live controls after DB is saved (non-fatal if camera is stopped)
+            if (cfg.connected) {
+              await cameraService.updateLiveControls(savedCamera?.id || cfg.id, {
+                control_mode: payload.control_mode,
+                exposure: payload.exposure,
+                gain: payload.gain,
+                focus: safeFocus,
+                brightness: payload.brightness,
+                contrast: payload.contrast,
+                auto_focus: false,
+                auto_exposure: false,
+                save_to_db: true,
+              }).catch((liveErr) => {
+                console.warn('[LiveControls] Non-fatal live hardware update deferred:', liveErr);
+              });
+            }
+
             showToast('success', 'Camera settings saved to database');
           } catch (e) {
             console.error(e);

@@ -69,7 +69,7 @@ export type BasicConfig = {
 const DEFAULT_CONTROLS = {
     exposure: 8,
     gain: 400,
-    focus: 0,
+    focus: 120,
     brightness: 0,
     contrast: 50,
 };
@@ -264,11 +264,11 @@ export const useCameraSystemStore = create<StoreState>()(
                         is_enabled: activeItem.is_enabled,
 
                         control_mode: activeItem.control_mode,
-                        exposure: activeItem.exposure ?? 0,
-                        gain: activeItem.gain ?? 0,
-                        focus: activeItem.focus ?? 0,
+                        exposure: activeItem.exposure ?? 8,
+                        gain: activeItem.gain ?? 400,
+                        focus: (activeItem.focus !== null && activeItem.focus !== undefined && activeItem.focus !== 0) ? activeItem.focus : 120,
                         brightness: activeItem.brightness ?? 0,
-                        contrast: activeItem.contrast ?? 0,
+                        contrast: activeItem.contrast ?? 50,
 
                         auto_exposure: false,
                         auto_focus: false,

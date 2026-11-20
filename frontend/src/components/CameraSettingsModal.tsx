@@ -33,6 +33,14 @@ interface SavedCameraRow {
   resolution?: string;
   fps?: number;
   is_enabled?: boolean;
+  exposure?: number;
+  gain?: number;
+  focus?: number;
+  brightness?: number;
+  contrast?: number;
+  control_mode?: string;
+  recording_format?: string;
+  recording_video_path?: string;
 }
 
 interface HwDevice {
@@ -87,11 +95,39 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     setIsLoadingList(true);
     try {
       const cameras = await cameraService.checkCamera().catch(() => []);
-      if (Array.isArray(cameras)) setSavedCameras(cameras);
+      if (Array.isArray(cameras)) {
+        setSavedCameras(cameras);
+        const targetCam =
+          cameras.find((c: any) => c.id === activeCameraId) ||
+          cameras.find((c: any) => c.is_enabled) ||
+          cameras[0];
+        if (targetCam) {
+          if (!activeCameraId) setActiveCameraId(targetCam.id);
+          setLocalConfig((prev) => ({
+            ...prev,
+            id: targetCam.id,
+            sourceName: targetCam.name || prev.sourceName,
+            ipAddress: targetCam.ip_address || prev.ipAddress,
+            resolution: targetCam.resolution || prev.resolution || '1920x1080',
+            targetFps: targetCam.fps || prev.targetFps || 30,
+            controlMode: (targetCam.control_mode as any) || prev.controlMode || 'manual',
+            exposure: targetCam.exposure ?? prev.exposure ?? 8,
+            gain: targetCam.gain ?? prev.gain ?? 400,
+            iso: targetCam.gain ?? prev.iso ?? 400,
+            focus: (targetCam.focus !== null && targetCam.focus !== undefined && targetCam.focus !== 0)
+              ? targetCam.focus
+              : (prev.focus && prev.focus !== 0 ? prev.focus : 120),
+            brightness: targetCam.brightness ?? prev.brightness ?? 0,
+            contrast: targetCam.contrast ?? prev.contrast ?? 50,
+            recordingFormat: (targetCam.recording_format as any) || prev.recordingFormat || 'MP4',
+            recordingVideoPath: targetCam.recording_video_path || prev.recordingVideoPath,
+          }));
+        }
+      }
     } finally {
       setIsLoadingList(false);
     }
-  }, []);
+  }, [activeCameraId]);
 
   const scanUsbDevices = useCallback(async () => {
     setIsScanning(true);
@@ -117,7 +153,12 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       return;
     }
 
-    setLocalConfig({ ...config, targetFps: config.targetFps || 30 });
+    const safeFocus = (config.focus !== null && config.focus !== undefined && config.focus !== 0) ? config.focus : 120;
+    setLocalConfig({
+      ...config,
+      focus: safeFocus,
+      targetFps: config.targetFps || 30,
+    });
 
     cameraService
       .getStoragePath()
@@ -135,11 +176,9 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       })
       .catch(() => { });
 
-    if (config.connected && config.id) {
-      setActiveCameraId(typeof config.id === 'number' ? config.id : parseInt(String(config.id), 10) || null);
-    } else {
-      setActiveCameraId(null);
-    }
+    const targetId = config.id ? (typeof config.id === 'number' ? config.id : parseInt(String(config.id), 10) || null) : null;
+    setActiveCameraId(targetId);
+
     refreshAll();
     scanUsbDevices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,6 +196,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     if (storagePath && storagePath.trim()) {
       await cameraService.setStoragePath(storagePath.trim()).catch(() => {});
     }
+    const rowFocus = (row.focus !== null && row.focus !== undefined && row.focus !== 0)
+      ? row.focus
+      : (localConfig.focus && localConfig.focus !== 0 ? localConfig.focus : 120);
+
     const updated: CameraConfig = {
       ...localConfig,
       id: row.id,
@@ -164,12 +207,12 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       ipAddress: row.ip_address,
       resolution: (row.resolution as any) || localConfig.resolution || '1920x1080',
       targetFps: row.fps || localConfig.targetFps || 30,
-      controlMode: (row as any).control_mode || localConfig.controlMode || 'manual',
-      exposure: (row as any).exposure ?? localConfig.exposure,
-      gain: (row as any).gain ?? localConfig.gain,
-      focus: (row as any).focus ?? localConfig.focus,
-      brightness: (row as any).brightness ?? localConfig.brightness,
-      contrast: (row as any).contrast ?? localConfig.contrast,
+      controlMode: (row.control_mode as any) || localConfig.controlMode || 'manual',
+      exposure: row.exposure ?? localConfig.exposure ?? 8,
+      gain: row.gain ?? localConfig.gain ?? 400,
+      focus: rowFocus,
+      brightness: row.brightness ?? localConfig.brightness ?? 0,
+      contrast: row.contrast ?? localConfig.contrast ?? 50,
       recordingVideoPath: storagePath || localConfig.recordingVideoPath,
       connected: true,
     };
@@ -236,6 +279,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
     setErrorMessage(null);
     setErrorCameraId(null);
     try {
+      const safeFocus = (localConfig.focus !== null && localConfig.focus !== undefined && localConfig.focus !== 0) ? localConfig.focus : 120;
       const payload: CameraData = {
         name,
         ip_address: ipAddress,
@@ -244,7 +288,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         control_mode: localConfig.controlMode || 'auto',
         exposure: localConfig.exposure ?? 8,
         gain: localConfig.gain ?? localConfig.iso ?? 400,
-        focus: localConfig.focus ?? 0,
+        focus: safeFocus,
         brightness: localConfig.brightness ?? 0,
         contrast: localConfig.contrast ?? 50,
         auto_focus: false,
@@ -258,6 +302,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
         id: saved?.id,
         sourceName: name,
         ipAddress,
+        focus: safeFocus,
         recordingVideoPath: storagePath || localConfig.recordingVideoPath,
         connected: true,
       };
@@ -303,6 +348,11 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
   };
 
   const handleSave = async () => {
+    if (isRecording) {
+      setErrorMessage('Cannot save or modify camera settings while recording is active.');
+      return;
+    }
+
     const finalPath = storagePath.trim() || defaultDesktopPath || '';
     if (finalPath) {
       try {
@@ -312,35 +362,64 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
       }
     }
 
-    // Persist camera controls to database if a camera row exists
-    if (localConfig.id) {
+    const targetCameraId = localConfig.id || activeCameraId || (savedCameras.length > 0 ? savedCameras[0].id : null);
+    const safeFocus = (localConfig.focus !== null && localConfig.focus !== undefined && localConfig.focus !== 0) ? localConfig.focus : 120;
+
+    const savePayload: CameraData = {
+      name: localConfig.sourceName || 'OAK Camera',
+      ip_address: localConfig.ipAddress || undefined,
+      resolution: localConfig.resolution || '1920x1080',
+      fps: localConfig.targetFps || 30,
+      control_mode: localConfig.controlMode || 'manual',
+      exposure: localConfig.exposure ?? 8,
+      gain: localConfig.gain ?? localConfig.iso ?? 400,
+      focus: safeFocus,
+      brightness: localConfig.brightness ?? 0,
+      contrast: localConfig.contrast ?? 50,
+      auto_focus: false,
+      auto_exposure: false,
+      recording_format: localConfig.recordingFormat || 'MP4',
+      recording_video_path: finalPath,
+    };
+
+    let updatedId = targetCameraId;
+    if (targetCameraId) {
       try {
-        await cameraService.updateCamera(localConfig.id, {
-          exposure: localConfig.exposure,
-          gain: localConfig.gain ?? localConfig.iso,
-          focus: localConfig.focus,
-          brightness: localConfig.brightness,
-          contrast: localConfig.contrast,
-          control_mode: localConfig.controlMode || 'manual',
-          resolution: localConfig.resolution,
-          fps: localConfig.targetFps,
-        });
-        await cameraService.updateLiveControls(localConfig.id, {
-          exposure: localConfig.exposure,
-          gain: localConfig.gain ?? localConfig.iso,
-          focus: localConfig.focus,
-          brightness: localConfig.brightness,
-          contrast: localConfig.contrast,
-          control_mode: localConfig.controlMode || 'manual',
+        const updated = await cameraService.updateCamera(targetCameraId, savePayload);
+        if (updated && updated.id) updatedId = updated.id;
+      } catch (e) {
+        console.error('Failed to persist camera controls to database:', e);
+      }
+    } else {
+      try {
+        const created = await cameraService.createCamera(savePayload);
+        if (created && created.id) updatedId = created.id;
+      } catch (e) {
+        console.error('Failed to create camera in database:', e);
+      }
+    }
+
+    // Apply controls to live hardware only on save
+    if (localConfig.connected || activeCameraId) {
+      try {
+        await cameraService.updateLiveControls(updatedId || undefined, {
+          exposure: savePayload.exposure,
+          gain: savePayload.gain,
+          focus: safeFocus,
+          brightness: savePayload.brightness,
+          contrast: savePayload.contrast,
+          control_mode: savePayload.control_mode,
           save_to_db: true,
         });
       } catch (e) {
-        console.error('Failed to persist camera controls to database:', e);
+        console.debug('Hardware live controls update deferred:', e);
       }
     }
 
     onSaveConfig({
       ...localConfig,
+      id: updatedId || localConfig.id,
+      focus: safeFocus,
       recordingVideoPath: finalPath,
     });
     onClose();
@@ -371,6 +450,8 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
             variant="primary"
             size="sm"
             onClick={handleSave}
+            disabled={isRecording}
+            title={isRecording ? 'Camera settings are locked while recording' : undefined}
             icon={<Check className="w-3.5 h-3.5" />}
             className="h-7 text-xs"
           >
@@ -852,6 +933,13 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
 
         {activeTab === 'image' && (
           <div className="space-y-3.5 p-0.5">
+            {isRecording && (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs flex items-center gap-1.5 font-semibold">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-500" />
+                <span>Camera adjustments are locked while recording is in progress</span>
+              </div>
+            )}
+
             {/* 1. SENSOR GAIN (ISO) */}
             <div className="p-2.5 rounded-xl bg-[var(--bg-card-subtle)] border border-[var(--border-color)] space-y-1.5">
               <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)]">
@@ -869,12 +957,13 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 max={1600}
                 step={10}
                 value={localConfig.gain ?? localConfig.iso ?? 400}
+                disabled={isRecording}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
                   setLocalConfig({ ...localConfig, gain: val, iso: val, controlMode: 'manual', autoExposure: false, autoFocus: false });
                 }}
                 style={getSliderStyle(localConfig.gain ?? localConfig.iso ?? 400, 100, 1600)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all"
+                className="w-full h-1.5 rounded cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
                 <span>100 (Clean)</span>
@@ -896,7 +985,7 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                     MANUAL
                   </span>
                   <span className="font-mono text-xs font-bold text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded">
-                    {localConfig.focusAvailable === false ? 'Unavailable' : `${localConfig.focus ?? 0} / 255`}
+                    {localConfig.focusAvailable === false ? 'Unavailable' : `${localConfig.focus ?? 120} / 255`}
                   </span>
                 </div>
               </div>
@@ -905,17 +994,17 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 min={0}
                 max={255}
                 step={1}
-                value={localConfig.focus ?? 0}
-                disabled={localConfig.focusAvailable === false}
+                value={localConfig.focus ?? 120}
+                disabled={isRecording || localConfig.focusAvailable === false}
                 onChange={(e) => {
                   setLocalConfig({ ...localConfig, focus: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
-                style={getSliderStyle(localConfig.focus ?? 0, 0, 255)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all disabled:cursor-not-allowed"
+                style={getSliderStyle(localConfig.focus ?? 120, 0, 255)}
+                className="w-full h-1.5 rounded cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
                 <span>0 (Far / Infinity)</span>
-                <span>Preset value</span>
+                <span>Preset: 120</span>
                 <span>255 (Macro / Close)</span>
               </div>
             </div>
@@ -942,11 +1031,12 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                 max={33}
                 step={1}
                 value={localConfig.exposure ?? 8}
+                disabled={isRecording}
                 onChange={(e) => {
                   setLocalConfig({ ...localConfig, exposure: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false });
                 }}
                 style={getSliderStyle(localConfig.exposure ?? 8, 1, 33)}
-                className="w-full h-1.5 rounded cursor-pointer transition-all"
+                className="w-full h-1.5 rounded cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <div className="flex justify-between text-[9px] text-[var(--text-muted)] font-mono">
                 <span>1 ms (Fast)</span>
@@ -969,9 +1059,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   min={-50}
                   max={50}
                   value={localConfig.brightness ?? 0}
+                  disabled={isRecording}
                   onChange={(e) => setLocalConfig({ ...localConfig, brightness: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false })}
                   style={getSliderStyle(localConfig.brightness ?? 0, -50, 50)}
-                  className="w-full h-1.5 rounded cursor-pointer transition-all"
+                  className="w-full h-1.5 rounded cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -987,9 +1078,10 @@ export const CameraSettingsModal: React.FC<CameraSettingsModalProps> = ({
                   min={0}
                   max={100}
                   value={localConfig.contrast ?? 50}
+                  disabled={isRecording}
                   onChange={(e) => setLocalConfig({ ...localConfig, contrast: parseInt(e.target.value, 10), controlMode: 'manual', autoFocus: false, autoExposure: false })}
                   style={getSliderStyle(localConfig.contrast ?? 50, 0, 100)}
-                  className="w-full h-1.5 rounded cursor-pointer transition-all"
+                  className="w-full h-1.5 rounded cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 />
               </div>
             </div>

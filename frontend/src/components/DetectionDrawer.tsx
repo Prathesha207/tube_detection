@@ -25,6 +25,7 @@ interface DetectionDrawerProps {
   isCameraConnected?: boolean;
   cameraConfig?: CameraConfig;
   onUpdateCameraConfig?: (newConfig: Partial<CameraConfig>) => void;
+  isRecording?: boolean;
 }
 
 export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
@@ -42,6 +43,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
   isCameraConnected = false,
   cameraConfig,
   onUpdateCameraConfig,
+  isRecording = false,
 }) => {
   const mlStats = useInferenceStore((state) => state.stats);
 
@@ -606,6 +608,7 @@ export const DetectionDrawer: React.FC<DetectionDrawerProps> = ({
           config={cameraConfig}
           onUpdateConfig={onUpdateCameraConfig}
           isLive={true}
+          isRecording={isRecording}
         />
       )}
     </aside>

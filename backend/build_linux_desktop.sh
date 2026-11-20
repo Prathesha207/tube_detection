@@ -247,6 +247,12 @@ else
   cd "$BACKEND_DIR"
   rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist"
 
+  echo "========================================================"
+  echo "  Bundling Backend Executable with PyInstaller..."
+  echo "  Collecting CUDA PyTorch libraries (takes ~1-2 minutes)..."
+  echo "  Please do NOT interrupt until completed!"
+  echo "========================================================"
+
   pyinstaller --noconfirm --clean --onedir --name backend "$BACKEND_DIR/run.py" \
     --distpath "$BACKEND_DIR/dist" \
     --workpath "$BACKEND_DIR/build" \
@@ -254,6 +260,11 @@ else
     --add-data "$BACKEND_DIR/app/ml/model:app/ml/model" \
     --add-data "$BACKEND_DIR/app/ml/config:app/ml/config" \
     --add-data "$BACKEND_DIR/alembic:alembic" \
+    --exclude-module pytest \
+    --exclude-module unittest \
+    --exclude-module IPython \
+    --exclude-module tensorboard \
+    --exclude-module sqlalchemy.ext.asyncio \
     --collect-all app \
     --collect-all fastapi \
     --collect-all starlette \

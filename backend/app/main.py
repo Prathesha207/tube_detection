@@ -9,19 +9,8 @@ import uuid
 import subprocess
 from pathlib import Path
 
-# --- PyInstaller PyTorch CUDA DLL & Pybind11 Type Collision Fix ---
-if getattr(sys, 'frozen', False):
-    sys.modules.setdefault("torch._C._distributed_c10d", None)
-    bundle_dir = sys._MEIPASS
-    torch_lib = os.path.join(bundle_dir, 'torch', 'lib')
-    if os.path.exists(torch_lib):
-        os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(torch_lib)
-            except Exception:
-                pass
-# ----------------------------------------
+# PyInstaller bundles native PyTorch libraries from one canonical torch/lib location.
+# Do not put fake entries into sys.modules: it is unsafe and can break torch distributed imports.
 
 from app.api.router import router
 from app.core.database import Base, engine

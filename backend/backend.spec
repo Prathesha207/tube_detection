@@ -1,15 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
-from PyInstaller.utils.hooks import copy_metadata
 
-datas = [('app/ml/model', 'app/ml/model'), ('app/ml/config', 'app/ml/config'), ('app/ml/torch_hub', 'app/ml/torch_hub'), ('alembic', 'alembic')]
+datas = [('/home/wsw/Desktop/prathesha/tube_detection/backend/app/ml/model', 'app/ml/model'), ('/home/wsw/Desktop/prathesha/tube_detection/backend/app/ml/config', 'app/ml/config'), ('/home/wsw/Desktop/prathesha/tube_detection/backend/alembic', 'alembic')]
 binaries = []
-hiddenimports = []
-datas += copy_metadata('torchvision')
-datas += copy_metadata('ultralytics')
-datas += copy_metadata('head_tail_analyzer')
-tmp_ret = collect_all('sympy')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['unittest', 'torch.distributed', 'torch.distributed.config', 'torch.distributed.device_mesh', 'torch', 'torch._C', 'head_tail_analyzer.run_video_frames']
 tmp_ret = collect_all('app')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('fastapi')
@@ -28,6 +22,8 @@ tmp_ret = collect_all('torchvision')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ultralytics')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('sympy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('depthai')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('av')
@@ -41,7 +37,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['run.py'],
+    ['/home/wsw/Desktop/prathesha/tube_detection/backend/run.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -49,7 +45,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pytest', 'IPython', 'tensorboard', 'sqlalchemy.ext.asyncio'],
     noarchive=False,
     optimize=0,
 )

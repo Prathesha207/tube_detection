@@ -80,7 +80,12 @@ WHEEL_INFO: Dict[str, Any] = {}
 # 1. The installed wheel (required).
 try:
     import head_tail_analyzer as _hta
-    from head_tail_analyzer import run_video_frames as _wheel_rvf
+    try:
+        from head_tail_analyzer import run_video_frames as _wheel_rvf
+    except Exception:
+        # A frozen package can expose the submodule only through importlib.
+        import importlib
+        _wheel_rvf = importlib.import_module("head_tail_analyzer.run_video_frames")
     _missing = [n for n in _REQUIRED_WHEEL_FUNCS if not hasattr(_wheel_rvf, n)]
     if "analyze_frame" in dir(_wheel_rvf):
         import inspect
@@ -99,6 +104,10 @@ try:
         WHEEL_INFO["module_sha256"] = None
 except Exception as e:
     _WHEEL_ERROR = e
+    import sys
+    import traceback
+    if getattr(sys, "frozen", False):
+        traceback.print_exc()
 
 if rvf is not None:
     logger.info("head_tail_analyzer pipeline: %s v%s  (%s)", WHEEL_INFO.get("source"),

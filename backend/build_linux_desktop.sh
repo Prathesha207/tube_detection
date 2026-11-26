@@ -72,6 +72,8 @@ if [[ "$CLEAN_BUILD" == "1" ]]; then
   echo " - Build virtual environment ($VENV_DIR)"
   echo "========================================================"
   rm -rf "$BACKEND_DIR/build" "$BACKEND_DIR/dist" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/dist_app" "$FRONTEND_DIR/node_modules/.vite" "$VENV_DIR" ~/.cache/pyinstaller
+  # A clean build invalidates SKIP_PYINSTALLER: there is no artifact left to reuse.
+  SKIP_PYINSTALLER=0
 fi
 
 # Function to purge any local torch/torchvision wheels installed directly in the venv
@@ -261,18 +263,25 @@ else
     --add-data "$BACKEND_DIR/app/ml/config:app/ml/config" \
     --add-data "$BACKEND_DIR/alembic:alembic" \
     --exclude-module pytest \
-    --exclude-module unittest \
     --exclude-module IPython \
     --exclude-module tensorboard \
     --exclude-module sqlalchemy.ext.asyncio \
-    --exclude-module torch.distributed.rpc \
+    --hidden-import unittest \
+    --hidden-import torch.distributed \
+    --hidden-import torch.distributed.config \
+    --hidden-import torch.distributed.device_mesh \
     --collect-all app \
     --collect-all fastapi \
     --collect-all starlette \
     --collect-all uvicorn \
     --collect-all sqlalchemy \
     --collect-all cv2 \
+    --collect-all torch \
+    --collect-all torchvision \
     --collect-all ultralytics \
+    --hidden-import torch \
+    --hidden-import torch._C \
+    --hidden-import head_tail_analyzer.run_video_frames \
     --collect-all sympy \
     --collect-all depthai \
     --collect-all av \
@@ -303,6 +312,24 @@ if [[ -d "$BACKEND_DIR/dist/backend/_internal/torch/lib" ]]; then
     if [[ -f "$BACKEND_DIR/dist/backend/$basename_f" ]]; then
       echo "  Deduplicating root library: $basename_f"
       rm -f "$BACKEND_DIR/dist/backend/$basename_f"
+    fi
+  done
+fi
+
+if [[ ! -x "$BACKEND_DIR/dist/backend/backend" ]]; then
+  echo "❌ FATAL: PyInstaller completed without producing dist/backend/backend"
+  exit 1
+fi
+
+TORCH_LIB_DIR="$BACKEND_DIR/dist/backend/_internal/torch/lib"
+if [[ -d "$TORCH_LIB_DIR" ]]; then
+  echo "Checking bundled PyTorch library uniqueness..."
+  for f in "$TORCH_LIB_DIR"/*.so*; do
+    [[ -e "$f" ]] || continue
+    basename_f=$(basename "$f")
+    if [[ -f "$BACKEND_DIR/dist/backend/_internal/$basename_f" || -f "$BACKEND_DIR/dist/backend/$basename_f" ]]; then
+      echo "❌ FATAL: duplicate bundled PyTorch library remains: $basename_f"
+      exit 1
     fi
   done
 fi

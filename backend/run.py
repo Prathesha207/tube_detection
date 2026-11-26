@@ -1,15 +1,9 @@
-
 import os
 import shutil
 import sys
 import multiprocessing
 
 multiprocessing.freeze_support()
-
-# Fix PyTorch pybind11 type double-registration collision in frozen PyInstaller bundles:
-# "generic_type: cannot initialize type 'GradBucket': an object with that name is already defined"
-if getattr(sys, "frozen", False):
-    sys.modules.setdefault("torch._C._distributed_c10d", None)
 
 import uvicorn
 from pathlib import Path
@@ -82,11 +76,27 @@ try:
 except Exception:
     pass
 
+if getattr(sys, "frozen", False):
+    bundle_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    torch_lib_dirs = (
+        bundle_dir / "torch" / "lib",
+        bundle_dir / "_internal" / "torch" / "lib",
+        bundle_dir / "torch",
+    )
+    existing = [str(p) for p in torch_lib_dirs if p.is_dir()]
+    if existing:
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(existing + [os.environ.get("LD_LIBRARY_PATH", "")])
+
 try:
     import torch
+    if getattr(sys, "frozen", False):
+        print(f"[BOOTSTRAP] PyTorch loaded: {torch.__version__}; CUDA={torch.cuda.is_available()}")
     torch.set_num_threads(1)
-except Exception:
-    pass
+except Exception as exc:
+    if getattr(sys, "frozen", False):
+        import traceback
+        print("[BOOTSTRAP] PyTorch import failed:", repr(exc), flush=True)
+        traceback.print_exc()
 
 from app.main import app
 

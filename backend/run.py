@@ -119,6 +119,26 @@ if __name__ == "__main__":
 
     target_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
 
+    # Pre-flight check: if Vision Monitor backend is already running and healthy, reuse it!
+    import urllib.request
+    import json
+
+    def is_our_backend_already_running(p: int) -> bool:
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{p}/health", headers={"User-Agent": "vision-monitor-launcher"})
+            with urllib.request.urlopen(req, timeout=0.8) as resp:
+                if resp.status in (200, 503):
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("app") == "vision-monitor" or data.get("status") in ("ready", "starting"):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    if is_our_backend_already_running(target_port):
+        print(f"[STARTUP] Vision Monitor backend is already running on port {target_port}. Reusing active instance.")
+        sys.exit(0)
+
     import socket
     def is_port_available(p: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

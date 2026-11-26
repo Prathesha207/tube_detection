@@ -101,4 +101,7 @@ echo Wait for "Local: http://localhost:5173/" in the frontend console.
 echo Keep both console windows open while working.
 echo =======================================================
 echo.
+echo Opening browser in 3 seconds...
+timeout /t 3 /nobreak >nul
+start http://localhost:5173
 pause
